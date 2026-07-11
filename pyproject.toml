@@ -16,6 +16,7 @@ dependencies = [
     "numpy",
     "pyzbar",
     "reportlab",
+    "appdirs",
     "requests"
 ]
 
