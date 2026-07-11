@@ -23,7 +23,7 @@ jobs:
 
       - name: Build APK (arm64-v8a)
         run: |
-          flet build apk \
+          flet build apk --yes\
             --org com.jiuchengcompany.jiuchengapp \
             --product "JCheng" \
             --flutter-build-args=--target-platform --flutter-build-args=android-arm64
