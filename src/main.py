@@ -17,33 +17,94 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 import sys
-import asyncio
+import os
+from pathlib import Path
+import appdirs
 
 # ---------------------------- 数据库配置 ----------------------------
 DB_HOST = os.getenv("DB_HOST", "240e:338:4a26:f3b1::84")
 DB_PORT = int(os.getenv("DB_PORT", 13306))
 DB_USER = os.getenv("DB_USER", "ipv6user")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "123456")
+DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 DB_DATABASE = os.getenv("DB_DATABASE", "jiuchengerp")
 CONFIG_FILE = "server_config.json"
 
+
+
+def get_asset_path(filename):
+    """返回 assets 目录中文件的完整路径（支持打包后）"""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_dir, "assets", filename)
+
+
+# 获取配置目录
+def get_config_dir():
+    """返回用户配置目录，并确保目录存在"""
+    if getattr(sys, 'frozen', False):
+        # 打包后的可执行文件
+        if os.name == 'nt':  # Windows
+            config_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'jiuchengerp')
+        else:  # Linux/Mac
+            config_dir = os.path.join(os.path.expanduser('~'), '.config', 'jiuchengerp')
+    else:
+        # 开发环境：使用当前目录
+        config_dir = os.path.dirname(os.path.abspath(__file__))
+    os.makedirs(config_dir, exist_ok=True)
+    return config_dir
+
+# 配置文件路径
+CONFIG_DIR = get_config_dir()
+CONFIG_FILE = os.path.join(CONFIG_DIR, 'server_config.json')
+
+# 默认配置（从环境变量或硬编码）
+DEFAULT_HOST = os.getenv("DB_HOST", "240e:338:4a26:f3b1::84")
+DEFAULT_PORT = int(os.getenv("DB_PORT", 13306))
+DEFAULT_USER = os.getenv("DB_USER", "ipv6user")
+DEFAULT_PASSWORD = os.getenv("DB_PASSWORD", "")
+DEFAULT_DATABASE = os.getenv("DB_DATABASE", "jiuchengerp")
+
+# 全局变量（由 load_server_config 填充）
+DB_HOST = DEFAULT_HOST
+DB_PORT = DEFAULT_PORT
+DB_USER = DEFAULT_USER
+DB_PASSWORD = DEFAULT_PASSWORD
+DB_DATABASE = DEFAULT_DATABASE
+
 def load_server_config():
+    """从 JSON 文件加载配置，若文件不存在则使用默认值并创建"""
     global DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_DATABASE
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-            DB_HOST = cfg.get("DB_HOST", DB_HOST)
-            DB_PORT = int(cfg.get("DB_PORT", DB_PORT))
-            DB_USER = cfg.get("DB_USER", DB_USER)
-            DB_PASSWORD = cfg.get("DB_PASSWORD", DB_PASSWORD)
-            DB_DATABASE = cfg.get("DB_DATABASE", DB_DATABASE)
-load_server_config()
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+                DB_HOST = cfg.get("DB_HOST", DEFAULT_HOST)
+                DB_PORT = int(cfg.get("DB_PORT", DEFAULT_PORT))
+                DB_USER = cfg.get("DB_USER", DEFAULT_USER)
+                DB_PASSWORD = cfg.get("DB_PASSWORD", DEFAULT_PASSWORD)
+                DB_DATABASE = cfg.get("DB_DATABASE", DEFAULT_DATABASE)
+        except Exception as e:
+            print(f"读取配置文件失败: {e}，使用默认值")
+    else:
+        # 首次运行，创建默认配置文件
+        save_server_config(DEFAULT_HOST, DEFAULT_PORT, DEFAULT_USER, DEFAULT_PASSWORD, DEFAULT_DATABASE)
 
 def save_server_config(host, port, user, pwd, db):
-    cfg = {"DB_HOST": host, "DB_PORT": port, "DB_USER": user,
-           "DB_PASSWORD": pwd, "DB_DATABASE": db}
+    """保存配置到 JSON 文件，确保目录存在"""
+    cfg = {
+        "DB_HOST": host,
+        "DB_PORT": port,
+        "DB_USER": user,
+        "DB_PASSWORD": pwd,
+        "DB_DATABASE": db
+    }
+    # 确保配置目录存在
+    os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+# 初始化加载
+load_server_config()
+
 
 def get_db_conn():
     try:
@@ -55,8 +116,10 @@ def get_db_conn():
         print("数据库错误:", e)
         return None
 
+
 def md5_pwd(pwd):
     return hashlib.md5(pwd.encode("utf-8")).hexdigest()
+
 
 def gen_order_no():
     year = date.today().strftime("%Y")
@@ -70,8 +133,10 @@ def gen_order_no():
         return f"{year}{seq:04d}"
     return f"{year}0001"
 
+
 def gen_invoice_no():
     return f"INV{date.today().strftime('%Y%m%d')}{int(datetime.now().timestamp()) % 10000:04d}"
+
 
 def resource_path(relative_path):
     try:
@@ -79,48 +144,6 @@ def resource_path(relative_path):
     except:
         return os.path.join(os.path.abspath("."), relative_path)
 
-# ---------------------------- 统一的弹窗函数 ----------------------------
-def show_alert(page, title, content, on_ok=None, on_cancel=None, ok_text="确定", cancel_text="取消", show_cancel=True):
-    """
-    统一弹窗，添加到 page.overlay
-    content 可以是 ft.Text 或其他控件
-    """
-    # 清除可能残留的对话框（可选）
-    for ctrl in page.overlay:
-        if isinstance(ctrl, ft.AlertDialog):
-            ctrl.open = False
-            page.overlay.remove(ctrl)
-    page.update()
-
-    def handle_ok(e):
-        if on_ok:
-            on_ok(e)
-        dlg.open = False
-        if dlg in page.overlay:
-            page.overlay.remove(dlg)
-        page.update()
-
-    def handle_cancel(e):
-        if on_cancel:
-            on_cancel(e)
-        dlg.open = False
-        if dlg in page.overlay:
-            page.overlay.remove(dlg)
-        page.update()
-
-    actions = [ft.TextButton(ok_text, on_click=handle_ok)]
-    if show_cancel:
-        actions.append(ft.TextButton(cancel_text, on_click=handle_cancel))
-
-    dlg = ft.AlertDialog(
-        title=ft.Text(title, weight=ft.FontWeight.BOLD),
-        content=content,
-        actions=actions
-    )
-    page.overlay.append(dlg)
-    dlg.open = True
-    page.update()
-    return dlg
 
 # ---------------------------- 扫描69码及产品查询 ----------------------------
 def scan_barcode_from_image(page, on_success):
@@ -130,23 +153,33 @@ def scan_barcode_from_image(page, on_success):
             try:
                 img = cv2.imread(path)
                 if img is None:
-                    show_alert(page, "错误", ft.Text("图片读取失败"))
+                    page.snack_bar = ft.SnackBar(ft.Text("图片读取失败"))
+                    page.snack_bar.open = True
+                    page.update()
                     return
                 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                 barcodes = decode(gray)
                 if barcodes:
                     code = barcodes[0].data.decode('utf-8')
-                    show_alert(page, "提示", ft.Text(f"识别成功: {code}"))
+                    page.snack_bar = ft.SnackBar(ft.Text(f"识别成功: {code}"))
+                    page.snack_bar.open = True
+                    page.update()
                     on_success(code)
                 else:
-                    show_alert(page, "提示", ft.Text("未识别到条码"))
+                    page.snack_bar = ft.SnackBar(ft.Text("未识别到条码"))
+                    page.snack_bar.open = True
+                    page.update()
             except Exception as ex:
-                show_alert(page, "错误", ft.Text(f"识别失败: {ex}"))
+                page.snack_bar = ft.SnackBar(ft.Text(f"识别失败: {ex}"))
+                page.snack_bar.open = True
+                page.update()
+
     file_picker = ft.FilePicker()
     file_picker.on_result = on_result
     page.overlay.append(file_picker)
     page.update()
     file_picker.pick_files(allow_multiple=False, file_type=ft.FilePickerFileType.IMAGE)
+
 
 def get_product_by_model(model):
     conn = get_db_conn()
@@ -160,6 +193,7 @@ def get_product_by_model(model):
     conn.close()
     return row
 
+
 def query_product_by_code(code):
     conn = get_db_conn()
     if not conn:
@@ -172,11 +206,13 @@ def query_product_by_code(code):
     conn.close()
     return row
 
+
 def add_product_from_scan(page, code, callback):
     def save_product(e):
         model = model_input.value.strip()
         if not model:
-            show_alert(page, "提示", ft.Text("型号不能为空"))
+            page.snack_bar = ft.SnackBar(ft.Text("型号不能为空"))
+            page.snack_bar.open = True
             return
         try:
             price = float(price_input.value or 0)
@@ -184,7 +220,8 @@ def add_product_from_scan(page, code, callback):
             gov = float(gov_input.value or 0)
             old = float(old_input.value or 0)
         except:
-            show_alert(page, "错误", ft.Text("价格/补贴请输入数字"))
+            page.snack_bar = ft.SnackBar(ft.Text("价格/补贴请输入数字"))
+            page.snack_bar.open = True
             return
         conn = get_db_conn()
         cur = conn.cursor()
@@ -197,11 +234,14 @@ def add_product_from_scan(page, code, callback):
                          category_input.value, piece_input.value, price,
                          union, gov, old))
             conn.commit()
-            show_alert(page, "成功", ft.Text("产品添加成功"), on_ok=lambda e: (dialog.open and setattr(dialog,'open',False), callback(model)))
+            page.snack_bar = ft.SnackBar(ft.Text("产品添加成功"))
+            page.snack_bar.open = True
             dialog.open = False
             page.update()
+            callback(model)
         except Exception as ex:
-            show_alert(page, "错误", ft.Text(f"添加失败: {ex}"))
+            page.snack_bar = ft.SnackBar(ft.Text(f"添加失败: {ex}"))
+            page.snack_bar.open = True
         finally:
             conn.close()
 
@@ -229,12 +269,14 @@ def add_product_from_scan(page, code, callback):
     dialog.open = True
     page.update()
 
+
 # ---------------------------- PDF订单生成（含电子公章） ----------------------------
 def generate_pdf_order(order_no, items, cust_name, phone, full_addr, send_date, total):
     try:
         pdf_path = f"订单_{order_no}.pdf"
         c = canvas.Canvas(pdf_path, pagesize=A4)
         width, height = A4
+
         c.setFont("Helvetica-Bold", 18)
         c.drawString(50, height - 50, "销售订单")
         c.setFont("Helvetica", 12)
@@ -247,6 +289,7 @@ def generate_pdf_order(order_no, items, cust_name, phone, full_addr, send_date, 
         y -= 20
         c.drawString(50, y, f"送货日期: {send_date}")
         y -= 30
+
         c.setFont("Helvetica-Bold", 10)
         c.drawString(50, y, "序号")
         c.drawString(100, y, "型号")
@@ -262,9 +305,11 @@ def generate_pdf_order(order_no, items, cust_name, phone, full_addr, send_date, 
             c.drawString(320, y, f"{it['price']:.2f}")
             c.drawString(400, y, f"{it['total']:.2f}")
             y -= 20
+
         y -= 20
         c.setFont("Helvetica-Bold", 12)
         c.drawString(50, y, f"合计: {total:.2f} 元")
+
         try:
             stamp_path = resource_path("stamp.png")
             if os.path.exists(stamp_path):
@@ -272,6 +317,7 @@ def generate_pdf_order(order_no, items, cust_name, phone, full_addr, send_date, 
                 c.drawImage(img, width - 150, 50, width=100, height=100, mask='auto')
         except:
             pass
+
         c.save()
         if os.name == 'nt':
             os.startfile(pdf_path)
@@ -279,6 +325,7 @@ def generate_pdf_order(order_no, items, cust_name, phone, full_addr, send_date, 
     except Exception as e:
         print(f"生成PDF失败: {e}")
         return None
+
 
 # ---------------------------- Flet 应用 ----------------------------
 def main(page: ft.Page):
@@ -328,7 +375,31 @@ def main(page: ft.Page):
         visible=False,
     )
 
-    # ===================== 辅助函数 =====================
+    # ===================== 辅助函数：显示弹窗 =====================
+    def show_alert(title, content, on_ok=None):
+        for ctrl in page.overlay:
+            if isinstance(ctrl, ft.AlertDialog):
+                ctrl.open = False
+                page.overlay.remove(ctrl)
+        page.update()
+
+        def handle_ok(e):
+            if on_ok:
+                on_ok(e)
+            dlg.open = False
+            if dlg in page.overlay:
+                page.overlay.remove(dlg)
+            page.update()
+
+        dlg = ft.AlertDialog(
+            title=ft.Text(title, weight=ft.FontWeight.BOLD),
+            content=ft.Text(content),
+            actions=[ft.TextButton("确定", on_click=handle_ok)]
+        )
+        page.overlay.append(dlg)
+        dlg.open = True
+        page.update()
+
     def get_fields():
         controls = config_overlay.content.controls
         return {
@@ -343,36 +414,42 @@ def main(page: ft.Page):
         def on_submit(e):
             read_key = input_dlg.content.value.strip()
             if not read_key:
-                show_alert(page, "提示", ft.Text("请输入读取码"))
+                show_alert("提示", "请输入读取码")
                 return
             input_dlg.open = False
             if input_dlg in page.overlay:
                 page.overlay.remove(input_dlg)
             page.update()
+
             try:
                 web_url = f"https://textdb.online/{read_key}"
                 resp = requests.get(web_url, timeout=10)
+
                 if resp.status_code != 200:
-                    show_alert(page, "错误", ft.Text(f"读取失败：HTTP {resp.status_code}"))
+                    show_alert("错误", f"读取失败：HTTP {resp.status_code}")
                     return
+
                 raw_text = resp.text.strip()
                 if not raw_text:
-                    show_alert(page, "错误", ft.Text("读取码对应数据为空"))
+                    show_alert("错误", "读取码对应数据为空")
                     return
+
                 decoded = None
                 try:
                     decoded = base64.b64decode(raw_text).decode('utf-8')
                 except Exception:
                     decoded = raw_text
+
                 if ":" in decoded:
                     fields = get_fields()
                     fields["host"].value = decoded
                     page.update()
-                    show_alert(page, "成功", ft.Text(f"已填入IPv6: {decoded}"))
+                    show_alert("成功", f"已填入IPv6: {decoded}")
                 else:
-                    show_alert(page, "错误", ft.Text("内容不是有效IPv6地址"))
+                    show_alert("错误", "内容不是有效IPv6地址")
+
             except Exception as ex:
-                show_alert(page, "错误", ft.Text(f"读取失败: {str(ex)[:50]}"))
+                show_alert("错误", f"读取失败: {str(ex)[:50]}")
 
         input_dlg = ft.AlertDialog(
             title=ft.Text("请输入读取码"),
@@ -393,9 +470,11 @@ def main(page: ft.Page):
         user = fields["user"].value.strip()
         pwd = fields["pwd"].value.strip()
         db = fields["db"].value.strip()
+
         if not host or not port_str or not user or not db:
-            show_alert(page, "提示", ft.Text("请填写完整的连接信息"))
+            show_alert("提示", "请填写完整的连接信息")
             return
+
         try:
             port = int(port_str)
             conn = mysql.connector.connect(
@@ -404,23 +483,54 @@ def main(page: ft.Page):
                 use_pure=True, connect_timeout=3
             )
             conn.close()
-            show_alert(page, "成功", ft.Text("✅ 连接成功"))
+            show_alert("成功", "✅ 连接成功")
         except Exception as ex:
-            show_alert(page, "错误", ft.Text(f"❌ 连接失败: {str(ex)[:50]}"))
+            show_alert("错误", f"❌ 连接失败: {str(ex)[:50]}")
 
     def save_and_restart():
+        nonlocal current_user
         fields = get_fields()
-        save_server_config(
-            fields["host"].value.strip(),
-            int(fields["port"].value.strip()),
-            fields["user"].value.strip(),
-            fields["pwd"].value.strip(),
-            fields["db"].value.strip()
+        host = fields["host"].value.strip()
+        port = int(fields["port"].value)
+        user = fields["user"].value.strip()
+        pwd = fields["pwd"].value.strip()
+        db = fields["db"].value.strip()
+
+        # 保存到文件
+        save_server_config(host, port, user, pwd, db)
+        # 更新内存中的全局变量
+        global DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_DATABASE
+        DB_HOST = host
+        DB_PORT = port
+        DB_USER = user
+        DB_PASSWORD = pwd
+        DB_DATABASE = db
+
+        # 先关闭配置界面
+        config_overlay.visible = False
+        page.update()
+
+        # 显示保存成功对话框
+        def on_ok(e):
+            # 隐藏对话框
+            dlg.open = False
+            if dlg in page.overlay:
+                page.overlay.remove(dlg)
+            # 重置当前用户
+            current_user = None
+            # 清除当前所有页面控件，重新添加登录界面
+            page.controls.clear()
+            page.add(login_container)
+            page.update()
+
+        dlg = ft.AlertDialog(
+            title=ft.Text("配置保存成功", weight=ft.FontWeight.BOLD),
+            content=ft.Text("数据库配置已更新，请重新登录"),
+            actions=[ft.TextButton("确定", on_click=on_ok)]
         )
-        show_alert(page, "成功", ft.Text("✅ 配置已保存，应用即将重启..."))
-        def do_restart():
-            page.window_close()
-        page.run_task(do_restart)
+        page.overlay.append(dlg)
+        dlg.open = True
+        page.update()
 
     def show_config(e):
         config_overlay.visible = True
@@ -442,11 +552,15 @@ def main(page: ft.Page):
         uname = username_input.value.strip()
         pwd = password_input.value.strip()
         if not uname or not pwd:
-            show_alert(page, "提示", ft.Text("请输入用户名和密码"))
+            page.snack_bar = ft.SnackBar(ft.Text("请输入用户名和密码"))
+            page.snack_bar.open = True
+            page.update()
             return
         conn = get_db_conn()
         if not conn:
-            show_alert(page, "错误", ft.Text("数据库连接失败，请检查服务器配置"))
+            page.snack_bar = ft.SnackBar(ft.Text("数据库连接失败，请检查服务器配置"))
+            page.snack_bar.open = True
+            page.update()
             return
         cur = conn.cursor(dictionary=True)
         cur.execute("SELECT id,username,real_name,role,permissions FROM users WHERE username=%s AND password=%s",
@@ -457,7 +571,9 @@ def main(page: ft.Page):
             current_user = user
             build_main_ui()
         else:
-            show_alert(page, "错误", ft.Text("用户名或密码错误"))
+            page.snack_bar = ft.SnackBar(ft.Text("用户名或密码错误"))
+            page.snack_bar.open = True
+            page.update()
 
     username_input = ft.TextField(label="用户名", width=300, autofocus=True)
     password_input = ft.TextField(label="密码", password=True, can_reveal_password=True, width=300)
@@ -469,7 +585,7 @@ def main(page: ft.Page):
             ft.Row([ft.Container(expand=True), settings_btn], alignment=ft.MainAxisAlignment.END),
             ft.Container(height=20),
             ft.Text("玖诚电器ERP", size=32, weight=ft.FontWeight.BOLD),
-            ft.Image(src="login_bg.png", width=100, height=100),
+            ft.Image(src=get_asset_path("login_bg.png"), width=100, height=100),
             username_input,
             password_input,
             login_btn,
@@ -575,9 +691,11 @@ def main(page: ft.Page):
             ("🚚", "待出库订单", str(pending_trans), ft.Colors.ORANGE),
             ("🔧", "待安装订单", str(pending_install), ft.Colors.RED),
         ]
+
         padding = 20
         spacing = 15
         card_width = (page.window_width - padding * 2 - spacing) // 2 if page.window_width else 180
+
         cards_row = ft.Row(
             wrap=True,
             spacing=spacing,
@@ -585,6 +703,7 @@ def main(page: ft.Page):
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             alignment=ft.MainAxisAlignment.CENTER,
         )
+
         for icon, label, value, color in cards_data:
             card = ft.Card(
                 content=ft.Container(
@@ -605,12 +724,14 @@ def main(page: ft.Page):
                 elevation=3,
             )
             cards_row.controls.append(card)
+
         refresh_btn = ft.Button(
             "刷新数据",
             icon=ft.Icons.REFRESH,
             on_click=lambda e: show_home(),
             width=200,
         )
+
         main_content.controls.append(
             ft.Column(
                 [
@@ -625,11 +746,12 @@ def main(page: ft.Page):
         )
         page.update()
 
-    # ---------------------------- 销售订单 ----------------------------
+    # ---------------------------- 销售订单（完整版） ----------------------------
     def show_sale():
         main_content.controls.clear()
         order_no = gen_order_no()
         current_county = ""
+
         county_list = []
         conn = get_db_conn()
         if conn:
@@ -649,6 +771,7 @@ def main(page: ft.Page):
             ]
         current_county = county_list[2] if len(county_list) > 2 else county_list[0] if county_list else ""
 
+        # 客户名称自动补全
         cust_input = ft.TextField(label="客户名称", hint_text="输入2字以上查询", width=205)
         cust_suggestions = ft.Column(spacing=0, visible=False)
 
@@ -705,6 +828,7 @@ def main(page: ft.Page):
             cust_suggestions.update()
             page.update()
 
+        # 产品型号自动补全
         model_input_width = 280
         scan_btn = ft.IconButton(
             ft.Icons.CAMERA_ALT,
@@ -775,7 +899,8 @@ def main(page: ft.Page):
         card_holder = ft.TextField(label="工会卡持卡人", width=205)
         card_no = ft.TextField(label="工会卡号", width=205)
 
-        selected_county_text = ft.Text(county_list[2] if county_list else "请选择")
+        default_county = county_list[2] if len(county_list) > 2 else (county_list[0] if county_list else "")
+        selected_county_text = ft.Text(default_county)
         county_selector = ft.Stack(
             [
                 ft.Container(
@@ -859,7 +984,8 @@ def main(page: ft.Page):
         send_date = ft.TextField(label="拟送货日期", hint_text="YYYY-MM-DD", value=date.today().isoformat(), width=205)
         order_remark = ft.TextField(label="订单备注", width=205)
 
-        out_order_no = ft.TextField(label="外部订单号", value="000000",width=100)
+        # 商品相关
+        out_order_no = ft.TextField(label="外部订单号", value="000000", width=100)
         qty = ft.TextField(label="数量", value="1", width=100)
         price = ft.TextField(label="单价", width=200)
         old_discount = ft.TextField(label="旧机折扣(元)", value="0", width=200)
@@ -884,7 +1010,14 @@ def main(page: ft.Page):
                 gov_subsidy.value = str(prod.get("gov_subsidy", 0))
                 old_discount.value = str(prod.get("old_discount", 0))
                 page.update()
-                show_alert(page, "提示", ft.Text(f"已加载产品: {prod['model']}"))
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"已加载产品: {prod['model']}"),
+                    behavior=ft.SnackBarBehavior.FLOATING,
+                    margin=ft.Margin(20, 0, 20, 80),
+                    duration=1500,
+                )
+                page.snack_bar.open = True
+                page.update()
             else:
                 def after_add(m):
                     model_input.value = m
@@ -920,19 +1053,42 @@ def main(page: ft.Page):
                 gov = float(gov_subsidy.value or 0)
                 store = float(store_discount.value or 0)
             except:
-                show_alert(page, "错误", ft.Text("数量和金额必须是数字"))
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text("数量和金额必须是数字"),
+                    behavior=ft.SnackBarBehavior.FLOATING,
+                    margin=ft.Margin(20, 0, 20, 80),
+                    duration=1500,
+                )
+                page.snack_bar.open = True
+                page.update()
                 return
             if not m or qt <= 0 or unit_price <= 0:
-                show_alert(page, "提示", ft.Text("请完整填写商品信息（型号、数量>0、单价>0）"))
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text("请完整填写商品信息（型号、数量>0、单价>0）"),
+                    behavior=ft.SnackBarBehavior.FLOATING,
+                    margin=ft.Margin(20, 0, 20, 80),
+                    duration=1500,
+                )
+                page.snack_bar.open = True
+                page.update()
                 return
             prod = get_product_by_model(m)
             if not prod:
-                show_alert(page, "提示", ft.Text(f"型号 {m} 不存在，请先添加产品"))
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"型号 {m} 不存在，请先添加产品"),
+                    behavior=ft.SnackBarBehavior.FLOATING,
+                    margin=ft.Margin(20, 0, 20, 80),
+                    duration=1500,
+                )
+                page.snack_bar.open = True
+                page.update()
+
                 def after_add(new_model):
                     model_input.value = new_model
                     page.update()
                 add_product_from_scan(page, "", after_add)
                 return
+
             after_old = unit_price - old
             after_union = after_old * (1 - union / 100)
             after_store = after_union - store
@@ -946,6 +1102,7 @@ def main(page: ft.Page):
             total = final_unit * qt
             total = round(total, 2)
             t_price = round(after_store, 2)
+
             items.append({
                 "model": m,
                 "out_order_no": out_order_no.value.strip(),
@@ -980,38 +1137,41 @@ def main(page: ft.Page):
 
         add_btn.on_click = add_item
 
+        # ===================== 保存订单 =====================
         def save_order(e):
+            print("=== 保存订单按钮被点击 ===")
             if not cust_input.value:
-                show_alert(page, "提示", ft.Text("客户名称不能为空"))
+                show_alert("提示", "客户名称不能为空")
                 return
             if not items:
-                show_alert(page, "提示", ft.Text("请至少添加一个商品"))
+                show_alert("提示", "请至少添加一个商品")
                 return
             county = current_county
             street = street_dropdown.value
             community = community_input.value
-            receiver_phone = f"{cust_input.value} {phone.value}"
+            receiver_phone = f"{cust_input.value} {phone.value}"   # 修复拼写错误
             if not county:
-                show_alert(page, "提示", ft.Text("请选择所在县"))
+                show_alert("提示", "请选择所在县")
                 return
             full_addr = f"{county}{street or ''}{community or ''}{detail_addr.value or ''}"
             try:
                 send_dt = datetime.strptime(send_date.value, "%Y-%m-%d").date()
             except:
-                show_alert(page, "错误", ft.Text("送货日期格式错误，应为YYYY-MM-DD"))
+                show_alert("错误", "送货日期格式错误，应为YYYY-MM-DD")
                 return
             conn = get_db_conn()
             if not conn:
-                show_alert(page, "错误", ft.Text("数据库连接失败"))
+                show_alert("错误", "数据库连接失败")
                 return
             cur = conn.cursor()
             try:
                 cur.execute("""INSERT INTO sale_main 
-                            (order_no, order_date, send_date, cust_name, phone,receiver_phone, card_holder, card_no, county, street, community, detail_addr, full_addr, remark, order_type, sales_name)
+                            (order_no, order_date, send_date, cust_name, phone, receiver_phone, card_holder, card_no, county, street, community, detail_addr, full_addr, remark, order_type, sales_name)
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                             (order_no, date.today(), send_dt, cust_input.value, phone.value, receiver_phone,
                              card_holder.value, card_no.value, county, street, community, detail_addr.value, full_addr,
                              order_remark.value, "标准销售", current_user["real_name"]))
+
                 for it in items:
                     cur.execute("""INSERT INTO sale_items 
                                 (order_no, out_order_no, model, qty, price, old_discount, union_subsidy, gov_subsidy, store_discount,
@@ -1042,6 +1202,7 @@ def main(page: ft.Page):
                                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                                     (date.today(), order_no, cust_input.value, phone.value,
                                      it["factory"], it["model"], it["spec"], it["qty"], "待安装"))
+
                 cur.execute("SELECT total_amount FROM base_customer WHERE name=%s AND phone=%s",
                             (cust_input.value, phone.value))
                 cust = cur.fetchone()
@@ -1059,14 +1220,16 @@ def main(page: ft.Page):
                                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                                 (cust_id, cust_input.value, phone.value, card_holder.value, card_no.value,
                                  county, street, community, detail_addr.value, full_addr, total_order, "三级"))
+
                 conn.commit()
+
                 def on_success(e):
+                    nonlocal current_county    # 修复：移至函数最前
                     cust_input.value = ""
                     phone.value = ""
                     card_holder.value = ""
                     card_no.value = ""
                     if county_list:
-                        nonlocal current_county
                         current_county = county_list[0] if county_list else ""
                         selected_county_text.value = current_county
                     street_dropdown.options.clear()
@@ -1078,11 +1241,13 @@ def main(page: ft.Page):
                     items.clear()
                     refresh_items()
                     page.update()
-                show_alert(page, "成功", ft.Text(f"订单 {order_no} 保存成功"), on_ok=on_success)
+
+                show_alert("成功", f"订单 {order_no} 保存成功", on_success)
+
             except Exception as ex:
                 conn.rollback()
                 print(f"保存异常: {ex}")
-                show_alert(page, "错误", ft.Text(f"保存失败: {ex}"))
+                show_alert("错误", f"保存失败: {ex}")
             finally:
                 conn.close()
 
@@ -1137,16 +1302,18 @@ def main(page: ft.Page):
             )
         )
         page.update()
+
         if county_list:
             current_county = county_list[2] if len(county_list) > 2 else county_list[0] if county_list else ""
             selected_county_text.value = current_county
             load_streets()
 
-    #  --------------------------- 订单查询  --------------------------------------
+    # ---------------------------- 订单查询 ----------------------------
     from datetime import datetime, timedelta
 
     def show_order_query():
         main_content.controls.clear()
+
         total_spacing = 10
         field_width = (page.window_width - 40 - total_spacing) // 2 if page.window_width else 150
         btn_width = field_width
@@ -1268,6 +1435,7 @@ def main(page: ft.Page):
                 sql += " AND DATE(m.order_date) = %s"
                 params.append(date_val)
             sql += " GROUP BY m.order_no, m.order_date, m.cust_name, m.phone, m.full_addr ORDER BY m.order_date DESC"
+
             try:
                 cur.execute(sql, params)
                 rows = cur.fetchall()
@@ -1277,10 +1445,12 @@ def main(page: ft.Page):
                 result_list.controls.append(ft.Text(f"查询失败: {ex}"))
                 page.update()
                 return
+
             if not rows:
                 result_list.controls.append(ft.Text("未找到订单，请调整查询条件", size=16))
                 page.update()
                 return
+
             for row in rows:
                 order_no, order_date, cust_name, phone, full_addr, models, total = row
                 total = float(total) if total else 0.0
@@ -1305,6 +1475,7 @@ def main(page: ft.Page):
             page.update()
 
         def reset_search():
+            nonlocal selected_date_str
             order_no_input.value = ""
             out_order_no_input.value = ""
             cust_name_input.value = ""
@@ -1313,7 +1484,6 @@ def main(page: ft.Page):
             brand_input.value = ""
             category_input.value = ""
             model_input.value = ""
-            nonlocal selected_date_str
             selected_date_str = None
             date_display.value = "选择日期"
             date_display.color = ft.Colors.GREY_700
@@ -1419,11 +1589,18 @@ def main(page: ft.Page):
                                 conn.commit()
                                 conn.close()
                                 load_items()
-                                show_alert(page, "成功", ft.Text(f"凭证识别成功，完整外部单号: {data}"))
+                                page.snack_bar = ft.SnackBar(ft.Text(f"凭证识别成功，完整外部单号: {data}"),
+                                                             duration=3000)
+                                page.snack_bar.open = True
+                                page.update()
                             else:
-                                show_alert(page, "提示", ft.Text("未识别到二维码"))
+                                page.snack_bar = ft.SnackBar(ft.Text("未识别到二维码"), duration=2000)
+                                page.snack_bar.open = True
+                                page.update()
                         except Exception as ex:
-                            show_alert(page, "错误", ft.Text(f"识别失败: {ex}"))
+                            page.snack_bar = ft.SnackBar(ft.Text(f"识别失败: {ex}"), duration=2000)
+                            page.snack_bar.open = True
+                            page.update()
 
                 file_picker = ft.FilePicker()
                 file_picker.on_result = on_result
@@ -1467,6 +1644,7 @@ def main(page: ft.Page):
     def show_inbound():
         nonlocal current_user
         main_content.controls.clear()
+
         input_height = 50
         input_width = page.window_width - 80 if page.window_width else 300
 
@@ -1581,40 +1759,49 @@ def main(page: ft.Page):
         in_date = ft.TextField(label="入库日期", value=date.today().isoformat(), width=input_width, height=input_height)
 
         def save_inbound(e):
+            print("=== 确认入库按钮被点击 ===")
+
             model_suggestions.controls.clear()
             model_suggestions.visible = False
             model_suggestions.update()
             page.update()
+
             if not isinstance(current_user, dict):
-                show_alert(page, "错误", ft.Text("用户信息异常，请重新登录"))
+                show_alert("错误", "用户信息异常，请重新登录")
                 return
+
             m = model_input.value.strip()
             if not m:
-                show_alert(page, "提示", ft.Text("请输入商品型号"))
+                show_alert("提示", "请输入商品型号")
                 return
+
             try:
                 qt = int(qty.value) if qty.value else 0
                 if qt <= 0:
                     raise ValueError
             except ValueError:
-                show_alert(page, "错误", ft.Text("请输入有效的正整数"))
+                show_alert("错误", "请输入有效的正整数")
                 return
+
             try:
                 price = float(in_price.value) if in_price.value else 0.0
                 if price < 0:
                     raise ValueError
             except ValueError:
-                show_alert(page, "错误", ft.Text("请输入有效的数字（入库价格）"))
+                show_alert("错误", "请输入有效的数字（入库价格）")
                 return
+
             conn = get_db_conn()
             if not conn:
-                show_alert(page, "错误", ft.Text("数据库连接失败，请检查配置"))
+                show_alert("错误", "数据库连接失败，请检查配置")
                 return
+
             prod = get_product_by_model(m)
             if not prod:
                 conn.close()
-                show_alert(page, "提示", ft.Text(f"型号 {m} 不存在，请先添加产品"))
+                show_alert("提示", f"型号 {m} 不存在，请先添加产品")
                 return
+
             cur = conn.cursor()
             try:
                 operator = current_user.get("real_name", "未知用户")
@@ -1632,6 +1819,7 @@ def main(page: ft.Page):
                             (prod["factory"], m, prod["spec"], qt, qt, qt, qt))
                 conn.commit()
                 print(f"入库成功：{m} × {qt}，单价：{price}")
+
                 def on_success(e):
                     model_input.value = ""
                     qty.value = ""
@@ -1642,11 +1830,13 @@ def main(page: ft.Page):
                     model_suggestions.visible = False
                     model_suggestions.update()
                     page.update()
-                show_alert(page, "成功", ft.Text(f"入库 {qt} 件成功"), on_ok=on_success)
+
+                show_alert("成功", f"入库 {qt} 件成功", on_success)
+
             except Exception as ex:
                 conn.rollback()
                 print("入库异常:", ex)
-                show_alert(page, "错误", ft.Text(f"入库失败: {ex}"))
+                show_alert("错误", f"入库失败: {ex}")
             finally:
                 conn.close()
 
@@ -1707,11 +1897,17 @@ def main(page: ft.Page):
         trans_list = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO)
 
         def get_home_photo_biz_info(order_no, out_order_no):
-            if not out_order_no or int(out_order_no) <= 20:
-                biz_no = f"{order_no}_{int(out_order_no)}"
+            """返回 (biz_no, file_prefix) 根据原代码规则"""
+            try:
+                out_int = int(out_order_no) if out_order_no else 0
+            except (ValueError, TypeError):
+                out_int = 0
+
+            if out_int <= 20:
+                biz_no = f"{order_no}_{out_int}"
                 prefix = "ORD"
             else:
-                biz_no = out_order_no
+                biz_no = str(out_order_no)
                 prefix = "HM"
             return biz_no, prefix
 
@@ -1719,17 +1915,20 @@ def main(page: ft.Page):
             trans_list.controls.clear()
             conn = get_db_conn()
             if not conn:
-                show_alert(page, "错误", ft.Text("数据库连接失败"))
+                show_alert("错误", "数据库连接失败")
                 return
+
             status = status_dropdown.value
             s_date = start_date.value.strip()
             e_date = end_date.value.strip()
             order_no = order_no_input.value.strip()
             cust_name = cust_name_input.value.strip()
+
             if status in ["已送货入户", "已自提"]:
                 date_field = "trans_date"
             else:
                 date_field = "order_date"
+
             sql = f"""
                 SELECT id, order_date, order_no, out_order_no, cust_name, phone, full_addr,
                        factory, category, model, t_qty, trans_remark,
@@ -1752,15 +1951,18 @@ def main(page: ft.Page):
             if cust_name:
                 sql += " AND cust_name LIKE %s"
                 params.append(f"%{cust_name}%")
+
             sql += f" ORDER BY {date_field} DESC"
             cur = conn.cursor()
             cur.execute(sql, params)
             rows = cur.fetchall()
             conn.close()
+
             if not rows:
                 trans_list.controls.append(ft.Text("暂无符合条件的运输任务", size=16))
                 page.update()
                 return
+
             for row in rows:
                 trans_id, order_date, order_no, out_order_no, cust_name, phone, full_addr, factory, category, model, t_qty, trans_remark, status_val, send_date_val, trans_date_val, delivery01_name, delivery02_name, sn_code, sn_photo, home_photo = row
                 tag = "normal"
@@ -1779,6 +1981,7 @@ def main(page: ft.Page):
                         tag = "overtrans"
                 except:
                     pass
+
                 border_side = None
                 if tag == "overdue":
                     border_side = ft.Border(left=ft.BorderSide(4, ft.Colors.RED))
@@ -1786,6 +1989,7 @@ def main(page: ft.Page):
                     border_side = ft.Border(left=ft.BorderSide(4, ft.Colors.ORANGE))
                 elif tag == "overtrans":
                     border_side = ft.Border(left=ft.BorderSide(4, ft.Colors.GREEN))
+
                 card = ft.Card(
                     content=ft.Container(
                         content=ft.Column(
@@ -1822,6 +2026,7 @@ def main(page: ft.Page):
 
         def open_operation_dialog(row):
             trans_id, order_date, order_no, out_order_no, cust_name, phone, full_addr, factory, category, model, t_qty, trans_remark, status_val, send_date_val, trans_date_val, delivery01_name, delivery02_name, sn_code, sn_photo, home_photo = row
+
             current_order = {
                 "trans_id": trans_id,
                 "order_no": order_no,
@@ -1831,12 +2036,15 @@ def main(page: ft.Page):
                 "sn_photo": sn_photo,
                 "home_photo": home_photo,
             }
+
             home_biz_no, home_prefix = get_home_photo_biz_info(order_no, out_order_no)
+
             sn_entry = ft.TextField(label="SN码", value=current_order["sn_code"], width=300)
             trans_date_input = ft.TextField(label="实际送货日期", value=date.today().isoformat(), width=250)
             delivery01 = ft.TextField(label="送  货  人", value=delivery01_name or "麻跃进", width=140)
             delivery02 = ft.TextField(label="共同送货人", value=delivery02_name or "徐连配", width=140)
             need_delivery_cb = ft.Checkbox(label="需要送货", value=True)
+
             status_label = ft.Text(f"当前状态: {status_val}", weight=ft.FontWeight.BOLD)
             sn_photo_status = ft.Text("SN照片: 已上传" if sn_photo else "SN照片: 未上传",
                                       color=ft.Colors.GREEN if sn_photo else ft.Colors.GREY)
@@ -1845,20 +2053,21 @@ def main(page: ft.Page):
 
             def do_confirm_out(e):
                 if current_order["status"] not in ["待出库", "待派单"]:
-                    show_alert(page, "提示", ft.Text(f"当前状态 {current_order['status']}，不能出库"))
+                    show_alert("提示", f"当前状态 {current_order['status']}，不能出库")
                     return
                 sn_code_input = sn_entry.value.strip()
                 if not sn_code_input and not current_order["sn_photo"]:
-                    show_alert(page, "提示", ft.Text("未输入SN码且无SN照片，是否继续？"))
-                    return
+                    if not show_alert("提示", "未输入SN码且无SN照片，是否继续？"):
+                        return
                 if not current_order["sn_photo"]:
-                    show_alert(page, "提示", ft.Text("未上传SN照片，是否继续？"))
-                    return
+                    if not show_alert("提示", "未上传SN照片，是否继续？"):
+                        return
                 trans_date = trans_date_input.value.strip()
                 delivery01_name_val = delivery01.value.strip()
                 delivery02_name_val = delivery02.value.strip()
                 need_delivery = need_delivery_cb.value
                 new_status = "已出库" if need_delivery else "待自提"
+
                 conn = get_db_conn()
                 cur = conn.cursor()
                 try:
@@ -1871,22 +2080,22 @@ def main(page: ft.Page):
                          current_order["out_order_no"])
                     )
                     conn.commit()
-                    show_alert(page, "成功", ft.Text(f"订单 {current_order['order_no']} → {new_status}"))
+                    show_alert("成功", f"订单 {current_order['order_no']} → {new_status}")
                     dlg.open = False
                     load_trans()
                 except Exception as ex:
                     conn.rollback()
-                    show_alert(page, "错误", ft.Text(str(ex)))
+                    show_alert("错误", str(ex))
                 finally:
                     conn.close()
 
             def do_confirm_delivered(e):
                 if current_order["status"] not in ["已出库", "待自提"]:
-                    show_alert(page, "提示", ft.Text(f"当前状态 {current_order['status']}，不能确认送达"))
+                    show_alert("提示", f"当前状态 {current_order['status']}，不能确认送达")
                     return
                 if not current_order["home_photo"]:
-                    show_alert(page, "提示", ft.Text("未上传送货照片，是否继续？"))
-                    return
+                    if not show_alert("提示", "未上传送货照片，是否继续？"):
+                        return
                 new_status = "已送货入户" if current_order["status"] == "已出库" else "已自提"
                 conn = get_db_conn()
                 cur = conn.cursor()
@@ -1896,19 +2105,19 @@ def main(page: ft.Page):
                         (new_status, date.today().isoformat(), current_order["out_order_no"])
                     )
                     conn.commit()
-                    show_alert(page, "成功", ft.Text(f"订单 {current_order['order_no']} → {new_status}"))
+                    show_alert("成功", f"订单 {current_order['order_no']} → {new_status}")
                     dlg.open = False
                     load_trans()
                 except Exception as ex:
                     conn.rollback()
-                    show_alert(page, "错误", ft.Text(str(ex)))
+                    show_alert("错误", str(ex))
                 finally:
                     conn.close()
 
             def do_view_sn_photo(e):
                 file_data = get_file_from_db("sn_photos", current_order["out_order_no"])
                 if not file_data:
-                    show_alert(page, "提示", ft.Text("该订单暂无 SN 照片"))
+                    show_alert("提示", "该订单暂无 SN 照片")
                     return
                 from PIL import Image
                 from io import BytesIO
@@ -1923,7 +2132,7 @@ def main(page: ft.Page):
                 biz_no, prefix = get_home_photo_biz_info(order_no, out_order_no)
                 file_data = get_file_from_db("home_photos", biz_no)
                 if not file_data:
-                    show_alert(page, "提示", ft.Text("该订单暂无送货照片"))
+                    show_alert("提示", "该订单暂无送货照片")
                     return
                 from PIL import Image
                 from io import BytesIO
@@ -1966,13 +2175,14 @@ def main(page: ft.Page):
                             conn.commit()
                             conn.close()
                             current_order["sn_photo"] = sn_photo_path
-                            show_alert(page, "成功", ft.Text(f"SN照片已上传，识别到条码: {sn_code if sn_code else '未识别'}"))
+                            show_alert("成功", f"SN照片已上传，识别到条码: {sn_code if sn_code else '未识别'}")
                             dlg.open = False
                             load_trans()
                         except Exception as ex:
-                            show_alert(page, "错误", ft.Text(f"上传失败: {str(ex)}"))
+                            show_alert("错误", f"上传失败: {str(ex)}")
                     else:
-                        show_alert(page, "提示", ft.Text("未选择图片"))
+                        show_alert("提示", "未选择图片")
+
                 file_picker = ft.FilePicker()
                 file_picker.on_result = on_result
                 page.overlay.append(file_picker)
@@ -1987,7 +2197,7 @@ def main(page: ft.Page):
                 result = cur.fetchone()
                 conn.close()
                 if not result:
-                    show_alert(page, "错误", ft.Text("未找到订单信息"))
+                    show_alert("错误", "未找到订单信息")
                     return
                 cust_name, full_addr = result
 
@@ -2019,6 +2229,7 @@ def main(page: ft.Page):
                             buf = BytesIO()
                             img.save(buf, format="JPEG")
                             file_data = buf.getvalue()
+
                             conn = get_db_conn()
                             cur = conn.cursor()
                             cur.execute("DELETE FROM erp_files WHERE file_type='home_photos' AND biz_no=%s", (biz_no,))
@@ -2034,13 +2245,14 @@ def main(page: ft.Page):
                             conn.commit()
                             conn.close()
                             current_order["home_photo"] = home_photo_path
-                            show_alert(page, "成功", ft.Text("送货入户照片已上传（已加水印）"))
+                            show_alert("成功", "送货入户照片已上传（已加水印）")
                             dlg.open = False
                             load_trans()
                         except Exception as ex:
-                            show_alert(page, "错误", ft.Text(f"上传失败: {str(ex)}"))
+                            show_alert("错误", f"上传失败: {str(ex)}")
                     else:
-                        show_alert(page, "提示", ft.Text("未选择图片"))
+                        show_alert("提示", "未选择图片")
+
                 file_picker = ft.FilePicker()
                 file_picker.on_result = on_result
                 page.overlay.append(file_picker)
@@ -2163,30 +2375,35 @@ def main(page: ft.Page):
 
             def save_status_change(e, dlg):
                 new_status = status_dropdown.value
+
                 updates = ["status=%s"]
                 params = [new_status]
+
                 if send_checkbox.value and send_textfield.value:
                     updates.append("send_date=%s")
                     params.append(send_textfield.value)
+
                 if trans_checkbox.value and trans_textfield.value:
                     updates.append("trans_date=%s")
                     params.append(trans_textfield.value)
+
                 params.extend([order_no, out_order_no])
+
                 conn = get_db_conn()
                 if not conn:
-                    show_alert(page, "错误", ft.Text("数据库连接失败"))
+                    show_alert("错误", "数据库连接失败")
                     return
                 cur = conn.cursor()
                 try:
                     sql = f"UPDATE transport SET {', '.join(updates)} WHERE order_no=%s AND out_order_no=%s"
                     cur.execute(sql, params)
                     conn.commit()
-                    show_alert(page, "成功", ft.Text("状态更新完成"))
+                    show_alert("成功", "状态更新完成")
                     dlg.open = False
                     load_trans()
                 except Exception as ex:
                     conn.rollback()
-                    show_alert(page, "错误", ft.Text(f"更新失败：{str(ex)}"))
+                    show_alert("错误", f"更新失败：{str(ex)}")
                 finally:
                     conn.close()
 
@@ -2207,6 +2424,7 @@ def main(page: ft.Page):
                     ft.TextButton("取消", on_click=lambda e: setattr(dlg, 'open', False)),
                 ]
             )
+
             page.overlay.append(dlg)
             dlg.open = True
             page.update()
@@ -2286,6 +2504,7 @@ def main(page: ft.Page):
                 if e.control.value:
                     field.value = e.control.value.strftime("%Y-%m-%d")
                     page.update()
+
             picker = ft.DatePicker(on_change=on_date_selected)
             page.overlay.append(picker)
             picker.open = True
@@ -2300,12 +2519,15 @@ def main(page: ft.Page):
         install_list = ft.Column(spacing=5, scroll=ft.ScrollMode.AUTO)
 
         def load_install():
+            print("🔄 load_install() 被调用")
             install_list.controls.clear()
             conn = get_db_conn()
             if not conn:
+                print("❌ 数据库连接失败")
                 install_list.controls.append(ft.Text("数据库连接失败", size=14, color="#ef4444"))
                 page.update()
                 return
+
             sql = """
                 SELECT 
                     MAX(id) AS id,
@@ -2330,10 +2552,12 @@ def main(page: ft.Page):
                 WHERE 1=1
             """
             params = []
+
             status = status_dropdown.value
             if status and status != "全部":
                 sql += " AND status = %s"
                 params.append(status)
+
             start = start_date_field.value
             end = end_date_field.value
             if status in ["已安装", "已报装"]:
@@ -2350,23 +2574,33 @@ def main(page: ft.Page):
                 if end:
                     sql += " AND order_date <= %s"
                     params.append(end)
+
             order_no = order_input.value.strip()
             if order_no:
                 sql += " AND order_no LIKE %s"
                 params.append(f"%{order_no}%")
+
             cust_name = cust_input.value.strip()
             if cust_name:
                 sql += " AND cust_name LIKE %s"
                 params.append(f"%{cust_name}%")
+
             sql += " GROUP BY order_no, model ORDER BY MAX(install_date) DESC, MAX(install_time) DESC, order_no DESC"
+
+            print(f"🔍 SQL: {sql}")
+            print(f"📌 params: {params}")
+
             cur = conn.cursor()
             cur.execute(sql, params)
             rows = cur.fetchall()
             conn.close()
+            print(f"📋 查询到 {len(rows)} 条记录")
+
             if not rows:
                 install_list.controls.append(ft.Text("没有符合条件的安装记录", size=14, color="#94a3b8"))
                 page.update()
                 return
+
             for row in rows:
                 install_id = row[0]
                 order_no = row[2]
@@ -2375,12 +2609,14 @@ def main(page: ft.Page):
                 qty = row[7]
                 status = row[8]
                 install_time = str(row[17])[:5] if row[17] else "--:--"
+
                 if status == "待安装":
                     color = "#f59e0b"
                 elif status == "已报装":
                     color = "#3b82f6"
                 else:
                     color = "#10b981"
+
                 card = ft.Card(
                     content=ft.Container(
                         content=ft.Column(
@@ -2417,12 +2653,17 @@ def main(page: ft.Page):
                     )
                 )
                 install_list.controls.append(card)
+
             page.update()
 
         def report_install(install_id, status, order_no, model, cust_name, qty):
+            print(f"📞 报装被调用: install_id={install_id}, status={status}")
             if status != "待安装":
-                show_alert(page, "提示", ft.Text("只能报装待安装订单"))
+                page.snack_bar = ft.SnackBar(ft.Text("只能报装待安装订单"), bgcolor="#ef4444")
+                page.snack_bar.open = True
+                page.update()
                 return
+
             team_tel_dict = {
                 "海信售后": "400-6111-111",
                 "格力售后": "400-836-5315",
@@ -2430,6 +2671,7 @@ def main(page: ft.Page):
                 "美的售后": "400-889-9315",
                 "小天鹅售后": "400-822-8228"
             }
+
             team_dropdown = ft.Dropdown(
                 label="安装单位",
                 width=200,
@@ -2447,44 +2689,64 @@ def main(page: ft.Page):
                 else:
                     tel_field.value = ""
                 page.update()
+
             team_dropdown.on_change = on_team_change
 
             def do_report(e):
+                print("🔄 报装确认按钮被点击")
                 team = team_dropdown.value.strip()
                 if team and not tel_field.value.strip():
                     if team in team_tel_dict:
                         tel_field.value = team_tel_dict[team]
                         page.update()
+
                 tel = tel_field.value.strip()
                 fee = float(fee_field.value or 0) if fee_field.value else 0
                 remark = remark_field.value.strip()
+
                 if not team or not tel:
-                    show_alert(page, "提示", ft.Text("请选择安装单位并填写联系电话"))
+                    page.snack_bar = ft.SnackBar(ft.Text("请选择安装单位并填写联系电话"), bgcolor="#ef4444")
+                    page.snack_bar.open = True
+                    page.update()
                     return
+
                 conn = get_db_conn()
                 if not conn:
-                    show_alert(page, "错误", ft.Text("数据库连接失败"))
+                    print("❌ 数据库连接失败")
+                    page.snack_bar = ft.SnackBar(ft.Text("数据库连接失败"), bgcolor="#ef4444")
+                    page.snack_bar.open = True
+                    page.update()
                     return
+
                 cur = conn.cursor()
                 try:
                     sql = "UPDATE install SET status='已报装', install_team=%s, install_tel=%s, install_fee=%s, fee_remark=%s WHERE id=%s"
                     params = (team, tel, fee, remark, install_id)
+                    print(f"🛠 SQL: {sql}")
+                    print(f"📌 params: {params}")
                     cur.execute(sql, params)
                     rows_affected = cur.rowcount
                     conn.commit()
+                    print(f"✅ 影响行数: {rows_affected}")
                     if rows_affected == 0:
-                        show_alert(page, "提示", ft.Text(f"未找到 ID={install_id} 的记录，更新失败"))
+                        page.snack_bar = ft.SnackBar(ft.Text(f"⚠️ 未找到 ID={install_id} 的记录，更新失败"),
+                                                     bgcolor="#ef4444")
+                        page.snack_bar.open = True
                         conn.close()
                         page.update()
                         return
-                    show_alert(page, "成功", ft.Text("报装成功，状态已更新为'已报装'"))
+                    page.snack_bar = ft.SnackBar(ft.Text("✅ 报装成功，状态已更新为'已报装'"), bgcolor="#10b981")
+                    page.snack_bar.open = True
                 except Exception as ex:
                     conn.rollback()
-                    show_alert(page, "错误", ft.Text(f"数据库错误：{ex}"))
+                    print(f"❌ 数据库异常: {ex}")
+                    page.snack_bar = ft.SnackBar(ft.Text(f"❌ 数据库错误：{ex}"), bgcolor="#ef4444")
+                    page.snack_bar.open = True
                     conn.close()
                     page.update()
                     return
                 conn.close()
+
                 conn2 = get_db_conn()
                 if conn2:
                     cur2 = conn2.cursor()
@@ -2496,6 +2758,7 @@ def main(page: ft.Page):
                 else:
                     full_addr = "无地址"
                     receiver_phone = "无电话"
+
                 clipboard_text = (
                     f"安装联系人：{receiver_phone}\n"
                     f"客户：{cust_name}\n"
@@ -2503,14 +2766,25 @@ def main(page: ft.Page):
                     f"地址：{full_addr}\n"
                     f"费用备注：{remark}"
                 )
+
                 try:
                     page.set_clipboard(clipboard_text)
-                    show_alert(page, "成功", ft.Text("报装信息已复制到剪贴板"))
+                    page.snack_bar = ft.SnackBar(
+                        ft.Text("✅ 报装信息已复制到剪贴板", size=14),
+                        bgcolor="#10b981",
+                    )
+                    page.snack_bar.open = True
                 except AttributeError:
-                    show_alert(page, "提示", ft.Text("剪贴板复制失败，请手动复制"))
+                    page.snack_bar = ft.SnackBar(
+                        ft.Text("⚠️ 剪贴板复制失败，请手动复制", size=14),
+                        bgcolor="#f59e0b",
+                    )
+                    page.snack_bar.open = True
+
                 dialog.open = False
                 page.update()
                 load_install()
+                print("✅ 报装流程结束")
 
             dialog = ft.AlertDialog(
                 title=ft.Text("报装信息"),
@@ -2529,49 +2803,72 @@ def main(page: ft.Page):
             page.update()
 
         def confirm_install(install_id, status):
+            print(f"✅ 确认安装被调用: install_id={install_id}, status={status}")
             if status not in ["待安装", "已报装"]:
-                show_alert(page, "提示", ft.Text("只能确认待安装或已报装的订单"))
+                page.snack_bar = ft.SnackBar(ft.Text("只能确认待安装或已报装的订单"), bgcolor="#ef4444")
+                page.snack_bar.open = True
+                page.update()
                 return
+
             installer_field = ft.TextField(label="安装人", width=200, value="徐连配")
             co_installer_field = ft.TextField(label="共同安装人", width=200, value="麻跃进")
             fee_field = ft.TextField(label="安装费用", width=200, value="0")
             remark_field = ft.TextField(label="费用备注", width=200)
 
             def do_confirm(e):
+                print("🔄 确认安装按钮被点击")
                 installer = installer_field.value.strip()
                 co_installer = co_installer_field.value.strip()
                 fee = float(fee_field.value or 0) if fee_field.value else 0
                 remark = remark_field.value.strip()
+
                 if not installer:
-                    show_alert(page, "提示", ft.Text("请填写安装人"))
+                    page.snack_bar = ft.SnackBar(ft.Text("请填写安装人"), bgcolor="#ef4444")
+                    page.snack_bar.open = True
+                    page.update()
                     return
+
                 conn = get_db_conn()
                 if not conn:
-                    show_alert(page, "错误", ft.Text("数据库连接失败"))
+                    print("❌ 数据库连接失败")
+                    page.snack_bar = ft.SnackBar(ft.Text("数据库连接失败"), bgcolor="#ef4444")
+                    page.snack_bar.open = True
+                    page.update()
                     return
+
                 cur = conn.cursor()
                 try:
                     sql = "UPDATE install SET status='已安装', install_date=%s, installer01=%s, installer02=%s, install_fee=%s, fee_remark=%s WHERE id=%s"
                     params = (datetime.date.today(), installer, co_installer, fee, remark, install_id)
+                    print(f"🛠 SQL: {sql}")
+                    print(f"📌 params: {params}")
                     cur.execute(sql, params)
                     rows_affected = cur.rowcount
                     conn.commit()
+                    print(f"✅ 影响行数: {rows_affected}")
                     if rows_affected == 0:
-                        show_alert(page, "提示", ft.Text(f"未找到 ID={install_id} 的记录，更新失败"))
+                        page.snack_bar = ft.SnackBar(ft.Text(f"⚠️ 未找到 ID={install_id} 的记录，更新失败"),
+                                                     bgcolor="#ef4444")
+                        page.snack_bar.open = True
                         conn.close()
                         page.update()
                         return
-                    show_alert(page, "成功", ft.Text("确认安装成功，状态已更新为'已安装'"))
+                    page.snack_bar = ft.SnackBar(ft.Text("✅ 确认安装成功，状态已更新为'已安装'"), bgcolor="#10b981")
+                    page.snack_bar.open = True
                 except Exception as ex:
                     conn.rollback()
-                    show_alert(page, "错误", ft.Text(f"数据库错误：{ex}"))
+                    print(f"❌ 数据库异常: {ex}")
+                    page.snack_bar = ft.SnackBar(ft.Text(f"❌ 数据库错误：{ex}"), bgcolor="#ef4444")
+                    page.snack_bar.open = True
                     conn.close()
                     page.update()
                     return
                 conn.close()
+
                 dialog.open = False
                 page.update()
                 load_install()
+                print("✅ 确认安装流程结束")
 
             dialog = ft.AlertDialog(
                 title=ft.Text("安装确认"),
@@ -2634,6 +2931,7 @@ def main(page: ft.Page):
                 scroll=ft.ScrollMode.AUTO,
             )
         )
+
         load_install()
 
     # ---------------------------- 库存管理 ----------------------------
@@ -2646,7 +2944,7 @@ def main(page: ft.Page):
         row = cur.fetchone()
         conn.close()
         if not row:
-            show_alert(page, "提示", ft.Text("未找到该型号库存信息"))
+            show_alert("提示", "未找到该型号库存信息")
             return
         factory, spec, qty = row
         qty = qty or 0
@@ -2667,13 +2965,14 @@ def main(page: ft.Page):
                 if e.control.value:
                     field.value = e.control.value.strftime("%Y-%m-%d")
                     page.update()
+
             picker = ft.DatePicker(on_change=on_date_selected)
             page.overlay.append(picker)
             picker.open = True
             page.update()
 
-        start_icon = ft.IconButton(icon="calendar_month", on_click=lambda e: pick_date(start_date_field))
-        end_icon = ft.IconButton(icon="calendar_month", on_click=lambda e: pick_date(end_date_field))
+        start_icon = ft.TextButton("📅", on_click=lambda e: pick_date(start_date_field))
+        end_icon = ft.TextButton("📅", on_click=lambda e: pick_date(end_date_field))
 
         in_table = ft.DataTable(
             columns=[
@@ -2699,17 +2998,20 @@ def main(page: ft.Page):
             rows=[],
             width=550,
         )
+
         stat_label = ft.Text("", size=14, weight=ft.FontWeight.BOLD, color="#d946ef")
 
         def load_detail_data(model, start, end):
             in_table.rows.clear()
             sale_table.rows.clear()
+
             conn = get_db_conn()
             if not conn:
                 return
             cur = conn.cursor()
+
             cur.execute("""
-                SELECT in_date, qty, in_price, qty*in_price, location
+                SELECT in_date, qty, in_price, IFNULL(qty*in_price, 0), location
                 FROM stock_in
                 WHERE model=%s AND in_date BETWEEN %s AND %s
                 ORDER BY in_date DESC
@@ -2729,6 +3031,7 @@ def main(page: ft.Page):
                         ft.DataCell(ft.Text(location or "")),
                     ])
                 )
+
             cur.execute("""
                 SELECT DISTINCT
                     IFNULL(t.status, '未配送'),
@@ -2737,7 +3040,7 @@ def main(page: ft.Page):
                     m.cust_name,
                     si.qty,
                     si.t_price,
-                    si.qty * si.t_price
+                    IFNULL(si.qty * si.t_price, 0)
                 FROM sale_items si
                 LEFT JOIN sale_main m ON si.order_no = m.order_no
                 LEFT JOIN transport t ON si.order_no = t.order_no AND si.model = t.model
@@ -2762,6 +3065,7 @@ def main(page: ft.Page):
                     ])
                 )
             conn.close()
+
             in_avg = round(in_total_amt / in_total_qty, 2) if in_total_qty > 0 else 0
             sale_avg = round(sale_total_amt / sale_total_qty, 2) if sale_total_qty > 0 else 0
             profit = round((sale_avg - in_avg) * sale_total_qty, 2) if sale_total_qty > 0 else 0
@@ -2783,22 +3087,26 @@ def main(page: ft.Page):
             spacing=10,
         )
 
+        in_col = ft.Column(
+            [
+                ft.Text("入库记录", weight=ft.FontWeight.BOLD),
+                ft.Column([in_table], height=280, scroll=ft.ScrollMode.AUTO),
+            ],
+            width=450,
+        )
+        sale_col = ft.Column(
+            [
+                ft.Text("销售记录", weight=ft.FontWeight.BOLD),
+                ft.Column([sale_table], height=280, scroll=ft.ScrollMode.AUTO),
+            ],
+            width=550,
+        )
+
         content = ft.Column(
             [
                 ft.Text(f"型号：{model}  理论库存：{qty}", size=16, weight=ft.FontWeight.BOLD, color="red"),
                 date_row,
-                ft.Row(
-                    [
-                        ft.Column([ft.Text("入库记录", weight=ft.FontWeight.BOLD),
-                                   ft.Container(in_table, height=300, border=ft.border.all(1),
-                                                scroll=ft.ScrollMode.AUTO)]),
-                        ft.Column([ft.Text("销售记录", weight=ft.FontWeight.BOLD),
-                                   ft.Container(sale_table, height=300, border=ft.border.all(1),
-                                                scroll=ft.ScrollMode.AUTO)]),
-                    ],
-                    spacing=20,
-                    scroll=ft.ScrollMode.AUTO,
-                ),
+                ft.Row([in_col, sale_col], spacing=20, scroll=ft.ScrollMode.AUTO),
                 stat_label,
             ],
             spacing=10,
@@ -2818,6 +3126,7 @@ def main(page: ft.Page):
 
     def show_stock():
         main_content.controls.clear()
+
         brand_dropdown = ft.Dropdown(
             label="品牌",
             width=150,
@@ -2841,6 +3150,7 @@ def main(page: ft.Page):
             conn.close()
             brand_dropdown.options = [ft.dropdown.Option("")] + [ft.dropdown.Option(b) for b in brands]
             page.update()
+
         load_brands()
 
         stock_list = ft.Column(spacing=5)
@@ -2850,9 +3160,11 @@ def main(page: ft.Page):
             conn = get_db_conn()
             if not conn:
                 return
+
             brand = brand_dropdown.value.strip() if brand_dropdown.value else ""
             model = model_textfield.value.strip()
             only_gap = gap_checkbox.value
+
             cur = conn.cursor()
             cur.execute("""
                 SELECT model, IFNULL(SUM(t_qty), 0)
@@ -2861,6 +3173,7 @@ def main(page: ft.Page):
                 GROUP BY model
             """)
             wait_out_dict = {row[0]: row[1] for row in cur.fetchall()}
+
             cur.execute("""
                 SELECT model, COUNT(*)
                 FROM booth
@@ -2868,6 +3181,7 @@ def main(page: ft.Page):
                 GROUP BY model
             """)
             booth_dict = {row[0]: row[1] for row in cur.fetchall()}
+
             sql = "SELECT factory, model, spec, qty FROM stock_now WHERE 1=1"
             params = []
             if brand:
@@ -2880,6 +3194,7 @@ def main(page: ft.Page):
             cur.execute(sql, params)
             rows = cur.fetchall()
             conn.close()
+
             has_data = False
             for row in rows:
                 factory, model_name, spec, qty = row
@@ -2887,10 +3202,13 @@ def main(page: ft.Page):
                 wait_out = wait_out_dict.get(model_name, 0)
                 booth_use = booth_dict.get(model_name, 0)
                 s_qty = qty + wait_out - booth_use
+
                 if only_gap and qty >= 0:
                     continue
+
                 has_data = True
                 q_qty_display = abs(int(qty)) if qty < 0 else ""
+
                 if qty < 0:
                     status = "⚠️ 存在缺口"
                     color = "#ff0000"
@@ -2906,8 +3224,10 @@ def main(page: ft.Page):
                 else:
                     status = "✅ 充足"
                     color = "#22c55e"
+
                 if model_name in booth_dict:
                     status += " 有样机"
+
                 card = ft.Card(
                     content=ft.Container(
                         content=ft.Row(
@@ -2929,8 +3249,10 @@ def main(page: ft.Page):
                     )
                 )
                 stock_list.controls.append(card)
+
             if not has_data:
                 stock_list.controls.append(ft.Text("没有符合条件的库存", size=14, color="#94a3b8"))
+
             page.update()
 
         def on_search(e):
@@ -2968,9 +3290,8 @@ def main(page: ft.Page):
                 scroll=ft.ScrollMode.AUTO,
             )
         )
-        load_stock()
 
-    # 重新定义 show_stock_detail 已在上面定义，此处不再重复
+        load_stock()
 
     # ---------------------------- 更多菜单 ----------------------------
     def show_more_menu():
@@ -3076,8 +3397,9 @@ def main(page: ft.Page):
                             (invoice_no, order_no, "客户名", total, date.today(), "已开票", "电子发票"))
                 conn.commit()
                 conn.close()
-                dialog.open = False
-                show_alert(page, "成功", ft.Text(f"发票 {invoice_no} 开具成功"))
+                page.dialog.open = False
+                page.snack_bar = ft.SnackBar(ft.Text(f"发票 {invoice_no} 开具成功"))
+                page.snack_bar.open = True
                 load_invoice()
                 page.update()
             conn = get_db_conn()
@@ -3127,7 +3449,8 @@ def main(page: ft.Page):
             orders = [row[0] for row in cur.fetchall()]
             conn.close()
             if not orders:
-                show_alert(page, "提示", ft.Text("没有可申报的订单"))
+                page.snack_bar = ft.SnackBar(ft.Text("没有可申报的订单"))
+                page.snack_bar.open = True
                 return
             order_dropdown = ft.Dropdown(label="选择订单", options=[ft.dropdown.Option(o) for o in orders], width=300)
             def do_create(e):
@@ -3143,8 +3466,9 @@ def main(page: ft.Page):
                             (claim_no, order_no, cust_name, card_no, total, date.today(), "待申报"))
                 conn.commit()
                 conn.close()
-                dialog.open = False
-                show_alert(page, "成功", ft.Text(f"申报单 {claim_no} 创建成功"))
+                page.dialog.open = False
+                page.snack_bar = ft.SnackBar(ft.Text(f"申报单 {claim_no} 创建成功"))
+                page.snack_bar.open = True
                 load_subsidy()
                 page.update()
             dialog = ft.AlertDialog(
@@ -3283,7 +3607,7 @@ ID: {row[0]}
             ], spacing=12, scroll=ft.ScrollMode.AUTO))
         page.update()
 
-    # ---------------------------- 销售订单查询 ----------------------------
+    # ---------------------------- 销售订单查询（简版） ----------------------------
     def show_sale_orders():
         main_content.controls.clear()
         start_date = ft.TextField(label="起始日期", width=150)
@@ -3307,7 +3631,9 @@ ID: {row[0]}
             rows = cur.fetchall()
             conn.close()
             if not rows:
-                show_alert(page, "提示", ft.Text("未找到明细"))
+                page.snack_bar = ft.SnackBar(ft.Text("未找到明细"))
+                page.snack_bar.open = True
+                page.update()
                 return
             detail_text = f"订单号: {rows[0][0]}\n日期: {rows[0][1]}\n客户: {rows[0][2]}\n电话: {rows[0][3]}\n地址: {rows[0][4]}\n\n商品明细:\n"
             for r in rows:
@@ -3434,8 +3760,9 @@ ID: {row[0]}
                             (new_factory, new_category, new_price, new_is_real, new_feature, new_after, new_web, new_online, new_date, booth_id))
                 conn.commit()
                 conn.close()
-                dialog.open = False
-                show_alert(page, "成功", ft.Text("样机信息已更新"))
+                page.dialog.open = False
+                page.snack_bar = ft.SnackBar(ft.Text("样机信息已更新"))
+                page.snack_bar.open = True
                 load_booth()
                 page.update()
             dialog = ft.AlertDialog(
@@ -3454,7 +3781,8 @@ ID: {row[0]}
             conn.commit()
             conn.close()
             load_booth()
-            show_alert(page, "提示", ft.Text("已下样"))
+            page.snack_bar = ft.SnackBar(ft.Text("已下样"))
+            page.snack_bar.open = True
             page.update()
         def add_booth(e):
             model_input = ft.TextField(label="型号", width=200)
@@ -3483,7 +3811,8 @@ ID: {row[0]}
             def save_new(e):
                 model = model_input.value.strip()
                 if not model:
-                    show_alert(page, "提示", ft.Text("型号不能为空"))
+                    page.snack_bar = ft.SnackBar(ft.Text("型号不能为空"))
+                    page.snack_bar.open = True
                     return
                 factory = factory_input.value.strip()
                 category = category_input.value.strip()
@@ -3501,8 +3830,9 @@ ID: {row[0]}
                             (factory, category, model, price, is_real, feature, after, web, online, on_date))
                 conn.commit()
                 conn.close()
-                dialog.open = False
-                show_alert(page, "成功", ft.Text("样机上样成功"))
+                page.dialog.open = False
+                page.snack_bar = ft.SnackBar(ft.Text("样机上样成功"))
+                page.snack_bar.open = True
                 load_booth()
                 page.update()
             dialog = ft.AlertDialog(
@@ -3527,7 +3857,8 @@ ID: {row[0]}
     # ---------------------------- 用户管理 ----------------------------
     def show_user_manager():
         if current_user and current_user["role"] != "超级管理员":
-            show_alert(page, "提示", ft.Text("无权限"))
+            page.snack_bar = ft.SnackBar(ft.Text("无权限"))
+            page.snack_bar.open = True
             return
         main_content.controls.clear()
         user_list = ft.Column(spacing=5)
