@@ -20,6 +20,7 @@ import sys
 import os
 from pathlib import Path
 import appdirs
+import asyncio
 
 # ---------------------------- 数据库配置 ----------------------------
 DB_HOST = os.getenv("DB_HOST", "240e:338:4a26:f3b1::84")
@@ -29,41 +30,41 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 DB_DATABASE = os.getenv("DB_DATABASE", "jiuchengerp")
 CONFIG_FILE = "server_config.json"
 
-
+PERMISSIONS = ["首页", "销售", "入库", "运输", "安装", "库存", "更多"]
+PERMISSION_ICONS = {
+    "首页": ft.Icons.HOME,
+    "销售": ft.Icons.SHOPPING_CART,
+    "入库": ft.Icons.INVENTORY,
+    "运输": ft.Icons.LOCAL_SHIPPING,
+    "安装": ft.Icons.HANDYMAN,
+    "库存": ft.Icons.DATASET,
+    "更多": ft.Icons.SETTINGS,
+}
 
 def get_asset_path(filename):
-    """返回 assets 目录中文件的完整路径（支持打包后）"""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base_dir, "assets", filename)
 
-
-# 获取配置目录
 def get_config_dir():
-    """返回用户配置目录，并确保目录存在"""
     if getattr(sys, 'frozen', False):
-        # 打包后的可执行文件
-        if os.name == 'nt':  # Windows
+        if os.name == 'nt':
             config_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'jiuchengerp')
-        else:  # Linux/Mac
+        else:
             config_dir = os.path.join(os.path.expanduser('~'), '.config', 'jiuchengerp')
     else:
-        # 开发环境：使用当前目录
         config_dir = os.path.dirname(os.path.abspath(__file__))
     os.makedirs(config_dir, exist_ok=True)
     return config_dir
 
-# 配置文件路径
 CONFIG_DIR = get_config_dir()
 CONFIG_FILE = os.path.join(CONFIG_DIR, 'server_config.json')
 
-# 默认配置（从环境变量或硬编码）
 DEFAULT_HOST = os.getenv("DB_HOST", "240e:338:4a26:f3b1::84")
 DEFAULT_PORT = int(os.getenv("DB_PORT", 13306))
 DEFAULT_USER = os.getenv("DB_USER", "ipv6user")
 DEFAULT_PASSWORD = os.getenv("DB_PASSWORD", "")
 DEFAULT_DATABASE = os.getenv("DB_DATABASE", "jiuchengerp")
 
-# 全局变量（由 load_server_config 填充）
 DB_HOST = DEFAULT_HOST
 DB_PORT = DEFAULT_PORT
 DB_USER = DEFAULT_USER
@@ -71,7 +72,6 @@ DB_PASSWORD = DEFAULT_PASSWORD
 DB_DATABASE = DEFAULT_DATABASE
 
 def load_server_config():
-    """从 JSON 文件加载配置，若文件不存在则使用默认值并创建"""
     global DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_DATABASE
     if os.path.exists(CONFIG_FILE):
         try:
@@ -85,11 +85,9 @@ def load_server_config():
         except Exception as e:
             print(f"读取配置文件失败: {e}，使用默认值")
     else:
-        # 首次运行，创建默认配置文件
         save_server_config(DEFAULT_HOST, DEFAULT_PORT, DEFAULT_USER, DEFAULT_PASSWORD, DEFAULT_DATABASE)
 
 def save_server_config(host, port, user, pwd, db):
-    """保存配置到 JSON 文件，确保目录存在"""
     cfg = {
         "DB_HOST": host,
         "DB_PORT": port,
@@ -97,14 +95,11 @@ def save_server_config(host, port, user, pwd, db):
         "DB_PASSWORD": pwd,
         "DB_DATABASE": db
     }
-    # 确保配置目录存在
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
-# 初始化加载
 load_server_config()
-
 
 def get_db_conn():
     try:
@@ -116,10 +111,8 @@ def get_db_conn():
         print("数据库错误:", e)
         return None
 
-
 def md5_pwd(pwd):
     return hashlib.md5(pwd.encode("utf-8")).hexdigest()
-
 
 def gen_order_no():
     year = date.today().strftime("%Y")
@@ -133,17 +126,14 @@ def gen_order_no():
         return f"{year}{seq:04d}"
     return f"{year}0001"
 
-
 def gen_invoice_no():
     return f"INV{date.today().strftime('%Y%m%d')}{int(datetime.now().timestamp()) % 10000:04d}"
-
 
 def resource_path(relative_path):
     try:
         return os.path.join(sys._MEIPASS, relative_path)
     except:
         return os.path.join(os.path.abspath("."), relative_path)
-
 
 # ---------------------------- 扫描69码及产品查询 ----------------------------
 def scan_barcode_from_image(page, on_success):
@@ -180,7 +170,6 @@ def scan_barcode_from_image(page, on_success):
     page.update()
     file_picker.pick_files(allow_multiple=False, file_type=ft.FilePickerFileType.IMAGE)
 
-
 def get_product_by_model(model):
     conn = get_db_conn()
     if not conn:
@@ -193,7 +182,6 @@ def get_product_by_model(model):
     conn.close()
     return row
 
-
 def query_product_by_code(code):
     conn = get_db_conn()
     if not conn:
@@ -205,7 +193,6 @@ def query_product_by_code(code):
     row = cur.fetchone()
     conn.close()
     return row
-
 
 def add_product_from_scan(page, code, callback):
     def save_product(e):
@@ -269,8 +256,7 @@ def add_product_from_scan(page, code, callback):
     dialog.open = True
     page.update()
 
-
-# ---------------------------- PDF订单生成（含电子公章） ----------------------------
+# ---------------------------- PDF订单生成 ----------------------------
 def generate_pdf_order(order_no, items, cust_name, phone, full_addr, send_date, total):
     try:
         pdf_path = f"订单_{order_no}.pdf"
@@ -326,7 +312,6 @@ def generate_pdf_order(order_no, items, cust_name, phone, full_addr, send_date, 
         print(f"生成PDF失败: {e}")
         return None
 
-
 # ---------------------------- Flet 应用 ----------------------------
 def main(page: ft.Page):
     page.title = "玖诚电器ERP"
@@ -334,6 +319,7 @@ def main(page: ft.Page):
     page.icon = resource_path("login_bg.png")
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 0
+    page.spacing = 0
     page.scroll = ft.ScrollMode.AUTO
     page.window_width = 400
     page.window_height = 700
@@ -374,22 +360,37 @@ def main(page: ft.Page):
         expand=True,
         visible=False,
     )
+    # ================= 相机权限 ==================
+    def request_camera_permission():
+        if page.platform == "android":
+            # 检查是否已有权限
+            permissions = page.get_platform_permissions()
+            if "android.permission.CAMERA" not in permissions:
+                # 请求权限（会弹出系统对话框）
+                page.request_permission("android.permission.CAMERA")
+                # 简单提示用户
+                page.snack_bar = ft.SnackBar(ft.Text("请授予相机权限以使用扫码功能"))
+                page.snack_bar.open = True
+                page.update()
 
-    # ===================== 辅助函数：显示弹窗 =====================
+    request_camera_permission()
+    # ===================== 辅助函数：显示弹窗（最终版 - 使用 page.dialog） =====================
+
     def show_alert(title, content, on_ok=None):
-        for ctrl in page.overlay:
+        # 清除所有已有的 AlertDialog 弹窗
+        for ctrl in page.overlay[:]:
             if isinstance(ctrl, ft.AlertDialog):
                 ctrl.open = False
                 page.overlay.remove(ctrl)
         page.update()
 
         def handle_ok(e):
-            if on_ok:
-                on_ok(e)
             dlg.open = False
             if dlg in page.overlay:
                 page.overlay.remove(dlg)
             page.update()
+            if on_ok:
+                on_ok(e)
 
         dlg = ft.AlertDialog(
             title=ft.Text(title, weight=ft.FontWeight.BOLD),
@@ -399,6 +400,12 @@ def main(page: ft.Page):
         page.overlay.append(dlg)
         dlg.open = True
         page.update()
+
+    # 动态宽度计算辅助函数
+    def get_field_width(ratio=1, subtract=40):
+        if page.window_width:
+            return max(100, (page.window_width - subtract) // ratio)
+        return 200
 
     def get_fields():
         controls = config_overlay.content.controls
@@ -496,9 +503,7 @@ def main(page: ft.Page):
         pwd = fields["pwd"].value.strip()
         db = fields["db"].value.strip()
 
-        # 保存到文件
         save_server_config(host, port, user, pwd, db)
-        # 更新内存中的全局变量
         global DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_DATABASE
         DB_HOST = host
         DB_PORT = port
@@ -506,19 +511,14 @@ def main(page: ft.Page):
         DB_PASSWORD = pwd
         DB_DATABASE = db
 
-        # 先关闭配置界面
         config_overlay.visible = False
         page.update()
 
-        # 显示保存成功对话框
         def on_ok(e):
-            # 隐藏对话框
-            dlg.open = False
-            if dlg in page.overlay:
-                page.overlay.remove(dlg)
-            # 重置当前用户
+            page.dialog.open = False
+            page.update()
+            page.dialog = None
             current_user = None
-            # 清除当前所有页面控件，重新添加登录界面
             page.controls.clear()
             page.add(login_container)
             page.update()
@@ -528,7 +528,7 @@ def main(page: ft.Page):
             content=ft.Text("数据库配置已更新，请重新登录"),
             actions=[ft.TextButton("确定", on_click=on_ok)]
         )
-        page.overlay.append(dlg)
+        page.dialog = dlg
         dlg.open = True
         page.update()
 
@@ -563,11 +563,17 @@ def main(page: ft.Page):
             page.update()
             return
         cur = conn.cursor(dictionary=True)
-        cur.execute("SELECT id,username,real_name,role,permissions FROM users WHERE username=%s AND password=%s",
+        cur.execute("SELECT id,username,real_name,role,permissions,expire_date FROM users WHERE username=%s AND password=%s",
                     (uname, md5_pwd(pwd)))
         user = cur.fetchone()
         conn.close()
         if user:
+            expire = user.get("expire_date")
+            if expire and expire < date.today():
+                page.snack_bar = ft.SnackBar(ft.Text("用户权限已过期，请联系管理员"))
+                page.snack_bar.open = True
+                page.update()
+                return
             current_user = user
             build_main_ui()
         else:
@@ -614,44 +620,75 @@ def main(page: ft.Page):
     # ---------- 主界面框架 ----------
     def build_main_ui():
         page.controls.clear()
+
         appbar = ft.AppBar(
             title=ft.Text("玖诚电器ERP"),
             center_title=False,
             bgcolor=ft.Colors.SURFACE,
             actions=[ft.IconButton(ft.Icons.PERSON, on_click=lambda e: show_profile())]
         )
+
+        # ---- 超级管理员拥有全部权限，普通用户根据权限显示，默认只有首页 ----
+        if current_user and current_user.get("role") == "超级管理员":
+            perm_list = PERMISSIONS
+        else:
+            perm_list = (current_user.get("permissions") or "").split(",") if current_user else []
+            if not perm_list:
+                perm_list = ["首页"]
+            perm_list = [p for p in perm_list if p in PERMISSIONS]
+            if not perm_list:
+                perm_list = ["首页"]
+
+        destinations = []
+        for p in PERMISSIONS:
+            if p in perm_list:
+                destinations.append(
+                    ft.NavigationBarDestination(
+                        icon=PERMISSION_ICONS.get(p, ft.Icons.HELP),
+                        label=p
+                    )
+                )
+
         nav_bar = ft.NavigationBar(
-            destinations=[
-                ft.NavigationBarDestination(icon=ft.Icons.HOME, label="首页"),
-                ft.NavigationBarDestination(icon=ft.Icons.SHOPPING_CART, label="销售"),
-                ft.NavigationBarDestination(icon=ft.Icons.INVENTORY, label="入库"),
-                ft.NavigationBarDestination(icon=ft.Icons.LOCAL_SHIPPING, label="运输"),
-                ft.NavigationBarDestination(icon=ft.Icons.HANDYMAN, label="安装"),
-                ft.NavigationBarDestination(icon=ft.Icons.DATASET, label="库存"),
-                ft.NavigationBarDestination(icon=ft.Icons.SETTINGS, label="更多")
-            ],
-            on_change=lambda e: on_nav_change(e),
+            destinations=destinations,
+            on_change=on_nav_change,
             elevation=8
         )
-        page.add(appbar, main_content, nav_bar)
+
+        # 确保 main_content 可滚动且占用剩余空间
+        main_content.expand = True
+        main_content.scroll = ft.ScrollMode.AUTO
+
+        main_layout = ft.Column(
+            [
+                appbar,
+                main_content,
+                nav_bar,
+            ],
+            spacing=0,
+            expand=True,
+        )
+        page.add(main_layout)
         show_home()
 
     def on_nav_change(e):
-        idx = e.control.selected_index
-        if idx == 0:
-            show_home()
-        elif idx == 1:
-            show_sale()
-        elif idx == 2:
-            show_inbound()
-        elif idx == 3:
-            show_transport()
-        elif idx == 4:
-            show_install()
-        elif idx == 5:
-            show_stock()
-        elif idx == 6:
-            show_more_menu()
+        selected_index = e.control.selected_index
+        if selected_index < len(e.control.destinations):
+            label = e.control.destinations[selected_index].label
+            if label == "首页":
+                show_home()
+            elif label == "销售":
+                show_sale()
+            elif label == "入库":
+                show_inbound()
+            elif label == "运输":
+                show_transport()
+            elif label == "安装":
+                show_install()
+            elif label == "库存":
+                show_stock()
+            elif label == "更多":
+                show_more_menu()
 
     def get_file_from_db(file_type, biz_no):
         conn = get_db_conn()
@@ -771,8 +808,12 @@ def main(page: ft.Page):
             ]
         current_county = county_list[2] if len(county_list) > 2 else county_list[0] if county_list else ""
 
-        # 客户名称自动补全
-        cust_input = ft.TextField(label="客户名称", hint_text="输入2字以上查询", width=205)
+        # 动态宽度
+        w1 = get_field_width(2)  # 双列
+        w2 = get_field_width(1)  # 单列（全宽）
+        w3 = get_field_width(3)  # 三列
+
+        cust_input = ft.TextField(label="客户名称", hint_text="输入2字以上查询", width=w1)
         cust_suggestions = ft.Column(spacing=0, visible=False)
 
         def load_customer_suggestions(val):
@@ -828,8 +869,7 @@ def main(page: ft.Page):
             cust_suggestions.update()
             page.update()
 
-        # 产品型号自动补全
-        model_input_width = 280
+        model_input_width = w2
         scan_btn = ft.IconButton(
             ft.Icons.CAMERA_ALT,
             icon_size=24,
@@ -895,9 +935,9 @@ def main(page: ft.Page):
         cust_input.on_change = lambda e: load_customer_suggestions(cust_input.value.strip())
         model_input.on_change = lambda e: load_model_suggestions(model_input.value.strip())
 
-        phone = ft.TextField(label="联系电话", width=205)
-        card_holder = ft.TextField(label="工会卡持卡人", width=205)
-        card_no = ft.TextField(label="工会卡号", width=205)
+        phone = ft.TextField(label="联系电话", width=w1)
+        card_holder = ft.TextField(label="工会卡持卡人", width=w1)
+        card_no = ft.TextField(label="工会卡号", width=w1)
 
         default_county = county_list[2] if len(county_list) > 2 else (county_list[0] if county_list else "")
         selected_county_text = ft.Text(default_county)
@@ -912,7 +952,7 @@ def main(page: ft.Page):
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER
                     ),
-                    width=205,
+                    width=w1,
                     padding=ft.Padding(left=10, top=16, right=10, bottom=10),
                     border=ft.Border(
                         left=ft.BorderSide(width=1, color=ft.Colors.OUTLINE),
@@ -931,12 +971,12 @@ def main(page: ft.Page):
                     padding=ft.Padding(left=2, right=2, top=0, bottom=0)
                 )
             ],
-            width=205
+            width=w1
         )
 
-        street_dropdown = ft.Dropdown(label="街道", width=205, options=[])
-        community_input = ft.TextField(label="小区/村", width=205)
-        detail_addr = ft.TextField(label="详细地址", width=205)
+        street_dropdown = ft.Dropdown(label="街道", width=w1, options=[])
+        community_input = ft.TextField(label="小区/村", width=w1)
+        detail_addr = ft.TextField(label="详细地址", width=w1)
 
         def load_streets():
             nonlocal current_county
@@ -970,6 +1010,7 @@ def main(page: ft.Page):
                 selected_county_text.value = county_name
                 county_selector.update()
                 load_streets()
+
             return handler
 
         county_menu_items = [
@@ -981,18 +1022,17 @@ def main(page: ft.Page):
         ]
         county_popup = ft.PopupMenuButton(content=county_selector, items=county_menu_items)
 
-        send_date = ft.TextField(label="拟送货日期", hint_text="YYYY-MM-DD", value=date.today().isoformat(), width=205)
-        order_remark = ft.TextField(label="订单备注", width=205)
+        send_date = ft.TextField(label="拟送货日期", hint_text="YYYY-MM-DD", value=date.today().isoformat(), width=w1)
+        order_remark = ft.TextField(label="订单备注", width=w1)
 
-        # 商品相关
-        out_order_no = ft.TextField(label="外部订单号", value="000000", width=100)
-        qty = ft.TextField(label="数量", value="1", width=100)
-        price = ft.TextField(label="单价", width=200)
-        old_discount = ft.TextField(label="旧机折扣(元)", value="0", width=200)
-        union_subsidy = ft.TextField(label="工会补贴%", value="0", width=100)
-        gov_subsidy = ft.TextField(label="国家补贴%", value="0", width=100)
-        store_discount = ft.TextField(label="门店优惠(元)", value="0", width=110)
-        item_remark = ft.TextField(label="商品备注", width=190)
+        out_order_no = ft.TextField(label="外部订单号", value="000000", width=w3)
+        qty = ft.TextField(label="数量", value="1", width=w3)
+        price = ft.TextField(label="单价", width=w3)
+        old_discount = ft.TextField(label="旧机折扣(元)", value="0", width=w3)
+        union_subsidy = ft.TextField(label="工会补贴%", value="0", width=w3)
+        gov_subsidy = ft.TextField(label="国家补贴%", value="0", width=w3)
+        store_discount = ft.TextField(label="门店优惠(元)", value="0", width=w3)
+        item_remark = ft.TextField(label="商品备注", width=w3)
         need_install_cb = ft.Checkbox(label="需要安装", value=False)
 
         add_btn = ft.Button("添加商品", icon=ft.Icons.ADD)
@@ -1022,6 +1062,7 @@ def main(page: ft.Page):
                 def after_add(m):
                     model_input.value = m
                     page.update()
+
                 add_product_from_scan(page, code, after_add)
 
         def refresh_items():
@@ -1086,6 +1127,7 @@ def main(page: ft.Page):
                 def after_add(new_model):
                     model_input.value = new_model
                     page.update()
+
                 add_product_from_scan(page, "", after_add)
                 return
 
@@ -1137,7 +1179,6 @@ def main(page: ft.Page):
 
         add_btn.on_click = add_item
 
-        # ===================== 保存订单 =====================
         def save_order(e):
             print("=== 保存订单按钮被点击 ===")
             if not cust_input.value:
@@ -1149,7 +1190,7 @@ def main(page: ft.Page):
             county = current_county
             street = street_dropdown.value
             community = community_input.value
-            receiver_phone = f"{cust_input.value} {phone.value}"   # 修复拼写错误
+            receiver_phone = f"{cust_input.value} {phone.value}"
             if not county:
                 show_alert("提示", "请选择所在县")
                 return
@@ -1224,7 +1265,7 @@ def main(page: ft.Page):
                 conn.commit()
 
                 def on_success(e):
-                    nonlocal current_county    # 修复：移至函数最前
+                    nonlocal current_county
                     cust_input.value = ""
                     phone.value = ""
                     card_holder.value = ""
@@ -1277,20 +1318,22 @@ def main(page: ft.Page):
             width=model_input_width,
         )
 
+        # 使用 Row 自动换行，确保内容不溢出
         main_content.controls.append(
             ft.Column(
                 [
                     ft.Text("新建销售订单", size=20, weight=ft.FontWeight.BOLD),
-                    ft.Row([cust_container, phone], spacing=10),
-                    ft.Row([card_holder, card_no], spacing=10),
-                    ft.Row([county_popup, street_dropdown], spacing=10),
-                    ft.Row([community_input, detail_addr], spacing=10),
-                    ft.Row([send_date, order_remark], spacing=10),
+                    ft.Row([cust_container, phone], spacing=10, wrap=True),
+                    ft.Row([card_holder, card_no], spacing=10, wrap=True),
+                    ft.Row([county_popup, street_dropdown], spacing=10, wrap=True),
+                    ft.Row([community_input, detail_addr], spacing=10, wrap=True),
+                    ft.Row([send_date, order_remark], spacing=10, wrap=True),
                     ft.Text("商品信息", weight=ft.FontWeight.BOLD),
                     ft.Row([model_container], alignment=ft.MainAxisAlignment.START),
-                    ft.Row([out_order_no, qty, price], alignment=ft.MainAxisAlignment.START),
-                    ft.Row([old_discount, union_subsidy, gov_subsidy], alignment=ft.MainAxisAlignment.START),
-                    ft.Row([store_discount, item_remark, need_install_cb], alignment=ft.MainAxisAlignment.START),
+                    ft.Row([out_order_no, qty, price], alignment=ft.MainAxisAlignment.START, wrap=True),
+                    ft.Row([old_discount, union_subsidy, gov_subsidy], alignment=ft.MainAxisAlignment.START, wrap=True),
+                    ft.Row([store_discount, item_remark, need_install_cb], alignment=ft.MainAxisAlignment.START,
+                           wrap=True),
                     add_btn,
                     ft.Text("商品清单", weight=ft.FontWeight.BOLD),
                     items_list,
@@ -1309,13 +1352,11 @@ def main(page: ft.Page):
             load_streets()
 
     # ---------------------------- 订单查询 ----------------------------
-    from datetime import datetime, timedelta
-
     def show_order_query():
         main_content.controls.clear()
 
         total_spacing = 10
-        field_width = (page.window_width - 40 - total_spacing) // 2 if page.window_width else 150
+        field_width = get_field_width(2)  # 双列
         btn_width = field_width
 
         order_no_input = ft.TextField(label="订单号", width=field_width)
@@ -1646,7 +1687,7 @@ def main(page: ft.Page):
         main_content.controls.clear()
 
         input_height = 50
-        input_width = page.window_width - 80 if page.window_width else 300
+        input_width = get_field_width(1)  # 单列全宽
 
         title = ft.Text("商品入库", size=20, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.LEFT)
 
@@ -1751,6 +1792,7 @@ def main(page: ft.Page):
                     model_suggestions.visible = False
                     model_suggestions.update()
                     page.update()
+
                 add_product_from_scan(page, code, after_add)
 
         qty = ft.TextField(label="入库数量", width=input_width, height=input_height)
@@ -1873,6 +1915,9 @@ def main(page: ft.Page):
     def show_transport():
         main_content.controls.clear()
 
+        w1 = get_field_width(2)  # 双列
+        w2 = get_field_width(3)  # 三列
+
         status_dropdown = ft.Dropdown(
             label="订单状态",
             options=[
@@ -1885,19 +1930,18 @@ def main(page: ft.Page):
                 ft.dropdown.Option("已送货入户"),
             ],
             value="待出库",
-            width=140,
+            width=w1,
         )
-        start_date = ft.TextField(label="起始日期", hint_text="YYYY-MM-DD", width=130)
-        end_date = ft.TextField(label="结束日期", hint_text="YYYY-MM-DD", width=130)
-        order_no_input = ft.TextField(label="订单号", width=120)
-        cust_name_input = ft.TextField(label="客户名称", width=120)
+        start_date = ft.TextField(label="起始日期", hint_text="YYYY-MM-DD", width=w2)
+        end_date = ft.TextField(label="结束日期", hint_text="YYYY-MM-DD", width=w2)
+        order_no_input = ft.TextField(label="订单号", width=w2)
+        cust_name_input = ft.TextField(label="客户名称", width=w2)
         query_btn = ft.Button("查询", icon=ft.Icons.SEARCH)
         reset_btn = ft.Button("重置", icon=ft.Icons.REFRESH)
 
         trans_list = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO)
 
         def get_home_photo_biz_info(order_no, out_order_no):
-            """返回 (biz_no, file_prefix) 根据原代码规则"""
             try:
                 out_int = int(out_order_no) if out_order_no else 0
             except (ValueError, TypeError):
@@ -2474,9 +2518,12 @@ def main(page: ft.Page):
     def show_install():
         main_content.controls.clear()
 
+        w1 = get_field_width(2)
+        w2 = get_field_width(3)
+
         status_dropdown = ft.Dropdown(
             label="安装状态",
-            width=140,
+            width=w1,
             options=[
                 ft.dropdown.Option("全部"),
                 ft.dropdown.Option("待安装"),
@@ -2488,14 +2535,14 @@ def main(page: ft.Page):
 
         start_date_field = ft.TextField(
             label="起始日期",
-            width=130,
-            value=(datetime.date.today() - datetime.timedelta(days=30)).strftime("%Y-%m-%d"),
+            width=w2,
+            value=(date.today() - timedelta(days=30)).strftime("%Y-%m-%d"),
             read_only=True,
         )
         end_date_field = ft.TextField(
             label="结束日期",
-            width=130,
-            value=datetime.date.today().strftime("%Y-%m-%d"),
+            width=w2,
+            value=date.today().strftime("%Y-%m-%d"),
             read_only=True,
         )
 
@@ -2513,17 +2560,15 @@ def main(page: ft.Page):
         start_cal_btn = ft.TextButton("📅", on_click=lambda e: pick_date(start_date_field))
         end_cal_btn = ft.TextButton("📅", on_click=lambda e: pick_date(end_date_field))
 
-        order_input = ft.TextField(label="订单号", width=140, hint_text="模糊搜索")
-        cust_input = ft.TextField(label="客户名称", width=140, hint_text="模糊搜索")
+        order_input = ft.TextField(label="订单号", width=w2, hint_text="模糊搜索")
+        cust_input = ft.TextField(label="客户名称", width=w2, hint_text="模糊搜索")
 
         install_list = ft.Column(spacing=5, scroll=ft.ScrollMode.AUTO)
 
         def load_install():
-            print("🔄 load_install() 被调用")
             install_list.controls.clear()
             conn = get_db_conn()
             if not conn:
-                print("❌ 数据库连接失败")
                 install_list.controls.append(ft.Text("数据库连接失败", size=14, color="#ef4444"))
                 page.update()
                 return
@@ -2587,14 +2632,10 @@ def main(page: ft.Page):
 
             sql += " GROUP BY order_no, model ORDER BY MAX(install_date) DESC, MAX(install_time) DESC, order_no DESC"
 
-            print(f"🔍 SQL: {sql}")
-            print(f"📌 params: {params}")
-
             cur = conn.cursor()
             cur.execute(sql, params)
             rows = cur.fetchall()
             conn.close()
-            print(f"📋 查询到 {len(rows)} 条记录")
 
             if not rows:
                 install_list.controls.append(ft.Text("没有符合条件的安装记录", size=14, color="#94a3b8"))
@@ -2657,7 +2698,6 @@ def main(page: ft.Page):
             page.update()
 
         def report_install(install_id, status, order_no, model, cust_name, qty):
-            print(f"📞 报装被调用: install_id={install_id}, status={status}")
             if status != "待安装":
                 page.snack_bar = ft.SnackBar(ft.Text("只能报装待安装订单"), bgcolor="#ef4444")
                 page.snack_bar.open = True
@@ -2693,7 +2733,6 @@ def main(page: ft.Page):
             team_dropdown.on_change = on_team_change
 
             def do_report(e):
-                print("🔄 报装确认按钮被点击")
                 team = team_dropdown.value.strip()
                 if team and not tel_field.value.strip():
                     if team in team_tel_dict:
@@ -2712,7 +2751,6 @@ def main(page: ft.Page):
 
                 conn = get_db_conn()
                 if not conn:
-                    print("❌ 数据库连接失败")
                     page.snack_bar = ft.SnackBar(ft.Text("数据库连接失败"), bgcolor="#ef4444")
                     page.snack_bar.open = True
                     page.update()
@@ -2722,12 +2760,9 @@ def main(page: ft.Page):
                 try:
                     sql = "UPDATE install SET status='已报装', install_team=%s, install_tel=%s, install_fee=%s, fee_remark=%s WHERE id=%s"
                     params = (team, tel, fee, remark, install_id)
-                    print(f"🛠 SQL: {sql}")
-                    print(f"📌 params: {params}")
                     cur.execute(sql, params)
                     rows_affected = cur.rowcount
                     conn.commit()
-                    print(f"✅ 影响行数: {rows_affected}")
                     if rows_affected == 0:
                         page.snack_bar = ft.SnackBar(ft.Text(f"⚠️ 未找到 ID={install_id} 的记录，更新失败"),
                                                      bgcolor="#ef4444")
@@ -2739,7 +2774,6 @@ def main(page: ft.Page):
                     page.snack_bar.open = True
                 except Exception as ex:
                     conn.rollback()
-                    print(f"❌ 数据库异常: {ex}")
                     page.snack_bar = ft.SnackBar(ft.Text(f"❌ 数据库错误：{ex}"), bgcolor="#ef4444")
                     page.snack_bar.open = True
                     conn.close()
@@ -2784,7 +2818,6 @@ def main(page: ft.Page):
                 dialog.open = False
                 page.update()
                 load_install()
-                print("✅ 报装流程结束")
 
             dialog = ft.AlertDialog(
                 title=ft.Text("报装信息"),
@@ -2803,7 +2836,6 @@ def main(page: ft.Page):
             page.update()
 
         def confirm_install(install_id, status):
-            print(f"✅ 确认安装被调用: install_id={install_id}, status={status}")
             if status not in ["待安装", "已报装"]:
                 page.snack_bar = ft.SnackBar(ft.Text("只能确认待安装或已报装的订单"), bgcolor="#ef4444")
                 page.snack_bar.open = True
@@ -2816,7 +2848,6 @@ def main(page: ft.Page):
             remark_field = ft.TextField(label="费用备注", width=200)
 
             def do_confirm(e):
-                print("🔄 确认安装按钮被点击")
                 installer = installer_field.value.strip()
                 co_installer = co_installer_field.value.strip()
                 fee = float(fee_field.value or 0) if fee_field.value else 0
@@ -2830,7 +2861,6 @@ def main(page: ft.Page):
 
                 conn = get_db_conn()
                 if not conn:
-                    print("❌ 数据库连接失败")
                     page.snack_bar = ft.SnackBar(ft.Text("数据库连接失败"), bgcolor="#ef4444")
                     page.snack_bar.open = True
                     page.update()
@@ -2839,13 +2869,10 @@ def main(page: ft.Page):
                 cur = conn.cursor()
                 try:
                     sql = "UPDATE install SET status='已安装', install_date=%s, installer01=%s, installer02=%s, install_fee=%s, fee_remark=%s WHERE id=%s"
-                    params = (datetime.date.today(), installer, co_installer, fee, remark, install_id)
-                    print(f"🛠 SQL: {sql}")
-                    print(f"📌 params: {params}")
+                    params = (date.today(), installer, co_installer, fee, remark, install_id)
                     cur.execute(sql, params)
                     rows_affected = cur.rowcount
                     conn.commit()
-                    print(f"✅ 影响行数: {rows_affected}")
                     if rows_affected == 0:
                         page.snack_bar = ft.SnackBar(ft.Text(f"⚠️ 未找到 ID={install_id} 的记录，更新失败"),
                                                      bgcolor="#ef4444")
@@ -2857,7 +2884,6 @@ def main(page: ft.Page):
                     page.snack_bar.open = True
                 except Exception as ex:
                     conn.rollback()
-                    print(f"❌ 数据库异常: {ex}")
                     page.snack_bar = ft.SnackBar(ft.Text(f"❌ 数据库错误：{ex}"), bgcolor="#ef4444")
                     page.snack_bar.open = True
                     conn.close()
@@ -2868,7 +2894,6 @@ def main(page: ft.Page):
                 dialog.open = False
                 page.update()
                 load_install()
-                print("✅ 确认安装流程结束")
 
             dialog = ft.AlertDialog(
                 title=ft.Text("安装确认"),
@@ -2891,8 +2916,8 @@ def main(page: ft.Page):
 
         def on_reset(e):
             status_dropdown.value = "待安装"
-            start_date_field.value = (datetime.date.today() - datetime.timedelta(days=30)).strftime("%Y-%m-%d")
-            end_date_field.value = datetime.date.today().strftime("%Y-%m-%d")
+            start_date_field.value = (date.today() - timedelta(days=30)).strftime("%Y-%m-%d")
+            end_date_field.value = date.today().strftime("%Y-%m-%d")
             order_input.value = ""
             cust_input.value = ""
             load_install()
@@ -3127,15 +3152,16 @@ def main(page: ft.Page):
     def show_stock():
         main_content.controls.clear()
 
+        w1 = get_field_width(2)  # 双列
         brand_dropdown = ft.Dropdown(
             label="品牌",
-            width=150,
+            width=w1,
             options=[ft.dropdown.Option("")],
             value="",
         )
         model_textfield = ft.TextField(
             label="型号",
-            width=150,
+            width=w1,
             hint_text="模糊搜索",
         )
         gap_checkbox = ft.Checkbox(label="仅显示缺口", value=False)
@@ -3272,6 +3298,7 @@ def main(page: ft.Page):
             ],
             alignment=ft.MainAxisAlignment.START,
             spacing=10,
+            wrap=True,  # 允许换行
         )
 
         main_content.controls.append(
@@ -3520,7 +3547,7 @@ def main(page: ft.Page):
             ft.Column([
                 ft.Text("财务报表", size=20, weight=ft.FontWeight.BOLD),
                 year_month,
-                ft.ElevatedButton("计算", icon=ft.Icons.CALCULATE, on_click=calc_finance),
+                ft.Button("计算", icon=ft.Icons.CALCULATE, on_click=calc_finance),
                 ft.Card(content=ft.Container(content=result_text, padding=15))
             ], spacing=15))
         page.update()
@@ -3528,11 +3555,12 @@ def main(page: ft.Page):
     # ---------------------------- 入库记录查询 ----------------------------
     def show_inbound_records():
         main_content.controls.clear()
-        start_date = ft.TextField(label="起始日期", hint_text="YYYY-MM-DD", width=150)
-        end_date = ft.TextField(label="结束日期", hint_text="YYYY-MM-DD", width=150)
-        brand = ft.TextField(label="品牌", width=150)
-        model = ft.TextField(label="型号", width=150)
-        query_btn = ft.ElevatedButton("查询", icon=ft.Icons.SEARCH)
+        w1 = get_field_width(2)
+        start_date = ft.TextField(label="起始日期", hint_text="YYYY-MM-DD", width=w1)
+        end_date = ft.TextField(label="结束日期", hint_text="YYYY-MM-DD", width=w1)
+        brand = ft.TextField(label="品牌", width=w1)
+        model = ft.TextField(label="型号", width=w1)
+        query_btn = ft.Button("查询", icon=ft.Icons.SEARCH)
         results_list = ft.Column(spacing=5)
         total_label = ft.Text("", size=14)
 
@@ -3610,12 +3638,13 @@ ID: {row[0]}
     # ---------------------------- 销售订单查询（简版） ----------------------------
     def show_sale_orders():
         main_content.controls.clear()
-        start_date = ft.TextField(label="起始日期", width=150)
-        end_date = ft.TextField(label="结束日期", width=150)
-        order_no = ft.TextField(label="订单号", width=150)
-        cust_name = ft.TextField(label="客户", width=150)
-        model = ft.TextField(label="型号", width=150)
-        query_btn = ft.ElevatedButton("查询", icon=ft.Icons.SEARCH)
+        w1 = get_field_width(2)
+        start_date = ft.TextField(label="起始日期", width=w1)
+        end_date = ft.TextField(label="结束日期", width=w1)
+        order_no = ft.TextField(label="订单号", width=w1)
+        cust_name = ft.TextField(label="客户", width=w1)
+        model = ft.TextField(label="型号", width=w1)
+        query_btn = ft.Button("查询", icon=ft.Icons.SEARCH)
         orders_list = ft.Column(spacing=5)
 
         def show_order_detail(order_no):
@@ -3854,44 +3883,367 @@ ID: {row[0]}
             ], scroll=ft.ScrollMode.AUTO))
         load_booth()
 
-    # ---------------------------- 用户管理 ----------------------------
+    # ---------------------------- 用户管理（完整版） ----------------------------
     def show_user_manager():
-        if current_user and current_user["role"] != "超级管理员":
-            page.snack_bar = ft.SnackBar(ft.Text("无权限"))
-            page.snack_bar.open = True
+        if current_user and current_user.get("role") != "超级管理员":
+            show_alert("提示", "仅超级管理员可访问")
             return
+
         main_content.controls.clear()
-        user_list = ft.Column(spacing=5)
+
+        user_table = ft.DataTable(
+            columns=[
+                ft.DataColumn(ft.Text("ID")),
+                ft.DataColumn(ft.Text("用户名")),
+                ft.DataColumn(ft.Text("姓名")),
+                ft.DataColumn(ft.Text("角色")),
+                ft.DataColumn(ft.Text("有效期")),
+                ft.DataColumn(ft.Text("权限")),
+            ],
+            rows=[],
+            width=page.window_width - 20 if page.window_width else 600,
+        )
+
         def load_users():
-            user_list.controls.clear()
+            user_table.rows.clear()
             conn = get_db_conn()
+            if not conn:
+                show_alert("错误", "数据库连接失败")
+                return
             cur = conn.cursor()
-            cur.execute("SELECT id, username, real_name, role FROM users")
+            cur.execute("SELECT id, username, real_name, role, expire_date, permissions FROM users ORDER BY id")
             rows = cur.fetchall()
             conn.close()
             for row in rows:
-                user_list.controls.append(
-                    ft.Card(content=ft.Container(
-                        content=ft.Row([
-                            ft.Column([
-                                ft.Text(row[1], weight=ft.FontWeight.BOLD),
-                                ft.Text(f"{row[2]} | {row[3]}", size=12)
-                            ]),
-                            ft.IconButton(ft.Icons.DELETE, on_click=lambda e, uid=row[0]: delete_user(uid))
-                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN), padding=10)))
+                user_table.rows.append(
+                    ft.DataRow(
+                        cells=[
+                            ft.DataCell(ft.Text(str(row[0]))),
+                            ft.DataCell(ft.Text(row[1])),
+                            ft.DataCell(ft.Text(row[2] or "")),
+                            ft.DataCell(ft.Text(row[3] or "")),
+                            ft.DataCell(ft.Text(str(row[4]) if row[4] else "永久")),
+                            ft.DataCell(ft.Text(row[5] or "")),
+                        ],
+                        on_select_change=lambda e, r=row: None
+                    )
+                )
             page.update()
-        def delete_user(uid):
-            conn = get_db_conn()
-            cur = conn.cursor()
-            cur.execute("DELETE FROM users WHERE id=%s", (uid,))
-            conn.commit()
-            conn.close()
-            load_users()
-        load_users()
+
+        def add_user_dialog():
+            username_field = ft.TextField(label="用户名", width=250)
+            realname_field = ft.TextField(label="真实姓名", width=250)
+            password_field = ft.TextField(label="密码", password=True, can_reveal_password=True, width=250)
+            role_dropdown = ft.Dropdown(
+                label="角色",
+                options=[
+                    ft.dropdown.Option("普通用户"),
+                    ft.dropdown.Option("管理员"),
+                    ft.dropdown.Option("销售员"),
+                    ft.dropdown.Option("配送员"),
+                    ft.dropdown.Option("安装员"),
+                ],
+                value="普通用户",
+                width=250,
+            )
+            day_field = ft.TextField(label="有效天数(留空永久)", width=250, hint_text="数字")
+
+            perm_checkboxes = {}
+            perm_col = ft.Column(spacing=5)
+            for p in PERMISSIONS:
+                cb = ft.Checkbox(label=p, value=True)
+                perm_checkboxes[p] = cb
+                perm_col.controls.append(cb)
+
+            def save_user(e):
+                uname = username_field.value.strip()
+                real = realname_field.value.strip()
+                pwd = password_field.value.strip()
+                role = role_dropdown.value
+                day_str = day_field.value.strip()
+
+                if not uname or not pwd:
+                    show_alert("提示", "用户名和密码不能为空")
+                    return
+
+                expire_date = None
+                if day_str.isdigit() and int(day_str) > 0:
+                    expire_date = (date.today() + timedelta(days=int(day_str))).strftime("%Y-%m-%d")
+                elif day_str == "" or day_str == "0":
+                    expire_date = None
+                else:
+                    show_alert("错误", "有效期请输入数字（0或留空为永久）")
+                    return
+
+                selected = [p for p, cb in perm_checkboxes.items() if cb.value]
+                perm_str = ",".join(selected)
+
+                conn = get_db_conn()
+                if not conn:
+                    show_alert("错误", "数据库连接失败")
+                    return
+                cur = conn.cursor()
+                try:
+                    cur.execute(
+                        "INSERT INTO users (username, password, real_name, role, permissions, expire_date) VALUES (%s, %s, %s, %s, %s, %s)",
+                        (uname, md5_pwd(pwd), real, role, perm_str, expire_date)
+                    )
+                    conn.commit()
+                    show_alert("成功", f"用户 {uname} 添加成功")
+                    add_dlg.open = False
+                    load_users()
+                except Exception as ex:
+                    conn.rollback()
+                    show_alert("错误", f"添加失败: {str(ex)}")
+                finally:
+                    conn.close()
+
+            add_dlg = ft.AlertDialog(
+                title=ft.Text("新增用户"),
+                content=ft.Column(
+                    [
+                        username_field,
+                        realname_field,
+                        password_field,
+                        role_dropdown,
+                        day_field,
+                        ft.Divider(height=5),
+                        ft.Text("功能权限", weight=ft.FontWeight.BOLD),
+                        perm_col,
+                    ],
+                    spacing=8,
+                    scroll=ft.ScrollMode.AUTO,
+                    width=300,
+                ),
+                actions=[
+                    ft.TextButton("保存", on_click=save_user),
+                    ft.TextButton("取消", on_click=lambda e: setattr(add_dlg, 'open', False)),
+                ],
+            )
+            page.overlay.append(add_dlg)
+            add_dlg.open = True
+            page.update()
+
+        def edit_user_dialog():
+            if not user_table.rows:
+                show_alert("提示", "没有用户可编辑")
+                return
+
+            def do_edit(e):
+                uid_str = id_field.value.strip()
+                if not uid_str.isdigit():
+                    show_alert("错误", "请输入有效ID")
+                    return
+                uid = int(uid_str)
+                conn = get_db_conn()
+                if not conn:
+                    show_alert("错误", "数据库连接失败")
+                    return
+                cur = conn.cursor(dictionary=True)
+                cur.execute("SELECT id, username, real_name, role, permissions, expire_date FROM users WHERE id=%s", (uid,))
+                user = cur.fetchone()
+                conn.close()
+                if not user:
+                    show_alert("错误", f"未找到ID {uid}")
+                    return
+                if user["role"] == "超级管理员":
+                    show_alert("提示", "超级管理员不可编辑")
+                    return
+                real_field = ft.TextField(label="真实姓名", value=user["real_name"] or "", width=250)
+                role_drop = ft.Dropdown(
+                    label="角色",
+                    options=[
+                        ft.dropdown.Option("普通用户"),
+                        ft.dropdown.Option("管理员"),
+                        ft.dropdown.Option("销售员"),
+                        ft.dropdown.Option("配送员"),
+                        ft.dropdown.Option("安装员"),
+                    ],
+                    value=user["role"] or "普通用户",
+                    width=250,
+                )
+                pwd_field = ft.TextField(label="新密码(留空不修改)", password=True, can_reveal_password=True, width=250)
+                day_field = ft.TextField(label="有效天数(重新计算，留空保持原日期)", width=250, hint_text="数字或留空")
+
+                perm_checkboxes = {}
+                perm_col = ft.Column(spacing=5)
+                user_perms = set(user["permissions"].split(",")) if user["permissions"] else set()
+                for p in PERMISSIONS:
+                    cb = ft.Checkbox(label=p, value=(p in user_perms))
+                    perm_checkboxes[p] = cb
+                    perm_col.controls.append(cb)
+
+                def save_edit(e):
+                    new_real = real_field.value.strip()
+                    new_role = role_drop.value
+                    new_pwd = pwd_field.value.strip()
+                    day_str = day_field.value.strip()
+
+                    new_expire = user["expire_date"]
+                    if day_str.isdigit() and int(day_str) > 0:
+                        new_expire = (date.today() + timedelta(days=int(day_str))).strftime("%Y-%m-%d")
+                    elif day_str == "" or day_str == "0":
+                        new_expire = None
+                    elif day_str:
+                        show_alert("错误", "有效期请输入数字（0或留空为永久）")
+                        return
+
+                    selected = [p for p, cb in perm_checkboxes.items() if cb.value]
+                    perm_str = ",".join(selected)
+
+                    conn = get_db_conn()
+                    if not conn:
+                        show_alert("错误", "数据库连接失败")
+                        return
+                    cur = conn.cursor()
+                    try:
+                        if new_pwd:
+                            cur.execute(
+                                "UPDATE users SET real_name=%s, role=%s, password=%s, permissions=%s, expire_date=%s WHERE id=%s",
+                                (new_real, new_role, md5_pwd(new_pwd), perm_str, new_expire, uid)
+                            )
+                        else:
+                            cur.execute(
+                                "UPDATE users SET real_name=%s, role=%s, permissions=%s, expire_date=%s WHERE id=%s",
+                                (new_real, new_role, perm_str, new_expire, uid)
+                            )
+                        conn.commit()
+                        show_alert("成功", "用户信息已更新")
+                        edit_dlg.open = False
+                        load_users()
+                    except Exception as ex:
+                        conn.rollback()
+                        show_alert("错误", f"更新失败: {str(ex)}")
+                    finally:
+                        conn.close()
+
+                edit_dlg = ft.AlertDialog(
+                    title=ft.Text(f"编辑用户 {user['username']}"),
+                    content=ft.Column(
+                        [
+                            real_field,
+                            role_drop,
+                            pwd_field,
+                            day_field,
+                            ft.Divider(height=5),
+                            ft.Text("功能权限", weight=ft.FontWeight.BOLD),
+                            perm_col,
+                        ],
+                        spacing=8,
+                        scroll=ft.ScrollMode.AUTO,
+                        width=300,
+                    ),
+                    actions=[
+                        ft.TextButton("保存", on_click=save_edit),
+                        ft.TextButton("取消", on_click=lambda e: setattr(edit_dlg, 'open', False)),
+                    ],
+                )
+                page.overlay.append(edit_dlg)
+                edit_dlg.open = True
+                page.update()
+
+            id_field = ft.TextField(label="要编辑的用户ID", width=200)
+            select_dlg = ft.AlertDialog(
+                title=ft.Text("请输入用户ID"),
+                content=id_field,
+                actions=[
+                    ft.TextButton("确定", on_click=do_edit),
+                    ft.TextButton("取消", on_click=lambda e: setattr(select_dlg, 'open', False)),
+                ],
+            )
+            page.overlay.append(select_dlg)
+            select_dlg.open = True
+            page.update()
+
+        def delete_user():
+            if not user_table.rows:
+                show_alert("提示", "没有用户可删除")
+                return
+
+            def do_delete(e):
+                uid_str = id_field.value.strip()
+                if not uid_str.isdigit():
+                    show_alert("错误", "请输入有效ID")
+                    return
+                uid = int(uid_str)
+                conn = get_db_conn()
+                if not conn:
+                    show_alert("错误", "数据库连接失败")
+                    return
+                cur = conn.cursor()
+                cur.execute("SELECT role FROM users WHERE id=%s", (uid,))
+                row = cur.fetchone()
+                if not row:
+                    show_alert("错误", "用户不存在")
+                    conn.close()
+                    return
+                if row[0] == "超级管理员":
+                    show_alert("提示", "无法删除超级管理员")
+                    conn.close()
+                    return
+                def confirm(e):
+                    try:
+                        cur.execute("DELETE FROM users WHERE id=%s", (uid,))
+                        conn.commit()
+                        show_alert("成功", "用户已删除")
+                        dlg.open = False
+                        load_users()
+                    except Exception as ex:
+                        conn.rollback()
+                        show_alert("错误", f"删除失败: {str(ex)}")
+                    finally:
+                        conn.close()
+                confirm_dlg = ft.AlertDialog(
+                    title=ft.Text("确认删除"),
+                    content=ft.Text(f"确定要删除ID {uid} 吗？此操作不可恢复！"),
+                    actions=[
+                        ft.TextButton("确定", on_click=confirm),
+                        ft.TextButton("取消", on_click=lambda e: setattr(confirm_dlg, 'open', False)),
+                    ],
+                )
+                page.overlay.append(confirm_dlg)
+                confirm_dlg.open = True
+                page.update()
+
+            id_field = ft.TextField(label="要删除的用户ID", width=200)
+            dlg = ft.AlertDialog(
+                title=ft.Text("请输入用户ID"),
+                content=id_field,
+                actions=[
+                    ft.TextButton("确定", on_click=do_delete),
+                    ft.TextButton("取消", on_click=lambda e: setattr(dlg, 'open', False)),
+                ],
+            )
+            page.overlay.append(dlg)
+            dlg.open = True
+            page.update()
+
+        btn_row = ft.Row(
+            [
+                ft.Button("新增用户", on_click=lambda e: add_user_dialog(), bgcolor=ft.Colors.GREEN, color=ft.Colors.WHITE),
+                ft.Button("编辑用户", on_click=lambda e: edit_user_dialog(), bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE),
+                ft.Button("删除用户", on_click=lambda e: delete_user(), bgcolor=ft.Colors.RED, color=ft.Colors.WHITE),
+                ft.IconButton(ft.Icons.REFRESH, on_click=lambda e: load_users(), tooltip="刷新"),
+            ],
+            spacing=10,
+            wrap=True,
+        )
+
         main_content.controls.append(
-            ft.Column([
-                ft.Row([ft.Text("用户管理", size=20, weight=ft.FontWeight.BOLD), ft.IconButton(ft.Icons.REFRESH, on_click=lambda e: load_users())]),
-                user_list], scroll=ft.ScrollMode.AUTO))
+            ft.Column(
+                [
+                    ft.Text("用户管理（超级管理员）", size=20, weight=ft.FontWeight.BOLD),
+                    btn_row,
+                    ft.Container(
+                        content=ft.Column([user_table], scroll=ft.ScrollMode.AUTO),
+                        expand=True,
+                    ),
+                ],
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO,
+            )
+        )
+        load_users()
         page.update()
 
     # ---------------------------- 个人中心 ----------------------------
