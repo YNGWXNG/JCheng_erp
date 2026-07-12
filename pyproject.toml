@@ -1,5 +1,5 @@
 [project]
-name = "pythonproject"
+name = "JCheng"
 version = "0.1.0"
 description = ""
 readme = "README.md"
@@ -9,7 +9,7 @@ authors = [
 ]
 
 dependencies = [
-    "flet >= 0.85.3",
+    "flet >= 0.9.0",
     "mysql-connector-python",
     "Pillow",
     "opencv-python",
@@ -22,16 +22,16 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "flet-cli>=0.85.3",
-    "flet-desktop>=0.85.3",
-    "flet-web>=0.85.3",
+    "flet-cli>=0.9.0",
+    "flet-desktop>=0.9.0",
+    "flet-web>=0.9.0",
 ]
 
 [tool.flet]
-org = "com.jiuchengcompany"
-product = "pythonproject"
-company = "Flet"
-copyright = "Copyright (C) 2023-2026 by Flet"
+org = "com.jiuchengcompany.jiuchengapp"
+product = "玖诚"
+permissions = ["CAMERA"]   # 添加这行
+copyright = "Copyright (C) 2023-2026 by jiucheng"
 
 [tool.flet.app]
 path = "src"
