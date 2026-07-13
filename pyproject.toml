@@ -9,7 +9,7 @@ authors = [
 ]
 
 dependencies = [
-    "flet >= 0.9.0",
+    "flet >= 0.10.0",
     "mysql-connector-python",
     "Pillow",
     "opencv-python",
@@ -22,9 +22,9 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "flet-cli>=0.9.0",
-    "flet-desktop>=0.9.0",
-    "flet-web>=0.9.0",
+    "flet-cli>=0.10.0",
+    "flet-desktop>=0.10.0",
+    "flet-web>=0.10.0",
 ]
 
 [tool.flet]
