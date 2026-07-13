@@ -375,20 +375,17 @@ def main(page: ft.Page):
 
     request_camera_permission()
     # ===================== 辅助函数：显示弹窗（最终版 - 使用 page.dialog） =====================
-
     def show_alert(title, content, on_ok=None):
-        # 清除所有已有的 AlertDialog 弹窗
-        for ctrl in page.overlay[:]:
-            if isinstance(ctrl, ft.AlertDialog):
-                ctrl.open = False
-                page.overlay.remove(ctrl)
-        page.update()
+        # 关闭可能存在的旧弹窗
+        if page.dialog and page.dialog.open:
+            page.dialog.open = False
+            page.update()
 
         def handle_ok(e):
-            dlg.open = False
-            if dlg in page.overlay:
-                page.overlay.remove(dlg)
-            page.update()
+            # 关闭当前弹窗
+            if page.dialog and page.dialog.open:
+                page.dialog.open = False
+                page.update()
             if on_ok:
                 on_ok(e)
 
@@ -397,10 +394,9 @@ def main(page: ft.Page):
             content=ft.Text(content),
             actions=[ft.TextButton("确定", on_click=handle_ok)]
         )
-        page.overlay.append(dlg)
+        page.dialog = dlg
         dlg.open = True
         page.update()
-
     # 动态宽度计算辅助函数
     def get_field_width(ratio=1, subtract=40):
         if page.window_width:
@@ -1848,11 +1844,12 @@ def main(page: ft.Page):
             try:
                 operator = current_user.get("real_name", "未知用户")
                 cur.execute("""INSERT INTO stock_in 
-                            (inbound_type, factory, category, model, code, spec, qty, in_price,
+                            (inbound_type, factory, category, model, code, spec, piece, qty, in_price,
                              union_subsidy, gov_subsidy, old_discount, location, in_date, operator)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                             (inbound_type.content.value, prod["factory"], prod["category"], m, prod["code"],
-                             prod["spec"], qt, price, prod["union_subsidy"], prod["gov_subsidy"], prod["old_discount"],
+                             prod["spec"],
+                             prod["piece"], qt, price, prod["union_subsidy"], prod["gov_subsidy"], prod["old_discount"],
                              location.value, in_date.value, operator))
                 cur.execute("""INSERT INTO stock_now (factory, model, spec, qty, s_qty)
                             VALUES (%s, %s, %s, %s, %s)
