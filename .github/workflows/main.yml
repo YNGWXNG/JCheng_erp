@@ -23,15 +23,15 @@ jobs:
           pip install uv
           uv sync
 
-      # 接受安卓 SDK 证书，消除构建警告
+      # 移除 uv run，直接全局执行 flutter
       - name: Accept Android licenses
         run: |
-          uv run flutter doctor --android-licenses --yes
+          flutter doctor --android-licenses --yes
 
-      # 打包APK，指定minSdk=23，arm64架构
+      # 打包也去掉 uv run，全局flet，加minSdk23修复报错
       - name: Build APK (arm64-v8a)
         run: |
-          uv run flet build apk --yes --android-min-sdk 23 \
+          flet build apk --yes --android-min-sdk 23 \
             --flutter-build-args "--target-platform android-arm64"
 
       - name: Upload APK artifact
