@@ -12,9 +12,7 @@ dependencies = [
     "flet==0.85.3",
     "mysql-connector-python",
     "Pillow",
-    "opencv-python-headless",
     "numpy",
-    "pyzbar",
     "reportlab",
     "appdirs",
     "requests"
@@ -25,7 +23,7 @@ org = "com.jiuchengcompany.jiuchengapp"
 product = "玖诚ERP"
 copyright = "Copyright (C) 2023-2026 by jiucheng"
 
-# 安卓专属配置：静态权限声明 + 版本配置
+# 安卓专属配置：静态权限声明
 [tool.flet.android]
 permissions = [
     "CAMERA",
@@ -39,4 +37,5 @@ target_sdk_version = 34
 
 [tool.flet.app]
 path = "src"
-# 如果你的主入口文件不是 main.py，取消下面注释并指定
+# 若入口文件不是 main.py，取消注释并指定
+# entry_point = "jiuchengMerp:main"
