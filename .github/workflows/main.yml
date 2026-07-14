@@ -17,28 +17,28 @@ jobs:
         with:
           python-version: '3.11'
 
-      # 1. 先安装 Flutter（必须放在最前面，所有flutter命令之前）
+      # 先安装 Flutter SDK
       - name: Setup Flutter SDK
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.41.7'
           cache: true
 
-      # 2. 安装Python、uv、全局flet
+      # 安装依赖，全局flet
       - name: Install Python dependencies
         run: |
           pip install uv flet
           uv sync
 
-      # 3. 现在flutter命令已存在，自动同意安卓证书
+      # 自动同意安卓许可
       - name: Accept Android SDK Licenses
         run: |
           yes | flutter doctor --android-licenses
 
-      # 4. 打包APK，修复minSdk21报错
+      # 打包命令移除 --android-min-sdk（0.85.3不支持）
       - name: Build APK arm64
         run: |
-          flet build apk --yes --android-min-sdk 23 \
+          flet build apk --yes \
             --flutter-build-args "--target-platform android-arm64"
 
       - name: Upload APK
