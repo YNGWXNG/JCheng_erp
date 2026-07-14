@@ -17,24 +17,20 @@ jobs:
         with:
           python-version: '3.11'
 
-      # 安装 Flutter（使用官方 action）
       - name: Setup Flutter SDK
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.41.7'
           cache: true
 
-      # 安装 Python 依赖（只安装 flet 即可）
       - name: Install Flet
         run: |
           pip install flet
 
-      # 自动接受安卓许可（避免交互）
       - name: Accept Android SDK Licenses
         run: |
           yes | flutter doctor --android-licenses
 
-      # 打包（使用正确的参数格式）
       - name: Build APK arm64
         run: |
           flet build apk --yes \
