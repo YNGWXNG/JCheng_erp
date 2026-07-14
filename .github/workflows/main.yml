@@ -26,14 +26,13 @@ jobs:
       # 接受安卓 SDK 证书，消除构建警告
       - name: Accept Android licenses
         run: |
-          uv run flutter doctor --android-licenses || true
+          uv run flutter doctor --android-licenses --yes
 
-      # 用 uv run 执行 flet 打包，自动加载虚拟环境
+      # 打包APK，指定minSdk=23，arm64架构
       - name: Build APK (arm64-v8a)
         run: |
-          uv run flet build apk --yes \
-            --flutter-build-args=--target-platform \
-            --flutter-build-args=android-arm64
+          uv run flet build apk --yes --android-min-sdk 23 \
+            --flutter-build-args "--target-platform android-arm64"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
