@@ -6,10 +6,8 @@ import json
 import os
 import csv
 from io import BytesIO
-from PIL import Image
-import cv2
+from PIL import Image, ImageDraw, ImageFont
 import numpy as np
-from pyzbar.pyzbar import decode
 import requests
 import base64
 import re
@@ -22,6 +20,7 @@ from pathlib import Path
 import appdirs
 import asyncio
 import threading
+import tempfile
 
 # ---------------------------- 数据库配置 ----------------------------
 DB_HOST = os.getenv("DB_HOST", "240e:338:4a26:f3b1::84")
@@ -136,211 +135,149 @@ def resource_path(relative_path):
     except:
         return os.path.join(os.path.abspath("."), relative_path)
 
-# ===================== 辅助函数：显示弹窗（最终版 - 使用 page.dialog） =====================
-
-# 必须传入 page 实例，不要用全局page避免异常
-
+# ===================== 辅助函数：显示弹窗 =====================
 def show_alert(page: ft.Page, title, content, on_ok=None):
-        # 强制清空overlay里所有弹窗，杜绝多层弹窗叠加锁死界面
-        to_remove = []
-        for ctrl in page.overlay:
-            if isinstance(ctrl, ft.AlertDialog):
-                ctrl.open = False
-                to_remove.append(ctrl)
+    to_remove = []
+    for ctrl in page.overlay:
+        if isinstance(ctrl, ft.AlertDialog):
+            ctrl.open = False
+            to_remove.append(ctrl)
+    page.update()
+    for d in to_remove:
+        page.overlay.remove(d)
+    page.update()
+
+    def handle_ok(e):
+        dlg.open = False
         page.update()
-        for d in to_remove:
-            page.overlay.remove(d)
-        page.update()
+        threading.Timer(0.1,
+                        lambda: (page.overlay.remove(dlg), page.update()) if dlg in page.overlay else None).start()
+        if on_ok:
+            on_ok(e)
 
-        def handle_ok(e):
-            dlg.open = False
-            page.update()
-            threading.Timer(0.1,
-                            lambda: (page.overlay.remove(dlg), page.update()) if dlg in page.overlay else None).start()
-            if on_ok:
-                on_ok(e)
+    dlg = ft.AlertDialog(
+        title=ft.Text(title, weight=ft.FontWeight.BOLD),
+        content=ft.Text(content),
+        modal=True,
+        actions=[ft.TextButton("确定", on_click=handle_ok)]
+    )
+    page.overlay.append(dlg)
+    dlg.open = True
+    page.update()
 
-        dlg = ft.AlertDialog(
-            title=ft.Text(title, weight=ft.FontWeight.BOLD),
-            content=ft.Text(content),
-            modal=True,
-            actions=[ft.TextButton("确定", on_click=handle_ok)]
-        )
-        page.overlay.append(dlg)
-        dlg.open = True
-        page.update()
-# ---------------------------- 扫描69码及产品查询 ----------------------------
-
-# ---------------------------- 扫码识别（相机+相册，适配Flet 0.85.3） ----------------------------
-def scan_barcode_from_image(page, on_match_success):
-    # 判断平台是否支持原生相机（仅安卓/iOS打包后生效）
-    use_camera = hasattr(ft, "Camera") and page.platform in ("android", "ios")
-    camera = None
-    scan_running = True
-
-    tip_text = ft.Text("对准条码自动识别", size=12, text_align=ft.TextAlign.CENTER)
-    file_picker = ft.FilePicker()
+# ===================== 通用扫码函数（仅返回识别码，不查询产品） =====================
+def scan_barcode_only(page: ft.Page, callback, title="扫码识别"):
+    """
+    打开一个扫码弹窗，识别后仅返回码字符串给callback
+    """
     dialog_ref = None
+    tip_text = ft.Text("对准条码自动识别", size=12, text_align=ft.TextAlign.CENTER)
 
-    # 共用：条码解析 + 数据库查询
-    def parse_barcode_and_query(raw_img):
-        try:
-            gray = cv2.cvtColor(raw_img, cv2.COLOR_BGR2GRAY)
-            barcodes = decode(gray)
-            if not barcodes:
-                return (False, "未识别到条码", None)
-            code = barcodes[0].data.decode("utf-8")
-            match_data = query_product_by_code(code)
-            return (True, code, match_data)
-        except Exception as e:
-            return (False, f"识别异常：{str(e)[:40]}", None)
-
-    # 共用：识别成功处理
-    def handle_success(code, data):
-        nonlocal scan_running
-        scan_running = False
-        if use_camera and camera:
-            camera.stop()
+    def handle_scan_success(code):
         tip_text.value = f"识别成功：{code}"
         tip_text.color = ft.Colors.GREEN
         page.update()
-        on_match_success(code, data)
-        # 延时自动关闭弹窗
-        def close():
-            dialog_ref.open = False
-            page.update()
+        callback(code)
+        def close_dialog():
+            if dialog_ref and dialog_ref.open:
+                dialog_ref.open = False
             if dialog_ref in page.overlay:
                 page.overlay.remove(dialog_ref)
             page.update()
-        threading.Timer(0.8, close).start()
+        threading.Timer(0.8, close_dialog).start()
 
-    # 相册选图回调
-    def on_file_pick(e: ft.FilePickerResultEvent):
-        if not e.files:
+    def on_scan_result(e):
+        # 处理多码选择
+        if e.barcodes and len(e.barcodes) > 1:
+            # 弹出选择对话框让用户选择
+            def choose_barcode(code):
+                # 关闭选择弹窗，然后处理识别结果
+                choice_dlg.open = False
+                page.update()
+                handle_scan_success(code)
+
+            items = []
+            for bc in e.barcodes:
+                items.append(ft.ListTile(
+                    title=ft.Text(bc.data.decode('utf-8', errors='ignore')),
+                    on_click=lambda _, code=bc.data.decode('utf-8', errors='ignore'): choose_barcode(code)
+                ))
+            choice_dlg = ft.AlertDialog(
+                title=ft.Text("检测到多个条码，请选择"),
+                content=ft.Column(items, scroll=ft.ScrollMode.AUTO, height=200),
+                actions=[ft.TextButton("取消", on_click=lambda _: (setattr(choice_dlg, 'open', False), page.update()))]
+            )
+            page.overlay.append(choice_dlg)
+            choice_dlg.open = True
+            page.update()
             return
-        file_path = e.files[0].path
-        tip_text.value = "识别中，请稍等……"
-        tip_text.color = ft.Colors.BLUE
-        page.update()
 
-        def run_recognize():
-            try:
-                img = cv2.imread(file_path)
-                if img is None:
-                    def ui_fail():
-                        tip_text.value = "图片读取失败"
-                        tip_text.color = ft.Colors.RED
-                        page.update()
-                    page.run_task(ui_fail)
-                    return
-                ok, msg, data = parse_barcode_and_query(img)
-                def refresh_ui():
-                    if ok:
-                        handle_success(msg, data)
-                    else:
-                        tip_text.value = msg
-                        tip_text.color = ft.Colors.RED
-                        page.update()
-                page.run_task(refresh_ui)
-            except Exception as ex:
-                def err_ui():
-                    tip_text.value = f"识别失败: {str(ex)[:50]}"
-                    tip_text.color = ft.Colors.RED
-                    page.update()
-                page.run_task(err_ui)
-        threading.Thread(target=run_recognize, daemon=True).start()
+        if e.data:
+            scanner.disabled = True
+            page.update()
+            handle_scan_success(e.data)
 
-    # 打开相册（异步调用消除协程警告）
-    async def open_album(e):
+    scanner = ft.BarcodeScanner(
+        on_scan=on_scan_result,
+        width=min(320, page.window_width - 40) if page.window_width else 300,
+        height=320,
+        resolution=ft.BarcodeScannerResolution.MEDIUM
+    )
+
+    def open_album(e):
         tip_text.value = ""
         page.update()
-        await file_picker.pick_files(
-            allow_multiple=False,
-            file_type=ft.FilePickerFileType.IMAGE
-        )
+        scanner.pick_image()
 
-    # 相机实时扫码循环（仅移动端执行）
-    def camera_scan_loop():
-        if not (use_camera and camera and scan_running):
-            return
-        try:
-            b64 = camera.capture_image()
-            buf = base64.b64decode(b64)
-            arr = np.frombuffer(buf, np.uint8)
-            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            ok, msg, data = parse_barcode_and_query(frame)
-            if ok:
-                handle_success(msg, data)
-                return
-        except Exception:
-            pass
-        if scan_running:
-            threading.Timer(0.4, camera_scan_loop).start()
-
-    # 关闭弹窗统一方法
     def close_dialog(e):
-        nonlocal scan_running
-        scan_running = False
-        if use_camera and camera:
-            camera.stop()
-        dialog_ref.open = False
+        if dialog_ref:
+            dialog_ref.open = False
+            if dialog_ref in page.overlay:
+                page.overlay.remove(dialog_ref)
         page.update()
-        if dialog_ref in page.overlay:
-            page.overlay.remove(dialog_ref)
-        page.update()
-
-    # 弹窗内容构建
-    content_items = []
-    if use_camera:
-        # 扫码前再次申请相机权限
-        if page.platform == "android":
-            try:
-                page.request_permission("android.permission.CAMERA")
-            except:
-                pass
-        camera = ft.Camera(resolution=ft.CameraResolution.MEDIUM)
-        content_items.append(camera)
-    else:
-        # 桌面端降级为相册模式
-        content_items.append(
-            ft.Container(
-                ft.Text("点击左下角进入相册选择图片识别", text_align=ft.TextAlign.CENTER),
-                width=280, height=200,
-                bgcolor=ft.Colors.GREY_200,
-                alignment=ft.alignment.center
-            )
-        )
-    content_items.append(tip_text)
 
     dialog_content = ft.Column(
-        content_items,
+        [
+            scanner,
+            tip_text
+        ],
         width=min(320, page.window_width - 40) if page.window_width else 300,
         spacing=8,
         scroll=ft.ScrollMode.AUTO
     )
 
     dialog_ref = ft.AlertDialog(
-        title=ft.Text("扫码识别"),
+        title=ft.Text(title),
         content=dialog_content,
         modal=True,
         content_padding=ft.Padding(12, 10, 12, 10),
         actions=[
-            ft.TextButton("进入相册", on_click=open_album),
+            ft.TextButton("相册识别", on_click=open_album),
             ft.TextButton("关闭", on_click=close_dialog)
         ]
     )
 
-    # 挂载控件并显示
-    file_picker.on_result = on_file_pick
-    page.overlay.append(file_picker)
+    if page.platform == "android":
+        try:
+            page.request_permission("android.permission.CAMERA")
+        except:
+            pass
+
     page.overlay.append(dialog_ref)
     dialog_ref.open = True
     page.update()
 
-    # 移动端启动相机
-    if use_camera and camera:
-        camera.start()
-        camera_scan_loop()
+# ===================== 产品查询（原 scan_barcode_from_image 保持不变，但内部调用修改） =====================
+def scan_barcode_from_image(page: ft.Page, on_match_success):
+    """
+    原有扫码函数，用于产品匹配，内部使用BarcodeScanner
+    """
+    # 复用 scan_barcode_only 逻辑，但增加产品查询
+    def handle_result(code):
+        match_data = query_product_by_code(code)
+        on_match_success(code, match_data)
+
+    scan_barcode_only(page, handle_result, title="扫码识别商品")
 
 def get_product_by_model(model):
     conn = get_db_conn()
@@ -424,11 +361,11 @@ def add_product_from_scan(page, code, callback):
         actions=[ft.TextButton("保存", on_click=save_product),
                  ft.TextButton("取消", on_click=lambda e: setattr(dialog, 'open', False))]
     )
-    page.dialog = dialog
+    page.overlay.append(dialog)
     dialog.open = True
     page.update()
 
-# ---------------------------- PDF订单生成 ----------------------------
+# ---------------------------- PDF订单生成（未变） ----------------------------
 def generate_pdf_order(order_no, items, cust_name, phone, full_addr, send_date, total):
     try:
         pdf_path = f"订单_{order_no}.pdf"
@@ -532,12 +469,10 @@ def main(page: ft.Page):
         expand=True,
         visible=False,
     )
-    # ================= 相机权限 ==================
+
     def request_all_permissions():
-        # 仅安卓端执行
         if page.platform == "android":
             try:
-                # 危险权限必须动态申请，否则相机/相册无法使用
                 page.request_permission("android.permission.CAMERA")
                 page.request_permission("android.permission.READ_MEDIA_IMAGES")
                 page.request_permission("android.permission.READ_EXTERNAL_STORAGE")
@@ -545,23 +480,11 @@ def main(page: ft.Page):
             except Exception as e:
                 print(f"权限申请异常: {e}")
 
-    # APP启动时首次申请
     request_all_permissions()
 
-
-    # 动态宽度计算辅助函数
     def get_field_width(page, ratio=1, subtract=40):
-        """
-        获取自适应表单宽度
-        :param page: flet Page 对象（必须传入）
-        :param ratio: 宽度分割比例，比如2就是平分两列
-        :param subtract: 整体左右边距扣除值
-        :return: 计算后的控件宽度
-        """
-        # 兜底默认宽度
         base_width = page.window_width if page.window_width else 360
         calc_width = (base_width - subtract) / ratio
-        # 最小宽度限制100，防止屏幕过窄挤爆控件
         return max(100, round(calc_width))
 
     def get_fields():
@@ -575,17 +498,14 @@ def main(page: ft.Page):
         }
 
     def read_ipv6(page):
-        # 输入框，输入时自动清空提示文字
         input_tf = ft.TextField(
             label="读取码",
             width=280,
             autofocus=True,
             on_change=lambda e: (setattr(error_tip, "value", ""), page.update())
         )
-        # 提示文字控件，统一放在按钮上方
         error_tip = ft.Text("", size=12, text_align=ft.TextAlign.CENTER)
 
-        # 后台读取数据线程
         def fetch_data(key):
             try:
                 web_url = f"https://textdb.online/{key}"
@@ -612,7 +532,6 @@ def main(page: ft.Page):
                     fields = get_fields()
                     fields["host"].value = decoded
                     page.update()
-                    # 成功绿色提示
                     error_tip.value = f"已填入IPv6: {decoded}"
                     error_tip.color = ft.Colors.GREEN
                     page.update()
@@ -625,36 +544,27 @@ def main(page: ft.Page):
                 error_tip.color = ft.Colors.RED
                 page.update()
 
-        # 确定按钮点击事件
         def on_submit(e):
             read_key = input_tf.value.strip()
             if not read_key:
-                # 空输入红色文字提示
                 error_tip.value = "请输入读取码"
                 error_tip.color = ft.Colors.RED
                 page.update()
                 return
-
-            # 新增：点击确定先显示加载提示
             error_tip.value = "读取ipv6中，请稍等……"
             error_tip.color = ft.Colors.BLUE
             page.update()
-            # 后台请求数据
             threading.Thread(target=fetch_data, args=(read_key,), daemon=True).start()
 
-        # 取消按钮关闭弹窗
         def on_cancel(e):
             input_dlg.open = False
             page.update()
-
             def clean_dlg():
                 if input_dlg in page.overlay:
                     page.overlay.remove(input_dlg)
                     page.update()
-
             threading.Timer(0.1, clean_dlg).start()
 
-        # 固定尺寸弹窗布局，文字在按钮正上方
         dialog_content = ft.Container(
             content=ft.Stack([
                 input_tf,
@@ -732,7 +642,6 @@ def main(page: ft.Page):
             page.update()
         show_alert(page, "配置保存成功", "数据库配置已更新，请重新登录")
 
-
     def show_config(e):
         config_overlay.visible = True
         fields = get_fields()
@@ -758,7 +667,6 @@ def main(page: ft.Page):
         conn = get_db_conn()
         if not conn:
             show_alert(page, "提示", "数据库连接失败，请检查服务器配置")
-
             return
         cur = conn.cursor(dictionary=True)
         cur.execute("SELECT id,username,real_name,role,permissions,expire_date FROM users WHERE username=%s AND password=%s",
@@ -812,10 +720,8 @@ def main(page: ft.Page):
     page.update()
 
     # ---------- 主界面框架 ----------
-    # ---------- 主界面框架 ----------
     def build_main_ui():
         page.controls.clear()
-        # 监听窗口尺寸变化，旋转屏幕自动刷新布局
         def on_window_resize(e):
             page.update()
         page.on_window_resize = on_window_resize
@@ -827,7 +733,6 @@ def main(page: ft.Page):
             actions=[ft.IconButton(ft.Icons.PERSON, on_click=lambda e: show_profile())]
         )
 
-        # ---- 超级管理员拥有全部权限，普通用户根据权限显示，默认只有首页 ----
         if current_user and current_user.get("role") == "超级管理员":
             perm_list = PERMISSIONS
         else:
@@ -854,7 +759,6 @@ def main(page: ft.Page):
             elevation=8
         )
 
-        # 内容区占满剩余空间，可滚动，导航栏固定底部
         main_content.expand = True
         main_content.scroll = ft.ScrollMode.AUTO
 
@@ -1007,10 +911,9 @@ def main(page: ft.Page):
             ]
         current_county = county_list[2] if len(county_list) > 2 else county_list[0] if county_list else ""
 
-        # 动态宽度
-        w1 = get_field_width(page, ratio=2, subtract=60)  # 双列
-        w2 = get_field_width(page, ratio=1, subtract=40)  # 单列（全宽）
-        w3 = get_field_width(page, ratio=3, subtract=80)  # 三列
+        w1 = get_field_width(page, ratio=2, subtract=60)
+        w2 = get_field_width(page, ratio=1, subtract=40)
+        w3 = get_field_width(page, ratio=3, subtract=80)
 
         cust_input = ft.TextField(label="客户名称", hint_text="输入2字以上查询", width=w1)
         cust_suggestions = ft.Column(spacing=0, visible=False)
@@ -1209,7 +1112,6 @@ def main(page: ft.Page):
                 selected_county_text.value = county_name
                 county_selector.update()
                 load_streets()
-
             return handler
 
         county_menu_items = [
@@ -1324,7 +1226,6 @@ def main(page: ft.Page):
                 def after_add(new_model):
                     model_input.value = new_model
                     page.update()
-
                 add_product_from_scan(page, "", after_add)
                 return
 
@@ -1515,7 +1416,6 @@ def main(page: ft.Page):
             width=model_input_width,
         )
 
-        # 使用 Row 自动换行，确保内容不溢出
         main_content.controls.append(
             ft.Column(
                 [
@@ -1548,12 +1448,12 @@ def main(page: ft.Page):
             selected_county_text.value = current_county
             load_streets()
 
-    # ---------------------------- 订单查询 ----------------------------
+    # ---------------------------- 订单查询（适配屏幕） ----------------------------
     def show_order_query():
         main_content.controls.clear()
 
         total_spacing = 10
-        field_width = get_field_width(page,ratio=2, subtract=60)  # 双列
+        field_width = get_field_width(page,ratio=2, subtract=60)
         btn_width = field_width
 
         order_no_input = ft.TextField(label="订单号", width=field_width)
@@ -1728,6 +1628,7 @@ def main(page: ft.Page):
             date_display.update()
             load_orders(is_default=True)
 
+        # ---------- 订单详情（适配屏幕） ----------
         def show_order_detail(order_no):
             detail_win = ft.AlertDialog(
                 title=ft.Text(f"订单详情 - {order_no}"),
@@ -1738,8 +1639,8 @@ def main(page: ft.Page):
                     ],
                     spacing=10,
                     scroll=ft.ScrollMode.AUTO,
-                    width=page.window_width * 0.9 if page.window_width else 400,
-                    height=page.window_height * 0.7 if page.window_height else 500,
+                    width=min(page.window_width * 0.9 if page.window_width else 400, 500),
+                    height=min(page.window_height * 0.7 if page.window_height else 500, 600),
                 ),
                 actions=[
                     ft.TextButton("关闭", on_click=lambda e: setattr(detail_win, 'open', False))
@@ -1809,42 +1710,21 @@ def main(page: ft.Page):
                     container.controls.append(item_card)
                 page.update()
 
+            # 拍摄凭证 - 使用扫码函数
             def capture_payment_voucher(order_no, out_order_no, item_id):
-                def on_result(e: ft.FilePickerResultEvent):
-                    if e.files:
-                        path = e.files[0].path
-                        try:
-                            import cv2
-                            from pyzbar.pyzbar import decode
-                            img = cv2.imread(path)
-                            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                            barcodes = decode(gray)
-                            if barcodes:
-                                data = barcodes[0].data.decode('utf-8').strip()
-                                conn = get_db_conn()
-                                cur = conn.cursor()
-                                cur.execute("UPDATE sale_items SET full_out_no = %s WHERE id = %s", (data, item_id))
-                                conn.commit()
-                                conn.close()
-                                load_items()
-                                page.snack_bar = ft.SnackBar(ft.Text(f"凭证识别成功，完整外部单号: {data}"),
-                                                             duration=3000)
-                                page.snack_bar.open = True
-                                page.update()
-                            else:
-                                page.snack_bar = ft.SnackBar(ft.Text("未识别到二维码"), duration=2000)
-                                page.snack_bar.open = True
-                                page.update()
-                        except Exception as ex:
-                            page.snack_bar = ft.SnackBar(ft.Text(f"识别失败: {ex}"), duration=2000)
-                            page.snack_bar.open = True
-                            page.update()
+                def on_scan_code(code):
+                    # 识别到二维码内容，更新数据库
+                    conn = get_db_conn()
+                    cur = conn.cursor()
+                    cur.execute("UPDATE sale_items SET full_out_no = %s WHERE id = %s", (code, item_id))
+                    conn.commit()
+                    conn.close()
+                    load_items()
+                    page.snack_bar = ft.SnackBar(ft.Text(f"凭证识别成功，完整外部单号: {code}"), duration=3000)
+                    page.snack_bar.open = True
+                    page.update()
 
-                file_picker = ft.FilePicker()
-                file_picker.on_result = on_result
-                page.overlay.append(file_picker)
-                page.update()
-                file_picker.pick_files(allow_multiple=False, file_type=ft.FilePickerFileType.IMAGE)
+                scan_barcode_only(page, on_scan_code, title="识别支付凭证二维码")
 
             load_items()
 
@@ -1884,7 +1764,7 @@ def main(page: ft.Page):
         main_content.controls.clear()
 
         input_height = 50
-        input_width = get_field_width(page,ratio=1, subtract=40)  # 单列全宽
+        input_width = get_field_width(page,ratio=1, subtract=40)
 
         title = ft.Text("商品入库", size=20, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.LEFT)
 
@@ -2105,12 +1985,12 @@ def main(page: ft.Page):
         )
         page.update()
 
-    # ---------------------------- 运输管理 ----------------------------
+    # ---------------------------- 运输管理（含SN码多码选择和失败处理） ----------------------------
     def show_transport():
         main_content.controls.clear()
 
-        w1 = get_field_width(page,ratio=2, subtract=60)  # 双列
-        w2 = get_field_width(page,ratio=3, subtract=80)  # 三列
+        w1 = get_field_width(page,ratio=2, subtract=60)
+        w2 = get_field_width(page,ratio=3, subtract=80)
 
         status_dropdown = ft.Dropdown(
             label="订单状态",
@@ -2352,7 +2232,6 @@ def main(page: ft.Page):
                 from io import BytesIO
                 img = Image.open(BytesIO(file_data))
                 img.thumbnail((600, 600))
-                import tempfile, os
                 tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
                 img.save(tmp.name)
                 os.startfile(tmp.name)
@@ -2367,25 +2246,155 @@ def main(page: ft.Page):
                 from io import BytesIO
                 img = Image.open(BytesIO(file_data))
                 img.thumbnail((600, 600))
-                import tempfile, os
                 tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
                 img.save(tmp.name)
                 os.startfile(tmp.name)
 
-            # 上传SN照片：支持相机拍照+相册
-            def do_upload_sn_photo(e):
-                def on_result(e: ft.FilePickerResultEvent):
-                    if e.files:
-                        path = e.files[0].path
+            # ---------- SN码一体化管理（支持多码选择、失败后手动录入） ----------
+            def open_sn_manage_dialog(e):
+                sn_dialog = None
+                current_mode = "scan"  # scan:扫码模式 / upload:扫码成功后传照片 / manual:手动录入模式
+
+                # 定义视图
+                def refresh_view():
+                    if current_mode == "scan":
+                        sn_dialog.content = build_scan_view()
+                    elif current_mode == "upload":
+                        sn_dialog.content = build_upload_view()
+                    elif current_mode == "manual":
+                        sn_dialog.content = build_manual_view()
+                    page.update()
+
+                # 视图1：原生扫码（支持多码选择）
+                def build_scan_view():
+                    tip = ft.Text("对准SN条码自动识别", size=12, text_align=ft.TextAlign.CENTER)
+                    # 重试计数
+                    scan_attempt = 0
+
+                    def on_scan_success(e):
+                        nonlocal scan_attempt
+                        # 多码处理
+                        barcodes = e.barcodes if hasattr(e, 'barcodes') and e.barcodes else []
+                        if len(barcodes) > 1:
+                            # 弹窗让用户选择
+                            def choose_barcode(code):
+                                choice_dlg.open = False
+                                page.update()
+                                # 处理选中的码
+                                process_code(code)
+
+                            items = []
+                            for bc in barcodes:
+                                code_str = bc.data.decode('utf-8', errors='ignore')
+                                items.append(ft.ListTile(
+                                    title=ft.Text(code_str),
+                                    on_click=lambda _, c=code_str: choose_barcode(c)
+                                ))
+                            choice_dlg = ft.AlertDialog(
+                                title=ft.Text("检测到多个条码，请选择"),
+                                content=ft.Column(items, scroll=ft.ScrollMode.AUTO, height=200),
+                                actions=[ft.TextButton("取消", on_click=lambda _: (setattr(choice_dlg, 'open', False), page.update()))]
+                            )
+                            page.overlay.append(choice_dlg)
+                            choice_dlg.open = True
+                            page.update()
+                            return
+
+                        if e.data:
+                            process_code(e.data)
+                        else:
+                            # 识别失败
+                            scan_attempt += 1
+                            if scan_attempt >= 3:
+                                tip.value = "已连续失败3次，请拍照或手动输入"
+                                tip.color = ft.Colors.RED
+                                # 自动切换到手动模式（但保留拍照入口）
+                                nonlocal current_mode
+                                current_mode = "manual"
+                                refresh_view()
+                            else:
+                                tip.value = f"未识别到条码，请重试（{scan_attempt}/3）"
+                                tip.color = ft.Colors.ORANGE
+                            scanner.disabled = False
+                            page.update()
+
+                    def process_code(code):
+                        sn_code = code.strip()
+                        # 写入数据库
                         try:
-                            img = cv2.imread(path)
-                            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                            barcodes = decode(gray)
-                            sn_code = ""
-                            if barcodes:
-                                sn_code = barcodes[0].data.decode('utf-8').strip()
-                            with open(path, "rb") as f:
+                            conn = get_db_conn()
+                            cur = conn.cursor()
+                            cur.execute(
+                                "UPDATE transport SET sn_code=%s WHERE out_order_no=%s",
+                                (sn_code, current_order["out_order_no"])
+                            )
+                            conn.commit()
+                            conn.close()
+
+                            current_order["sn_code"] = sn_code
+                            sn_entry.value = sn_code
+                            tip.value = f"识别成功：{sn_code}\n请上传SN码照片存档"
+                            tip.color = ft.Colors.GREEN
+                            page.update()
+
+                            # 切换到照片上传
+                            nonlocal current_mode
+                            current_mode = "upload"
+                            refresh_view()
+                        except Exception as ex:
+                            tip.value = f"保存失败：{str(ex)[:30]}"
+                            tip.color = ft.Colors.RED
+                            scanner.disabled = False
+                            page.update()
+
+                    # 原生扫码控件
+                    scanner = ft.BarcodeScanner(
+                        on_scan=on_scan_success,
+                        width=min(320, page.window_width - 40) if page.window_width else 300,
+                        height=320,
+                        resolution=ft.BarcodeScannerResolution.MEDIUM
+                    )
+
+                    def pick_image_scan(e):
+                        tip.value = ""
+                        page.update()
+                        scanner.pick_image()
+
+                    def go_manual(e):
+                        nonlocal current_mode
+                        current_mode = "manual"
+                        refresh_view()
+
+                    return ft.Column(
+                        [
+                            scanner,
+                            tip,
+                            ft.Row(
+                                [
+                                    ft.TextButton("相册选图识别", on_click=pick_image_scan),
+                                    ft.TextButton("识别失败？手动录入", on_click=go_manual)
+                                ],
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN
+                            )
+                        ],
+                        width=min(320, page.window_width - 40) if page.window_width else 300,
+                        spacing=8,
+                        scroll=ft.ScrollMode.AUTO
+                    )
+
+                # 视图2：扫码成功后，上传SN照片
+                def build_upload_view():
+                    tip = ft.Text("请拍摄或选择SN照片完成存档", size=12, text_align=ft.TextAlign.CENTER)
+                    file_picker = ft.FilePicker()
+
+                    def on_file_pick(e: ft.FilePickerResultEvent):
+                        if not e.files:
+                            return
+                        file_path = e.files[0].path
+                        try:
+                            with open(file_path, "rb") as f:
                                 file_data = f.read()
+
                             conn = get_db_conn()
                             cur = conn.cursor()
                             cur.execute("DELETE FROM erp_files WHERE file_type='sn_photos' AND biz_no=%s",
@@ -2397,33 +2406,169 @@ def main(page: ft.Page):
                             )
                             sn_photo_path = f"db:sn_photos:{current_order['out_order_no']}"
                             cur.execute(
-                                "UPDATE transport SET sn_code=%s, sn_photo=%s WHERE out_order_no=%s",
-                                (sn_code, sn_photo_path, current_order["out_order_no"])
+                                "UPDATE transport SET sn_photo=%s WHERE out_order_no=%s",
+                                (sn_photo_path, current_order["out_order_no"])
                             )
                             conn.commit()
                             conn.close()
+
                             current_order["sn_photo"] = sn_photo_path
                             sn_photo_status.value = "SN照片: 已上传"
                             sn_photo_status.color = ft.Colors.GREEN
-                            show_alert(page,"成功", f"SN照片已上传，识别到条码: {sn_code if sn_code else '未识别'}")
+
+                            show_alert(page, "成功", "SN码与照片均已保存")
+                            sn_dialog.open = False
                             dlg.open = False
                             load_trans()
+                            page.update()
                         except Exception as ex:
-                            show_alert(page,"错误", f"上传失败: {str(ex)}")
-                    else:
-                        show_alert(page,"提示", "未选择图片")
+                            show_alert(page, "错误", f"照片上传失败: {str(ex)}")
 
-                picker = ft.FilePicker(on_result=on_result)
-                page.overlay.append(picker)
-                page.update()
-                async def pick():
-                    await picker.pick_files(
-                        allow_multiple=False,
-                        file_type=ft.FilePickerFileType.IMAGE
+                    file_picker.on_result = on_file_pick
+                    page.overlay.append(file_picker)
+
+                    def pick_photo(e):
+                        file_picker.pick_files(
+                            allow_multiple=False,
+                            file_type=ft.FilePickerFileType.IMAGE
+                        )
+
+                    return ft.Column(
+                        [
+                            ft.Icon(ft.Icons.CHECK_CIRCLE, color=ft.Colors.GREEN, size=48),
+                            ft.Text("SN码识别成功", size=16, text_align=ft.TextAlign.CENTER, color=ft.Colors.GREEN),
+                            tip,
+                            ft.ElevatedButton("上传SN照片", on_click=pick_photo, expand=True)
+                        ],
+                        width=min(320, page.window_width - 40) if page.window_width else 300,
+                        spacing=12,
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER
                     )
-                page.run_task(pick)
 
-            # 上传送货照片：支持相机拍照+相册
+                # 视图3：手动兜底模式
+                def build_manual_view():
+                    tip = ft.Text("请先上传SN照片，再输入SN码保存", size=12, text_align=ft.TextAlign.CENTER)
+                    sn_input = ft.TextField(label="手动输入SN码", value=current_order["sn_code"], width=280)
+                    file_picker = ft.FilePicker()
+                    photo_saved = False
+
+                    def on_file_pick(e: ft.FilePickerResultEvent):
+                        nonlocal photo_saved
+                        if not e.files:
+                            return
+                        file_path = e.files[0].path
+                        try:
+                            with open(file_path, "rb") as f:
+                                file_data = f.read()
+
+                            conn = get_db_conn()
+                            cur = conn.cursor()
+                            cur.execute("DELETE FROM erp_files WHERE file_type='sn_photos' AND biz_no=%s",
+                                        (current_order["out_order_no"],))
+                            cur.execute(
+                                "INSERT INTO erp_files (file_type, biz_no, file_name, file_data) VALUES (%s, %s, %s, %s)",
+                                ("sn_photos", current_order["out_order_no"], f"SN{current_order['out_order_no']}.jpg",
+                                 file_data)
+                            )
+                            sn_photo_path = f"db:sn_photos:{current_order['out_order_no']}"
+                            cur.execute(
+                                "UPDATE transport SET sn_photo=%s WHERE out_order_no=%s",
+                                (sn_photo_path, current_order["out_order_no"])
+                            )
+                            conn.commit()
+                            conn.close()
+
+                            current_order["sn_photo"] = sn_photo_path
+                            sn_photo_status.value = "SN照片: 已上传"
+                            sn_photo_status.color = ft.Colors.GREEN
+                            photo_saved = True
+                            tip.value = "照片已保存，请输入SN码后点保存"
+                            tip.color = ft.Colors.GREEN
+                            page.update()
+                        except Exception as ex:
+                            show_alert(page, "错误", f"照片上传失败: {str(ex)}")
+
+                    file_picker.on_result = on_file_pick
+                    page.overlay.append(file_picker)
+
+                    def pick_photo(e):
+                        file_picker.pick_files(
+                            allow_multiple=False,
+                            file_type=ft.FilePickerFileType.IMAGE
+                        )
+
+                    def save_sn_code(e):
+                        sn_code = sn_input.value.strip()
+                        if not sn_code:
+                            show_alert(page, "提示", "请输入SN码")
+                            return
+                        try:
+                            conn = get_db_conn()
+                            cur = conn.cursor()
+                            cur.execute(
+                                "UPDATE transport SET sn_code=%s WHERE out_order_no=%s",
+                                (sn_code, current_order["out_order_no"])
+                            )
+                            conn.commit()
+                            conn.close()
+
+                            current_order["sn_code"] = sn_code
+                            sn_entry.value = sn_code
+                            show_alert(page, "成功", "SN码已保存")
+                            sn_dialog.open = False
+                            dlg.open = False
+                            load_trans()
+                            page.update()
+                        except Exception as ex:
+                            show_alert(page, "错误", f"保存失败: {str(ex)}")
+
+                    def back_to_scan(e):
+                        nonlocal current_mode
+                        current_mode = "scan"
+                        refresh_view()
+
+                    return ft.Column(
+                        [
+                            ft.Text("手动录入SN码", size=16, weight=ft.FontWeight.BOLD),
+                            tip,
+                            ft.ElevatedButton("拍摄/选择SN照片", on_click=pick_photo, expand=True),
+                            sn_input,
+                            ft.Row(
+                                [
+                                    ft.TextButton("返回扫码", on_click=back_to_scan),
+                                    ft.ElevatedButton("保存SN码", on_click=save_sn_code)
+                                ],
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN
+                            )
+                        ],
+                        width=min(320, page.window_width - 40) if page.window_width else 300,
+                        spacing=10,
+                        scroll=ft.ScrollMode.AUTO
+                    )
+
+                # 构建主弹窗
+                sn_dialog = ft.AlertDialog(
+                    title=ft.Text("SN码录入"),
+                    content=build_scan_view(),
+                    modal=True,
+                    content_padding=ft.Padding(12, 10, 12, 10),
+                    actions=[
+                        ft.TextButton("关闭", on_click=lambda e: (setattr(sn_dialog, 'open', False), page.update()))
+                    ]
+                )
+
+                if page.platform == "android":
+                    try:
+                        page.request_permission("android.permission.CAMERA")
+                        page.request_permission("android.permission.READ_MEDIA_IMAGES")
+                    except:
+                        pass
+
+                page.overlay.append(sn_dialog)
+                sn_dialog.open = True
+                page.update()
+
+            # ---------- 上传送货照片（支持拍照/相册，加水印控制） ----------
             def do_upload_home_photo(e):
                 biz_no, prefix = get_home_photo_biz_info(order_no, out_order_no)
                 conn = get_db_conn()
@@ -2436,13 +2581,71 @@ def main(page: ft.Page):
                     return
                 cust_name, full_addr = result
 
-                def on_result(e: ft.FilePickerResultEvent):
-                    if e.files:
-                        path = e.files[0].path
-                        try:
-                            from PIL import Image, ImageDraw, ImageFont
-                            import datetime
-                            img = Image.open(path)
+                # 让用户选择拍照或相册
+                def choose_source():
+                    # 拍照：自动加水印
+                    def take_photo(e):
+                        picker = ft.FilePicker()
+                        def on_result(e: ft.FilePickerResultEvent):
+                            if e.files:
+                                process_image(e.files[0].path, add_watermark=True)
+                        picker.on_result = on_result
+                        page.overlay.append(picker)
+                        page.update()
+                        picker.pick_files(
+                            allow_multiple=False,
+                            file_type=ft.FilePickerFileType.IMAGE,
+                            source=ft.FilePickerSource.CAMERA  # 移动端使用相机
+                        )
+                    # 相册：让用户选择是否加水印
+                    def choose_album(e):
+                        def ask_watermark():
+                            def confirm(watermark):
+                                picker = ft.FilePicker()
+                                def on_result(e: ft.FilePickerResultEvent):
+                                    if e.files:
+                                        process_image(e.files[0].path, add_watermark=watermark)
+                                picker.on_result = on_result
+                                page.overlay.append(picker)
+                                page.update()
+                                picker.pick_files(
+                                    allow_multiple=False,
+                                    file_type=ft.FilePickerFileType.IMAGE,
+                                    source=ft.FilePickerSource.GALLERY
+                                )
+                                watermark_dlg.open = False
+                            watermark_dlg = ft.AlertDialog(
+                                title=ft.Text("是否添加水印？"),
+                                content=ft.Text("水印包含订单号、客户、地址等信息"),
+                                actions=[
+                                    ft.TextButton("添加水印", on_click=lambda _: confirm(True)),
+                                    ft.TextButton("不添加", on_click=lambda _: confirm(False)),
+                                ]
+                            )
+                            page.overlay.append(watermark_dlg)
+                            watermark_dlg.open = True
+                            page.update()
+                        ask_watermark()
+
+                    # 弹出选择菜单
+                    menu = ft.AlertDialog(
+                        title=ft.Text("选择图片来源"),
+                        content=ft.Column([
+                            ft.TextButton("📷 拍照", on_click=take_photo, width=200),
+                            ft.TextButton("🖼️ 相册", on_click=choose_album, width=200),
+                        ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                        actions=[ft.TextButton("取消", on_click=lambda e: setattr(menu, 'open', False))]
+                    )
+                    page.overlay.append(menu)
+                    menu.open = True
+                    page.update()
+
+                def process_image(path, add_watermark):
+                    try:
+                        from PIL import Image, ImageDraw, ImageFont
+                        import datetime
+                        img = Image.open(path)
+                        if add_watermark:
                             draw = ImageDraw.Draw(img)
                             now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             watermark = f"{now}\n订单号: {order_no}\n客户: {cust_name}\n地址: {full_addr}"
@@ -2460,47 +2663,37 @@ def main(page: ft.Page):
                                 fill=(0, 0, 0, 128)
                             )
                             draw.text((x, y), watermark, font=font, fill=(255, 255, 255))
-                            from io import BytesIO
-                            buf = BytesIO()
-                            img.save(buf, format="JPEG")
-                            file_data = buf.getvalue()
+                        from io import BytesIO
+                        buf = BytesIO()
+                        img.save(buf, format="JPEG")
+                        file_data = buf.getvalue()
 
-                            conn = get_db_conn()
-                            cur = conn.cursor()
-                            cur.execute("DELETE FROM erp_files WHERE file_type='home_photos' AND biz_no=%s", (biz_no,))
-                            cur.execute(
-                                "INSERT INTO erp_files (file_type, biz_no, file_name, file_data) VALUES (%s, %s, %s, %s)",
-                                ("home_photos", biz_no, f"{prefix}{biz_no}.jpg", file_data)
-                            )
-                            home_photo_path = f"db:home_photos:{biz_no}"
-                            cur.execute(
-                                "UPDATE transport SET home_photo=%s WHERE out_order_no=%s",
-                                (home_photo_path, out_order_no)
-                            )
-                            conn.commit()
-                            conn.close()
-                            current_order["home_photo"] = home_photo_path
-                            home_photo_status.value = "送货照片: 已上传"
-                            home_photo_status.color = ft.Colors.GREEN
-                            show_alert(page,"成功", "送货入户照片已上传（已加水印）")
-                            dlg.open = False
-                            load_trans()
-                        except Exception as ex:
-                            show_alert(page,"错误", f"上传失败: {str(ex)}")
-                    else:
-                        show_alert(page,"提示", "未选择图片")
+                        conn = get_db_conn()
+                        cur = conn.cursor()
+                        cur.execute("DELETE FROM erp_files WHERE file_type='home_photos' AND biz_no=%s", (biz_no,))
+                        cur.execute(
+                            "INSERT INTO erp_files (file_type, biz_no, file_name, file_data) VALUES (%s, %s, %s, %s)",
+                            ("home_photos", biz_no, f"{prefix}{biz_no}.jpg", file_data)
+                        )
+                        home_photo_path = f"db:home_photos:{biz_no}"
+                        cur.execute(
+                            "UPDATE transport SET home_photo=%s WHERE out_order_no=%s",
+                            (home_photo_path, out_order_no)
+                        )
+                        conn.commit()
+                        conn.close()
+                        current_order["home_photo"] = home_photo_path
+                        home_photo_status.value = "送货照片: 已上传"
+                        home_photo_status.color = ft.Colors.GREEN
+                        show_alert(page,"成功", "送货入户照片已上传" + ("（已加水印）" if add_watermark else ""))
+                        dlg.open = False
+                        load_trans()
+                    except Exception as ex:
+                        show_alert(page,"错误", f"上传失败: {str(ex)}")
 
-                picker = ft.FilePicker(on_result=on_result)
-                page.overlay.append(picker)
-                page.update()
-                async def pick():
-                    await picker.pick_files(
-                        allow_multiple=False,
-                        file_type=ft.FilePickerFileType.IMAGE
-                    )
-                page.run_task(pick)
+                choose_source()
 
-            # 弹窗内容：自适应屏幕，可滚动
+            # 弹窗内容（自适应）
             content = ft.Column(
                 [
                     ft.Text(f"订单: {order_no}", size=16, weight=ft.FontWeight.BOLD),
@@ -2517,7 +2710,7 @@ def main(page: ft.Page):
                     ft.Row([delivery02], spacing=5),
                     ft.Row(
                         [
-                            ft.IconButton(ft.Icons.CAMERA_ALT, tooltip="上传SN照片", on_click=do_upload_sn_photo),
+                            ft.IconButton(ft.Icons.CAMERA_ALT, tooltip="上传SN照片", on_click=open_sn_manage_dialog),
                             ft.IconButton(ft.Icons.HOME, tooltip="上传送货照片", on_click=do_upload_home_photo),
                             ft.IconButton(ft.Icons.PHOTO, tooltip="查看SN照片", on_click=do_view_sn_photo),
                             ft.IconButton(ft.Icons.PHOTO_LIBRARY, tooltip="查看送货照片", on_click=do_view_home_photo),
@@ -2707,7 +2900,7 @@ def main(page: ft.Page):
         load_trans()
         page.update()
 
-    # ---------------------------- 安装管理 ----------------------------
+    # ---------------------------- 安装管理（不变） ----------------------------
     def show_install():
         main_content.controls.clear()
 
@@ -3152,7 +3345,7 @@ def main(page: ft.Page):
 
         load_install()
 
-    # ---------------------------- 库存管理 ----------------------------
+    # ---------------------------- 库存管理（详情页适配屏幕） ----------------------------
     def show_stock_detail(model):
         conn = get_db_conn()
         if not conn:
@@ -3320,16 +3513,17 @@ def main(page: ft.Page):
             width=550,
         )
 
+        # 用 Row 包裹两列，自动换行适应屏幕
         content = ft.Column(
             [
                 ft.Text(f"型号：{model}  理论库存：{qty}", size=16, weight=ft.FontWeight.BOLD, color="red"),
                 date_row,
-                ft.Row([in_col, sale_col], spacing=20, scroll=ft.ScrollMode.AUTO),
+                ft.Row([in_col, sale_col], spacing=20, wrap=True, scroll=ft.ScrollMode.AUTO),
                 stat_label,
             ],
             spacing=10,
-            width=1050,
-            height=600,
+            width=min(page.window_width * 0.95, 1100) if page.window_width else 1100,
+            height=min(page.window_height * 0.85, 700) if page.window_height else 700,
             scroll=ft.ScrollMode.AUTO,
         )
 
@@ -3345,7 +3539,7 @@ def main(page: ft.Page):
     def show_stock():
         main_content.controls.clear()
 
-        w1 = get_field_width(page,ratio=2, subtract=60)  # 双列
+        w1 = get_field_width(page,ratio=2, subtract=60)
         brand_dropdown = ft.Dropdown(
             label="品牌",
             width=w1,
@@ -3491,7 +3685,7 @@ def main(page: ft.Page):
             ],
             alignment=ft.MainAxisAlignment.START,
             spacing=10,
-            wrap=True,  # 允许换行
+            wrap=True,
         )
 
         main_content.controls.append(
@@ -3513,7 +3707,6 @@ def main(page: ft.Page):
 
         load_stock()
 
-    # ---------------------------- 更多菜单 ----------------------------
     def show_more_menu():
         main_content.controls.clear()
         menu_items = ft.Column([
