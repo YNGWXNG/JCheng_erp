@@ -12,12 +12,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 安装系统依赖（pyzbar 条码识别必须）
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libzbar0 libzbar-dev
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -29,7 +23,12 @@ jobs:
           pip install uv
           uv sync
 
-      # 用 uv run 执行 flet 打包（自动识别虚拟环境）
+      # 接受安卓 SDK 证书，消除构建警告
+      - name: Accept Android licenses
+        run: |
+          uv run flutter doctor --android-licenses || true
+
+      # 用 uv run 执行 flet 打包，自动加载虚拟环境
       - name: Build APK (arm64-v8a)
         run: |
           uv run flet build apk --yes \
