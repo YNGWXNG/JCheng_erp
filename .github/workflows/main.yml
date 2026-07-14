@@ -12,7 +12,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ========== 新增：安装系统依赖（pyzbar 条码识别必须） ==========
+      # 安装系统依赖（pyzbar 条码识别必须）
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -23,16 +23,16 @@ jobs:
         with:
           python-version: '3.11'
 
-      # ========== 修改：锁定 Flet 版本 + 安装项目全部依赖 ==========
+      # 安装 uv 并同步项目全部依赖
       - name: Install project dependencies
         run: |
           pip install uv
           uv sync
 
-      # ========== 修正：打包命令修复语法 + 适配 0.85.3 ==========
+      # 用 uv run 执行 flet 打包（自动识别虚拟环境）
       - name: Build APK (arm64-v8a)
         run: |
-          flet build apk --yes \
+          uv run flet build apk --yes \
             --flutter-build-args=--target-platform \
             --flutter-build-args=android-arm64
 
