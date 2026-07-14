@@ -17,24 +17,31 @@ jobs:
         with:
           python-version: '3.11'
 
-      # 安装 uv 并同步项目全部依赖
-      - name: Install project dependencies
+      # 1. 先安装 Flutter（必须放在最前面，所有flutter命令之前）
+      - name: Setup Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.7'
+          cache: true
+
+      # 2. 安装Python、uv、全局flet
+      - name: Install Python dependencies
         run: |
-          pip install uv
+          pip install uv flet
           uv sync
 
-      # 移除 uv run，直接全局执行 flutter
-      - name: Accept Android licenses
+      # 3. 现在flutter命令已存在，自动同意安卓证书
+      - name: Accept Android SDK Licenses
         run: |
-          flutter doctor --android-licenses --yes
+          yes | flutter doctor --android-licenses
 
-      # 打包也去掉 uv run，全局flet，加minSdk23修复报错
-      - name: Build APK (arm64-v8a)
+      # 4. 打包APK，修复minSdk21报错
+      - name: Build APK arm64
         run: |
           flet build apk --yes --android-min-sdk 23 \
             --flutter-build-args "--target-platform android-arm64"
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: jiucheng-apk
