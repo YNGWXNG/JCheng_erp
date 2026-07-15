@@ -8,6 +8,7 @@ authors = [
     { name = "jiuchengERP", email = "ywxing79523@163.com" }
 ]
 
+# 本地电脑开发/调试依赖（flet run 生效，打包APK不会自动读取）
 dependencies = [
     "flet==0.85.3",
     "mysql-connector-python",
@@ -18,12 +19,25 @@ dependencies = [
     "requests"
 ]
 
+# Flet打包专用依赖（打包Android/Windows/iOS时自动嵌入内置Python，解决手机缺模块）
+[tool.flet.dependencies]
+packages = [
+    "flet==0.85.3",
+    "mysql-connector-python",
+    "Pillow",
+    "numpy",
+    "reportlab",
+    "appdirs",
+    "requests",
+    "certifi"
+]
+
 [tool.flet]
 org = "com.jiuchengcompany.jiuchengapp"
 product = "JCheng"
 copyright = "Copyright (C) 2023-2026 by jiucheng"
 
-# 安卓专属配置：静态权限声明
+# Android 打包配置：权限、最低/目标SDK版本
 [tool.flet.android]
 permissions = [
     "CAMERA",
@@ -35,7 +49,8 @@ permissions = [
 min_sdk_version = 24
 target_sdk_version = 34
 
+# 应用源码入口配置
 [tool.flet.app]
 path = "src"
-# 若入口文件不是 main.py，取消注释并指定
+# 若你的主程序不是 src/main.py，取消下一行注释并修改文件名
 # entry_point = "jiuchengMerp:main"
