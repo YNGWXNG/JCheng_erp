@@ -40,11 +40,11 @@ jobs:
       - name: Fix Gradle duplicatesStrategy
         run: |
           cd build/flutter/android/app
-          # 删除任何已存在的 packaging 或 packagingOptions 行
-          sed -i '/packaging/d' build.gradle.kts
-          sed -i '/packagingOptions/d' build.gradle.kts
-          # 在文件末尾追加正确的 packaging 配置（顶级块）
-          echo 'packaging { jniLibs { pickFirsts += "**/libapp.so" } }' >> build.gradle.kts
+          # 追加全局配置到文件末尾
+          echo '' >> build.gradle.kts
+          echo 'tasks.withType<Copy>().configureEach {' >> build.gradle.kts
+          echo '    duplicatesStrategy = DuplicatesStrategy.INCLUDE' >> build.gradle.kts
+          echo '}' >> build.gradle.kts
           cd ../../../..
 
       - name: Build APK with Flutter
