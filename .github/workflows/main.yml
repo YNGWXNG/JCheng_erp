@@ -50,22 +50,10 @@ jobs:
       - name: Generate Flet Flutter Android Project
         run: flet build apk --yes --skip-build
 
-      # 【修复语法报错核心步骤】单行Python，无多行heredoc，YAML零报错
       - name: Fix Gradle packaging duplicate error
         run: |
           cd build/flutter/android/app
-          python3 -c "
-import re
-f = 'build.gradle.kts'
-txt = open(f, 'r', encoding='utf-8').read()
-# 清除旧packaging块
-txt = re.sub(r'packaging\s*\{\n.*?\n\s*\}', '', txt, flags=re.DOTALL)
-# 插入打包规则
-insert = '    packaging {\n        jniLibs {\n            pickFirsts += \"**/libapp.so\"\n        }\n    }\n'
-txt = re.sub(r'(android\s*\{\n)', r'\1' + insert, txt, flags=re.DOTALL)
-open(f, 'w', encoding='utf-8').write(txt)
-print('✅ Gradle rule injected')
-          "
+          python3 -c "import re;f='build.gradle.kts';t=open(f,'r',encoding='utf-8').read();t=re.sub(r'packaging\s*\{\n.*?\n\s*\}', '', t, flags=re.DOTALL);blk='    packaging {\n        jniLibs {\n            pickFirsts += \"**/libapp.so\"\n        }\n    }\n';t=re.sub(r'(android\s*\{\n)', r'\1'+blk, t, flags=re.DOTALL);open(f,'w',encoding='utf-8').write(t);print('✅ Gradle rule injected')"
           cd ../../../
 
       - name: Build Release APK
