@@ -47,17 +47,16 @@ jobs:
           yes | flutter doctor --android-licenses
           flutter doctor -v
 
-      # 关键修改：移除 || true，暴露真实生成失败原因，方便排查
+      # 修复点：删除 --add-package certifi 非法参数，依赖全部读取pyproject.toml
       - name: Generate Flet Android Project (Generate full flutter project)
         run: |
           echo "Start generate flutter android project..."
-          flet build apk --yes --add-package certifi
+          flet build apk --yes
           echo "Generate finished, list root dir:"
           ls -la ./
           echo "List build folder:"
           ls -la ./build || echo "build folder not created!"
 
-      # 校验核心目录，不存在直接终止工作流，打印日志
       - name: Check build/flutter folder exists
         run: |
           if [ ! -d "./build/flutter" ]; then
@@ -66,7 +65,6 @@ jobs:
           fi
           echo "build/flutter directory exists, continue..."
 
-      # 修复libapp.so重复冲突，带目录判断
       - name: Fix libapp.so duplicate conflict
         run: |
           if [ -d "./build/flutter/android" ]; then
@@ -79,8 +77,7 @@ jobs:
             echo "Warning: build/flutter/android folder missing, skip packaging fix"
           fi
 
-      # 编译Release APK，增加目录前置校验
-      - name: 玖诚 APK
+      - name: Compile Release APK
         run: |
           if [ ! -d "./build/flutter" ]; then
             echo "ERROR: build/flutter not found, abort build!"
