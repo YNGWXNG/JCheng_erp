@@ -48,22 +48,29 @@ jobs:
           yes | flutter doctor --android-licenses
           flutter doctor -v
 
-      # 修复关键点：强制追加--add-package certifi，双重兜底，无视配置文件漏写
+      # 1. 生成工程，强制携带certifi依赖
       - name: Generate Flet Flutter Android Project
         run: flet build apk --yes --add-package certifi || true
 
+      # 2. 增加目录存在判断，不存在则跳过gradle.properties修改，不阻断流程
       - name: Fix duplicate libapp.so packaging conflict
         run: |
-          cd build/flutter/android
-          echo "android.packaging.jniLibs.pickFirsts=**/libapp.so" >> gradle.properties
-          cat gradle.properties
-          cd ../../../
+          if [ -d "build/flutter/android" ]; then
+            cd build/flutter/android
+            echo "android.packaging.jniLibs.pickFirsts=**/libapp.so" >> gradle.properties
+            cat gradle.properties
+            cd ../../../
+          else
+            echo "目录 build/flutter/android 不存在，跳过打包冲突修复"
+          fi
 
+      # 3. 编译Release APK，直接使用shell环境变量消除IDE警告
       - name: Build Release APK
         run: |
           cd build/flutter
           export SERIOUS_PYTHON_SITE_PACKAGES="$SERIOUS_PYTHON_SITE_PACKAGES"
           flutter build apk --target-platform ${{ env.FLUTTER_TARGET }} --release
+
       - name: List generated APK files
         run: ls -la ${{ env.APK_OUTPUT_PATH }}
 
