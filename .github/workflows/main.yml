@@ -35,6 +35,8 @@ jobs:
         run: |
           pip install flet==${{ env.FLET_VERSION }}
           flet --version
+          # 获取python site-packages路径，存入环境变量
+          echo "SERIOUS_PYTHON_SITE_PACKAGES=$(python3 -c 'import site; print(site.getsitepackages()[0])')" >> $GITHUB_ENV
 
       - name: Setup Flutter 3.41.7
         uses: subosito/flutter-action@v2
@@ -51,7 +53,7 @@ jobs:
       - name: Generate Flet Flutter Android Project
         run: flet build apk --yes || true
 
-      # 【修复】用gradle.properties全局配置，不破坏build.gradle.kts语法
+      # 全局配置解决libapp.so重复冲突，不修改gradle.kts
       - name: Fix duplicate libapp.so packaging conflict
         run: |
           cd build/flutter/android
@@ -59,10 +61,11 @@ jobs:
           cat gradle.properties
           cd ../../../
 
-      # 手动编译Release APK
+      # 构建时注入SERIOUS_PYTHON_SITE_PACKAGES环境变量
       - name: Build Release APK
         run: |
           cd build/flutter
+          export SERIOUS_PYTHON_SITE_PACKAGES=${{ env.SERIOUS_PYTHON_SITE_PACKAGES }}
           flutter build apk --target-platform ${{ env.FLUTTER_TARGET }} --release
 
       - name: List generated APK files
