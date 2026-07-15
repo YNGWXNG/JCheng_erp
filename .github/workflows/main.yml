@@ -47,15 +47,18 @@ jobs:
           yes | flutter doctor --android-licenses
           flutter doctor -v
 
+      # 修复点：移除--skip-build，|| true忽略编译阶段报错，仅保留生成的flutter工程目录
       - name: Generate Flet Flutter Android Project
-        run: flet build apk --yes --skip-build
+        run: flet build apk --yes || true
 
+      # 单行Python修复gradle冲突，无YAML语法报错
       - name: Fix Gradle packaging duplicate error
         run: |
           cd build/flutter/android/app
           python3 -c "import re;f='build.gradle.kts';t=open(f,'r',encoding='utf-8').read();t=re.sub(r'packaging\s*\{\n.*?\n\s*\}', '', t, flags=re.DOTALL);blk='    packaging {\n        jniLibs {\n            pickFirsts += \"**/libapp.so\"\n        }\n    }\n';t=re.sub(r'(android\s*\{\n)', r'\1'+blk, t, flags=re.DOTALL);open(f,'w',encoding='utf-8').write(t);print('✅ Gradle rule injected')"
           cd ../../../
 
+      # 手动执行flutter编译APK
       - name: Build Release APK
         run: |
           cd build/flutter
