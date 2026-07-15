@@ -31,49 +31,36 @@ jobs:
         run: |
           yes | flutter doctor --android-licenses
 
-      # 第一步：生成 Flutter 项目（允许失败）
       - name: Generate Flutter project with flet
         run: |
           flet build apk --yes \
             --flutter-build-args=--target-platform \
             --flutter-build-args=android-arm64 || true
 
-      # 第二步：精确修改 build.gradle.kts（Python 脚本）
-      - name: Fix Gradle duplicatesStrategy with Python
+      - name: Fix Gradle duplicatesStrategy
         run: |
-          python -c "
-import re
+          python3 << 'EOF'
+          import re
+          file_path = 'build/flutter/android/app/build.gradle.kts'
+          with open(file_path, 'r') as f:
+              content = f.read()
+          # 删除 packaging 块（包括 packagingOptions）
+          content = re.sub(r'packaging\s*\{[^}]*\}', '', content, flags=re.DOTALL)
+          content = re.sub(r'packagingOptions\s*\{[^}]*\}', '', content, flags=re.DOTALL)
+          # 在 android { 后插入新的 packaging 块（注意缩进和引号）
+          pattern = r'(android\s*\{)'
+          replacement = r'\1\n    packaging {\n        jniLibs {\n            pickFirsts += "**/libapp.so"\n        }\n    }'
+          content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+          with open(file_path, 'w') as f:
+              f.write(content)
+          print('✅ build.gradle.kts 已修复')
+          EOF
 
-file_path = 'build/flutter/android/app/build.gradle.kts'
-
-with open(file_path, 'r') as f:
-    content = f.read()
-
-# 删除所有已存在的 packaging 或 packagingOptions 块（无论是否完整）
-content = re.sub(r'packaging\s*\{[^}]*\}', '', content, flags=re.DOTALL)
-content = re.sub(r'packagingOptions\s*\{[^}]*\}', '', content, flags=re.DOTALL)
-
-# 在 android { 后插入新的 packaging 块
-pattern = r'(android\s*\{)'
-replacement = r'\1\n    packaging {\n        jniLibs {\n            pickFirsts += \"**/libapp.so\"\n        }\n    }'
-content = re.sub(pattern, replacement, content, flags=re.DOTALL)
-
-# 如果 android 块已包含其他内容，确保插入位置正确（在 android { 后的第一行）
-# 上述 regex 会在 'android {' 后插入，应该可行。
-
-with open(file_path, 'w') as f:
-    f.write(content)
-
-print('✅ build.gradle.kts 已修复')
-"
-
-      # 第三步：手动执行 Flutter 构建
       - name: Build APK with Flutter
         run: |
           cd build/flutter
           flutter build apk --target-platform android-arm64
 
-      # 第四步：上传 APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
