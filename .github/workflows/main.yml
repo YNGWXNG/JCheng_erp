@@ -39,22 +39,13 @@ jobs:
 
       - name: Fix Gradle duplicatesStrategy
         run: |
-          python3 << 'EOF'
-          import re
-          file_path = 'build/flutter/android/app/build.gradle.kts'
-          with open(file_path, 'r') as f:
-              content = f.read()
-          # 删除 packaging 块（包括 packagingOptions）
-          content = re.sub(r'packaging\s*\{[^}]*\}', '', content, flags=re.DOTALL)
-          content = re.sub(r'packagingOptions\s*\{[^}]*\}', '', content, flags=re.DOTALL)
-          # 在 android { 后插入新的 packaging 块（注意缩进和引号）
-          pattern = r'(android\s*\{)'
-          replacement = r'\1\n    packaging {\n        jniLibs {\n            pickFirsts += "**/libapp.so"\n        }\n    }'
-          content = re.sub(pattern, replacement, content, flags=re.DOTALL)
-          with open(file_path, 'w') as f:
-              f.write(content)
-          print('✅ build.gradle.kts 已修复')
-          EOF
+          cd build/flutter/android/app
+          # 删除任何已存在的 packaging 或 packagingOptions 行
+          sed -i '/packaging/d' build.gradle.kts
+          sed -i '/packagingOptions/d' build.gradle.kts
+          # 在文件末尾追加正确的 packaging 配置（顶级块）
+          echo 'packaging { jniLibs { pickFirsts += "**/libapp.so" } }' >> build.gradle.kts
+          cd ../../../..
 
       - name: Build APK with Flutter
         run: |
