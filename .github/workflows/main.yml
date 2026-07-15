@@ -31,26 +31,27 @@ jobs:
         run: |
           yes | flutter doctor --android-licenses
 
-      # 第一步：运行 flet build apk（允许失败，因为后续会手动修复）
-      - name: Generate Flutter project with flet (ignore failure)
+      # 第一步：生成 Flutter 项目（允许失败）
+      - name: Generate Flutter project with flet
         run: |
           flet build apk --yes \
             --flutter-build-args=--target-platform \
             --flutter-build-args=android-arm64 || true
 
-      # 第二步：修改 build.gradle，解决 duplicatesStrategy 问题
+      # 第二步：修复 Gradle 配置（仅处理 build.gradle.kts）
       - name: Fix Gradle duplicatesStrategy
         run: |
           cd build/flutter/android/app
-          # 检查是否存在 build.gradle 或 build.gradle.kts
-          if [ -f build.gradle ]; then
-            echo "android { packagingOptions { jniLibs { useLegacyPackaging true } duplicatesStrategy = DuplicatesStrategy.INCLUDE } }" >> build.gradle
-          elif [ -f build.gradle.kts ]; then
-            echo "android { packagingOptions { jniLibs { useLegacyPackaging = true } duplicatesStrategy = DuplicatesStrategy.INCLUDE } }" >> build.gradle.kts
-          else
-            echo "❌ No build.gradle file found!"
-            exit 1
-          fi
+          
+          # 删除之前可能追加的错误行（如果有）
+          sed -i '/^android { packagingOptions {/d' build.gradle.kts || true
+          
+          # 在 android 块内插入正确的 packagingOptions（使用 pickFirsts 避免重复）
+          sed -i '/android {/a\
+          packagingOptions {\
+              pickFirsts += "**/libapp.so"\
+          }' build.gradle.kts
+          
           cd ../../../..
 
       # 第三步：手动执行 Flutter 构建
@@ -59,7 +60,7 @@ jobs:
           cd build/flutter
           flutter build apk --target-platform android-arm64
 
-      # 第四步：上传 APK（路径是 flutter 构建输出）
+      # 第四步：上传 APK（Flutter 默认输出路径）
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
