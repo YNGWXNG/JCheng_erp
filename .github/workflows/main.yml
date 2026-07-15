@@ -47,11 +47,26 @@ jobs:
           yes | flutter doctor --android-licenses
           flutter doctor -v
 
-      # 生成Flutter工程，强制打包certifi，兜底忽略生成阶段报错
-      - name: Generate Flet Android Project
-        run: flet build apk --yes --add-package certifi || true
+      # 关键修改：移除 || true，暴露真实生成失败原因，方便排查
+      - name: Generate Flet Android Project (Generate full flutter project)
+        run: |
+          echo "Start generate flutter android project..."
+          flet build apk --yes --add-package certifi
+          echo "Generate finished, list root dir:"
+          ls -la ./
+          echo "List build folder:"
+          ls -la ./build || echo "build folder not created!"
 
-      # 增加文件夹判断，不存在则跳过，杜绝cd找不到目录报错
+      # 校验核心目录，不存在直接终止工作流，打印日志
+      - name: Check build/flutter folder exists
+        run: |
+          if [ ! -d "./build/flutter" ]; then
+            echo "ERROR: build/flutter directory missing, generate step failed!"
+            exit 1
+          fi
+          echo "build/flutter directory exists, continue..."
+
+      # 修复libapp.so重复冲突，带目录判断
       - name: Fix libapp.so duplicate conflict
         run: |
           if [ -d "./build/flutter/android" ]; then
@@ -64,15 +79,24 @@ jobs:
             echo "Warning: build/flutter/android folder missing, skip packaging fix"
           fi
 
-      # 编译Release APK，shell直接读取环境变量，消除IDE模板警告
-      - name: Compile Release APK
+      # 编译Release APK，增加目录前置校验
+      - name: 玖诚 APK
         run: |
+          if [ ! -d "./build/flutter" ]; then
+            echo "ERROR: build/flutter not found, abort build!"
+            exit 1
+          fi
           cd build/flutter
           export SERIOUS_PYTHON_SITE_PACKAGES="$SERIOUS_PYTHON_SITE_PACKAGES"
           flutter build apk --target-platform $FLUTTER_TARGET --release
 
       - name: List built APK files
-        run: ls -la $APK_OUTPUT_PATH
+        run: |
+          if [ -d "$APK_OUTPUT_PATH" ]; then
+            ls -la $APK_OUTPUT_PATH
+          else
+            echo "APK output folder not found!"
+          fi
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
