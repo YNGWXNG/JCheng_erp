@@ -1,5 +1,4 @@
 name: Build Android APK
-
 on:
   push:
     branches: [ main ]
@@ -31,51 +30,51 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install fixed version Flet
+      - name: Install Flet & export site-packages path
         run: |
           pip install flet==${{ env.FLET_VERSION }}
           flet --version
+          echo "SERIOUS_PYTHON_SITE_PACKAGES=$(python3 -c 'import site; print(site.getsitepackages()[0])')" >> $GITHUB_ENV
 
-      - name: Setup Flutter SDK 3.41.7
+      - name: Setup Flutter 3.41.7
         uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.41.7"
           cache: false
 
-      - name: Accept all Android SDK Licenses
+      - name: Accept Android SDK Licenses
         run: |
           yes | flutter doctor --android-licenses
           flutter doctor -v
 
-      # 1. 生成 Flutter 项目（允许失败）
-      - name: Generate Flet Flutter Android Project
+      # 生成Flutter工程，强制打包certifi，兜底忽略生成阶段报错
+      - name: Generate Flet Android Project
         run: flet build apk --yes --add-package certifi || true
 
-      # 2. 在 gradle.properties 中添加 pickFirsts 配置，解决 libapp.so 重复
-      - name: Fix duplicate libapp.so by gradle.properties
+      # 增加文件夹判断，不存在则跳过，杜绝cd找不到目录报错
+      - name: Fix libapp.so duplicate conflict
         run: |
-          if [ -d "build/flutter/android" ]; then
+          if [ -d "./build/flutter/android" ]; then
             cd build/flutter/android
-            # 删除旧的配置（如果存在）
-            sed -i '/android.packaging.jniLibs.pickFirsts/d' gradle.properties 2>/dev/null || true
-            # 添加新配置
             echo "android.packaging.jniLibs.pickFirsts=**/libapp.so" >> gradle.properties
+            echo "==== gradle.properties content ===="
             cat gradle.properties
             cd ../../../
           else
-            echo "Directory build/flutter/android does not exist, skipping fix."
+            echo "Warning: build/flutter/android folder missing, skip packaging fix"
           fi
 
-      # 3. 编译 Release APK
-      - name: jiucheng APK
+      # 编译Release APK，shell直接读取环境变量，消除IDE模板警告
+      - name: Compile Release APK
         run: |
           cd build/flutter
-          flutter build apk --target-platform ${{ env.FLUTTER_TARGET }} --release
+          export SERIOUS_PYTHON_SITE_PACKAGES="$SERIOUS_PYTHON_SITE_PACKAGES"
+          flutter build apk --target-platform $FLUTTER_TARGET --release
 
-      - name: List generated APK files
-        run: ls -la ${{ env.APK_OUTPUT_PATH }}
+      - name: List built APK files
+        run: ls -la $APK_OUTPUT_PATH
 
-      - name: Upload built APK Artifact
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: jiucheng-erp-apk-release
