@@ -31,29 +31,27 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install fixed version Flet
+      - name: Install fixed version Flet & export python site-packages
         run: |
           pip install flet==${{ env.FLET_VERSION }}
           flet --version
-          # 获取python site-packages路径，存入环境变量
           echo "SERIOUS_PYTHON_SITE_PACKAGES=$(python3 -c 'import site; print(site.getsitepackages()[0])')" >> $GITHUB_ENV
 
-      - name: Setup Flutter 3.41.7
+      - name: Setup Flutter SDK 3.41.7
         uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.41.7"
           cache: false
 
-      - name: Accept Android SDK Licenses
+      - name: Accept all Android SDK Licenses
         run: |
           yes | flutter doctor --android-licenses
           flutter doctor -v
 
-      # 生成Flutter工程，忽略构建中途失败
+      # 修复关键点：强制追加--add-package certifi，双重兜底，无视配置文件漏写
       - name: Generate Flet Flutter Android Project
-        run: flet build apk --yes || true
+        run: flet build apk --yes --add-package certifi || true
 
-      # 全局配置解决libapp.so重复冲突，不修改gradle.kts
       - name: Fix duplicate libapp.so packaging conflict
         run: |
           cd build/flutter/android
@@ -61,19 +59,17 @@ jobs:
           cat gradle.properties
           cd ../../../
 
-      # 构建时注入SERIOUS_PYTHON_SITE_PACKAGES环境变量
       - name: Build Release APK
         run: |
           cd build/flutter
-          export SERIOUS_PYTHON_SITE_PACKAGES=${{ env.SERIOUS_PYTHON_SITE_PACKAGES }}
+          export SERIOUS_PYTHON_SITE_PACKAGES="$SERIOUS_PYTHON_SITE_PACKAGES"
           flutter build apk --target-platform ${{ env.FLUTTER_TARGET }} --release
-
       - name: List generated APK files
         run: ls -la ${{ env.APK_OUTPUT_PATH }}
 
-      - name: Upload APK Artifact
+      - name: Upload built APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: jiucheng-apk-release
+          name: jiucheng-erp-apk-release
           path: ${{ env.APK_OUTPUT_PATH }}/*.apk
           retention-days: 30
