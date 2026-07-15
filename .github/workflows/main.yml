@@ -31,14 +31,37 @@ jobs:
         run: |
           yes | flutter doctor --android-licenses
 
-      - name: Build APK arm64
+      # 第一步：运行 flet build apk（允许失败，因为后续会手动修复）
+      - name: Generate Flutter project with flet (ignore failure)
         run: |
           flet build apk --yes \
             --flutter-build-args=--target-platform \
-            --flutter-build-args=android-arm64
+            --flutter-build-args=android-arm64 || true
 
+      # 第二步：修改 build.gradle，解决 duplicatesStrategy 问题
+      - name: Fix Gradle duplicatesStrategy
+        run: |
+          cd build/flutter/android/app
+          # 检查是否存在 build.gradle 或 build.gradle.kts
+          if [ -f build.gradle ]; then
+            echo "android { packagingOptions { jniLibs { useLegacyPackaging true } duplicatesStrategy = DuplicatesStrategy.INCLUDE } }" >> build.gradle
+          elif [ -f build.gradle.kts ]; then
+            echo "android { packagingOptions { jniLibs { useLegacyPackaging = true } duplicatesStrategy = DuplicatesStrategy.INCLUDE } }" >> build.gradle.kts
+          else
+            echo "❌ No build.gradle file found!"
+            exit 1
+          fi
+          cd ../../../..
+
+      # 第三步：手动执行 Flutter 构建
+      - name: Build APK with Flutter
+        run: |
+          cd build/flutter
+          flutter build apk --target-platform android-arm64
+
+      # 第四步：上传 APK（路径是 flutter 构建输出）
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: jiucheng-apk
-          path: build/apk/*.apk
+          path: build/flutter/build/app/outputs/flutter-apk/*.apk
