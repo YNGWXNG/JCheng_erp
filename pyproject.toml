@@ -20,7 +20,7 @@ dependencies = [
 
 [tool.flet]
 org = "com.jiuchengcompany.jiuchengapp"
-product = "玖诚ERP"
+product = "JCheng"
 copyright = "Copyright (C) 2023-2026 by jiucheng"
 
 # 安卓专属配置：静态权限声明
