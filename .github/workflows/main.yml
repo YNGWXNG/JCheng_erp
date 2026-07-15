@@ -31,17 +31,18 @@ jobs:
         run: |
           yes | flutter doctor --android-licenses
 
-      - name: Generate Flutter project with flet
+      - name: Generate Flutter project with flet (allow failure)
         run: |
           flet build apk --yes \
             --flutter-build-args=--target-platform \
             --flutter-build-args=android-arm64 || true
 
-      - name: Fix Gradle duplicatesStrategy
+      - name: Fix Gradle duplicatesStrategy (append to build.gradle.kts)
         run: |
           cd build/flutter/android/app
-          # 追加全局配置到文件末尾
-          echo '' >> build.gradle.kts
+          # 删除之前可能追加的错误行（如果有）
+          sed -i '/tasks.withType<Copy>().configureEach/d' build.gradle.kts
+          # 在文件末尾追加正确的配置
           echo 'tasks.withType<Copy>().configureEach {' >> build.gradle.kts
           echo '    duplicatesStrategy = DuplicatesStrategy.INCLUDE' >> build.gradle.kts
           echo '}' >> build.gradle.kts
