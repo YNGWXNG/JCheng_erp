@@ -46,7 +46,14 @@ PERMISSION_ICONS = {
 
 def get_window_width(page):
     try:
-        return page.window.width if page.window else DEFAULT_WIDTH
+        # 移动端使用 page.width
+        if hasattr(page, 'width') and page.width:
+            return page.width
+        # 桌面端使用 page.window.width
+        elif hasattr(page, 'window') and page.window and hasattr(page.window, 'width'):
+            return page.window.width
+        else:
+            return DEFAULT_WIDTH
     except:
         return DEFAULT_WIDTH
 
@@ -744,18 +751,17 @@ def main(page: ft.Page):
     # ---------- 主界面框架 ----------
     def build_main_ui():
         page.controls.clear()
-        # 设置 AppBar
-        page.appbar = ft.AppBar(
+        page.scroll = None  # 避免与 main_content 的滚动冲突
+
+        # 创建 AppBar
+        appbar = ft.AppBar(
             title=ft.Text("玖诚电器ERP"),
             center_title=False,
             bgcolor=ft.Colors.SURFACE,
             actions=[ft.IconButton(ft.Icons.PERSON, on_click=lambda e: show_profile())]
         )
 
-        # 设置页面滚动
-        page.scroll = ft.ScrollMode.AUTO
-
-        # 准备导航栏目的地
+        # 准备导航栏
         if current_user and current_user.get("role") == "超级管理员":
             perm_list = PERMISSIONS
         else:
@@ -776,20 +782,28 @@ def main(page: ft.Page):
                     )
                 )
 
-        # 设置导航栏
-        page.navigation_bar = ft.NavigationBar(
+        nav_bar = ft.NavigationBar(
             destinations=destinations,
             on_change=on_nav_change,
             elevation=8
         )
 
-        # 清空 main_content 并添加到页面
+        # 清空并设置 main_content
         main_content.controls.clear()
         main_content.expand = True
         main_content.scroll = ft.ScrollMode.AUTO
-        page.add(main_content)
 
-        # 显示首页
+        # 构建主布局
+        main_layout = ft.Column(
+            [
+                appbar,
+                main_content,
+                nav_bar,
+            ],
+            spacing=0,
+            expand=True,
+        )
+        page.add(main_layout)
         show_home()
 
     def on_nav_change(e):
