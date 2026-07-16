@@ -480,7 +480,7 @@ def main(page: ft.Page):
                 ),
             ],
             spacing=12,
-            scroll=ft.ScrollMode.AUTO,
+            # scroll=ft.ScrollMode.AUTO,
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
         ),
         bgcolor=ft.Colors.WHITE,
@@ -913,7 +913,7 @@ def main(page: ft.Page):
                     ft.Row([refresh_btn], alignment=ft.MainAxisAlignment.CENTER),
                 ],
                 spacing=0,
-                scroll=ft.ScrollMode.AUTO,
+                # scroll=ft.ScrollMode.AUTO,
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             )
         )
@@ -1471,7 +1471,7 @@ def main(page: ft.Page):
                     btn_row,
                 ],
                 spacing=12,
-                scroll=ft.ScrollMode.AUTO
+                # scroll=ft.ScrollMode.AUTO
             )
         )
         page.update()
@@ -1670,7 +1670,7 @@ def main(page: ft.Page):
                         ft.Column(spacing=5),
                     ],
                     spacing=10,
-                    scroll=ft.ScrollMode.AUTO,
+                    # scroll=ft.ScrollMode.AUTO,
                     width=min(get_window_width(page) * 0.9 if get_window_width(page) else 400, 500),
                     height=min(get_window_width(page) * 0.7 if get_window_width(page) else 500, 600),
                 ),
@@ -1783,7 +1783,7 @@ def main(page: ft.Page):
                 result_list,
             ],
             spacing=10,
-            scroll=ft.ScrollMode.AUTO,
+            # scroll=ft.ScrollMode.AUTO,
         )
         main_content.controls.append(query_panel)
         load_orders(is_default=True)
@@ -2010,7 +2010,7 @@ def main(page: ft.Page):
                     save_btn,
                 ],
                 spacing=15,
-                scroll=ft.ScrollMode.AUTO,
+                # scroll=ft.ScrollMode.AUTO,
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             )
         )
@@ -2044,7 +2044,7 @@ def main(page: ft.Page):
         query_btn = ft.Button("查询", icon=ft.Icons.SEARCH)
         reset_btn = ft.Button("重置", icon=ft.Icons.REFRESH)
 
-        trans_list = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO)
+        trans_list = ft.Column(spacing=10,scroll=ft.ScrollMode.AUTO)
 
         def get_home_photo_biz_info(order_no, out_order_no):
             try:
@@ -2400,7 +2400,7 @@ def main(page: ft.Page):
                         ],
                         width=min(320, (get_window_width(page) or DEFAULT_WIDTH) - 40),
                         spacing=8,
-                        scroll=ft.ScrollMode.AUTO
+                        # scroll=ft.ScrollMode.AUTO
                     )
 
                 # 视图2：扫码成功后，上传SN照片
@@ -2564,7 +2564,7 @@ def main(page: ft.Page):
                         ],
                         width=min(320, (get_window_width(page) or DEFAULT_WIDTH) - 40),
                         spacing=10,
-                        scroll=ft.ScrollMode.AUTO
+                        # scroll=ft.ScrollMode.AUTO
                     )
 
                 # 构建主弹窗
@@ -2744,7 +2744,7 @@ def main(page: ft.Page):
                     ),
                 ],
                 spacing=8,
-                scroll=ft.ScrollMode.AUTO,
+                # scroll=ft.ScrollMode.AUTO,
                 width=min(get_window_width(page) - 40, 420) if get_window_width(page) else 320,
                 height=min(get_window_width(page) - 120, 600) if get_window_width(page) else 500,
             )
@@ -2911,7 +2911,7 @@ def main(page: ft.Page):
                     trans_list,
                 ],
                 spacing=10,
-                scroll=ft.ScrollMode.AUTO,
+                # scroll=ft.ScrollMode.AUTO,
             )
         )
         load_trans()
@@ -3356,7 +3356,7 @@ def main(page: ft.Page):
                     install_list,
                 ],
                 spacing=10,
-                scroll=ft.ScrollMode.AUTO,
+                # scroll=ft.ScrollMode.AUTO,
             )
         )
 
@@ -3540,7 +3540,7 @@ def main(page: ft.Page):
             spacing=10,
             width=min(get_window_width(page) * 0.95, 1100) if get_window_width(page) else 1100,
             height=min(get_window_width(page) * 0.85, 700) if get_window_width(page) else 700,
-            scroll=ft.ScrollMode.AUTO,
+            # scroll=ft.ScrollMode.AUTO,
         )
 
         dlg = ft.AlertDialog(
@@ -3717,7 +3717,7 @@ def main(page: ft.Page):
                     stock_list,
                 ],
                 spacing=10,
-                scroll=ft.ScrollMode.AUTO,
+                # scroll=ft.ScrollMode.AUTO,
             )
         )
 
@@ -4414,7 +4414,7 @@ ID: {row[0]}
                         perm_col,
                     ],
                     spacing=8,
-                    scroll=ft.ScrollMode.AUTO,
+                    # scroll=ft.ScrollMode.AUTO,
                     width=300,
                 ),
                 actions=[
@@ -4532,7 +4532,7 @@ ID: {row[0]}
                             perm_col,
                         ],
                         spacing=8,
-                        scroll=ft.ScrollMode.AUTO,
+                        # scroll=ft.ScrollMode.AUTO,
                         width=300,
                     ),
                     actions=[
@@ -4642,7 +4642,7 @@ ID: {row[0]}
                     ),
                 ],
                 spacing=10,
-                scroll=ft.ScrollMode.AUTO,
+                # scroll=ft.ScrollMode.AUTO,
             )
         )
         load_users()
