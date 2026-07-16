@@ -744,17 +744,18 @@ def main(page: ft.Page):
     # ---------- 主界面框架 ----------
     def build_main_ui():
         page.controls.clear()
-        def on_window_resize(e):
-            page.update()
-        page.on_window_resize = on_window_resize
-
-        appbar = ft.AppBar(
+        # 设置 AppBar
+        page.appbar = ft.AppBar(
             title=ft.Text("玖诚电器ERP"),
             center_title=False,
             bgcolor=ft.Colors.SURFACE,
             actions=[ft.IconButton(ft.Icons.PERSON, on_click=lambda e: show_profile())]
         )
 
+        # 设置页面滚动
+        page.scroll = ft.ScrollMode.AUTO
+
+        # 准备导航栏目的地
         if current_user and current_user.get("role") == "超级管理员":
             perm_list = PERMISSIONS
         else:
@@ -775,29 +776,20 @@ def main(page: ft.Page):
                     )
                 )
 
-        nav_bar = ft.NavigationBar(
+        # 设置导航栏
+        page.navigation_bar = ft.NavigationBar(
             destinations=destinations,
             on_change=on_nav_change,
             elevation=8
         )
 
+        # 清空 main_content 并添加到页面
+        main_content.controls.clear()
         main_content.expand = True
         main_content.scroll = ft.ScrollMode.AUTO
+        page.add(main_content)
 
-        main_content_container = ft.Container(
-            expand=True,
-            content=main_content,
-        )
-        main_layout = ft.Column(
-            [
-                appbar,
-                main_content_container,
-                nav_bar,
-            ],
-            spacing=0,
-            expand=True,
-        )
-        page.add(main_layout)
+        # 显示首页
         show_home()
 
     def on_nav_change(e):
@@ -2455,7 +2447,7 @@ def main(page: ft.Page):
                             tip,
                             ft.ElevatedButton("上传SN照片", on_click=pick_photo, expand=True)
                         ],
-                        width=min(320, (page.window_width or DEFAULT_WIDTH) - 40),
+                        width=min(320, (get_window_width(page) or DEFAULT_WIDTH) - 40),
                         spacing=12,
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER
                     )
@@ -2932,13 +2924,13 @@ def main(page: ft.Page):
 
         start_date_field = ft.TextField(
             label="起始日期",
-            width=w2,
+            width=w1,
             value=(date.today() - timedelta(days=30)).strftime("%Y-%m-%d"),
             read_only=True,
         )
         end_date_field = ft.TextField(
             label="结束日期",
-            width=w2,
+            width=w1,
             value=date.today().strftime("%Y-%m-%d"),
             read_only=True,
         )
