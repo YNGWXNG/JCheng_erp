@@ -1,4 +1,5 @@
 name: Build Android APK
+
 on:
   push:
     branches: [ main ]
@@ -6,8 +7,6 @@ on:
 
 env:
   FLET_VERSION: "0.85.3"
-  FLUTTER_TARGET: "android-arm64"
-  APK_OUTPUT_PATH: build/flutter/build/app/outputs/flutter-apk
 
 jobs:
   build-android:
@@ -30,13 +29,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Flet & export site-packages path
+      - name: Install Flet
         run: |
           pip install flet==${{ env.FLET_VERSION }}
           flet --version
-          echo "SERIOUS_PYTHON_SITE_PACKAGES=$(python3 -c 'import site; print(site.getsitepackages()[0])')" >> $GITHUB_ENV
 
-      - name: Setup Flutter 3.41.7
+      - name: Setup Flutter SDK
         uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.41.7"
@@ -47,57 +45,29 @@ jobs:
           yes | flutter doctor --android-licenses
           flutter doctor -v
 
-      # 修复点：删除 --add-package certifi 非法参数，依赖全部读取pyproject.toml
-      - name: Generate Flet Android Project (Generate full flutter project)
-        run: |
-          echo "Start generate flutter android project..."
-          flet build apk --yes
-          echo "Generate finished, list root dir:"
-          ls -la ./
-          echo "List build folder:"
-          ls -la ./build || echo "build folder not created!"
+      # 1. 首次构建（允许失败，只为了生成项目结构）
+      - name: Generate Flutter project
+        run: flet build apk --yes || true
 
-      - name: Check build/flutter folder exists
+      # 2. 修复 Gradle 配置（解决 libapp.so 重复问题）
+      - name: Fix duplicate libapp.so
         run: |
-          if [ ! -d "./build/flutter" ]; then
-            echo "ERROR: build/flutter directory missing, generate step failed!"
-            exit 1
-          fi
-          echo "build/flutter directory exists, continue..."
-
-      - name: Fix libapp.so duplicate conflict
-        run: |
-          if [ -d "./build/flutter/android" ]; then
+          if [ -d "build/flutter/android" ]; then
             cd build/flutter/android
+            # 删除旧配置（如果存在）
+            sed -i '/android.packaging.jniLibs.pickFirsts/d' gradle.properties 2>/dev/null || true
+            # 添加新配置
             echo "android.packaging.jniLibs.pickFirsts=**/libapp.so" >> gradle.properties
-            echo "==== gradle.properties content ===="
-            cat gradle.properties
             cd ../../../
-          else
-            echo "Warning: build/flutter/android folder missing, skip packaging fix"
           fi
 
-      - name: Compile Release APK
-        run: |
-          if [ ! -d "./build/flutter" ]; then
-            echo "ERROR: build/flutter not found, abort build!"
-            exit 1
-          fi
-          cd build/flutter
-          export SERIOUS_PYTHON_SITE_PACKAGES="$SERIOUS_PYTHON_SITE_PACKAGES"
-          flutter build apk --target-platform $FLUTTER_TARGET --release
+      # 3. 第二次构建（完整构建，包含所有依赖）
+      - name: Build APK
+        run: flet build apk --yes
 
-      - name: List built APK files
-        run: |
-          if [ -d "$APK_OUTPUT_PATH" ]; then
-            ls -la $APK_OUTPUT_PATH
-          else
-            echo "APK output folder not found!"
-          fi
-
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: jiucheng-erp-apk-release
-          path: ${{ env.APK_OUTPUT_PATH }}/*.apk
+          name: jiucheng-erp-apk
+          path: build/apk/*.apk
           retention-days: 30
