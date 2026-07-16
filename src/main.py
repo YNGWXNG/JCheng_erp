@@ -784,10 +784,14 @@ def main(page: ft.Page):
         main_content.expand = True
         main_content.scroll = ft.ScrollMode.AUTO
 
+        main_content_container = ft.Container(
+            expand=True,
+            content=main_content,
+        )
         main_layout = ft.Column(
             [
                 appbar,
-                main_content,
+                main_content_container,
                 nav_bar,
             ],
             spacing=0,
@@ -854,9 +858,9 @@ def main(page: ft.Page):
             ("🔧", "待安装订单", str(pending_install), ft.Colors.RED),
         ]
 
-        padding = 16
-        spacing = 12
-        base_width = get_window_width(page)/4
+        padding = 20
+        spacing = 15
+        base_width = get_window_width(page)
         card_width = (base_width - padding * 2 - spacing) // 2
 
         cards_row = ft.Row(
