@@ -182,11 +182,12 @@ def show_alert(page: ft.Page, title, content, on_ok=None):
     dlg.open = True
     page.update()
 
-# ===================== 通用扫码函数（仅返回识别码，不查询产品） =====================
+
+# ===================== 通用扫码函数（Flet 0.85.3 全平台适配版） =====================
 def scan_barcode_only(page: ft.Page, callback, title="扫码识别"):
     """
-    通用条码/二维码识别（手机端原生相机+相册，桌面端兼容）
-    接口与原函数完全一致，上层所有调用无需修改
+    通用条码/二维码识别（手机端原生相机+相册，桌面端仅相册）
+    适配 Flet 0.85.3 版本API，修复 on_result 参数报错
     """
     # 本地解析图片中的条码
     def _decode_barcode(image_path):
@@ -195,7 +196,6 @@ def scan_barcode_only(page: ft.Page, callback, title="扫码识别"):
             from PIL import Image
             img = Image.open(image_path)
             raw_results = decode(img)
-            # 清洗去重
             code_list = []
             for item in raw_results:
                 code_str = item.data.decode("utf-8", errors="ignore").strip()
@@ -217,7 +217,7 @@ def scan_barcode_only(page: ft.Page, callback, title="扫码识别"):
             show_alert(page, "识别失败", "未检测到有效条码，请对准后重试")
             return
 
-        # 多码选择逻辑（与原业务完全兼容）
+        # 多码选择逻辑
         if len(codes) > 1:
             def _select_code(selected_code):
                 choice_dlg.open = False
@@ -240,12 +240,12 @@ def scan_barcode_only(page: ft.Page, callback, title="扫码识别"):
             choice_dlg.open = True
             page.update()
         else:
-            # 单码直接执行业务回调
             callback(codes[0])
 
     # 全局复用FilePicker实例，避免重复创建
     if not hasattr(page, "_barcode_file_picker"):
-        picker = ft.FilePicker(on_result=_on_pick_result)
+        # 【关键修正】0.85.3 回调参数为 on_file_pick
+        picker = ft.FilePicker(on_file_pick=_on_pick_result)
         page.overlay.append(picker)
         page._barcode_file_picker = picker
     else:
@@ -270,12 +270,7 @@ def scan_barcode_only(page: ft.Page, callback, title="扫码识别"):
             page._pending_permission_callback = _permission_callback
             page.request_permission("android.permission.CAMERA")
         else:
-            # 桌面端直接调用（仅调试用）
-            picker.pick_files(
-                allow_multiple=False,
-                file_type=ft.FilePickerFileType.IMAGE,
-                source=ft.FilePickerSource.CAMERA
-            )
+            show_alert(page, "提示", "电脑端不支持调用相机，请使用相册选图")
 
     # 打开相册选图识别
     def _open_album(e):
@@ -302,27 +297,29 @@ def scan_barcode_only(page: ft.Page, callback, title="扫码识别"):
                 source=ft.FilePickerSource.GALLERY
             )
 
-    # 选择来源弹窗
+    # 菜单适配：手机端显示拍照+相册，桌面端仅显示相册
+    menu_items = []
+    if page.platform == "android":
+        menu_items.append(
+            ft.ListTile(
+                leading=ft.Icon(ft.Icons.CAMERA_ALT),
+                title=ft.Text("拍照识别"),
+                subtitle=ft.Text("调用系统相机拍摄条码"),
+                on_click=_open_camera
+            )
+        )
+    menu_items.append(
+        ft.ListTile(
+            leading=ft.Icon(ft.Icons.PHOTO_LIBRARY),
+            title=ft.Text("相册选图"),
+            subtitle=ft.Text("从相册选择条码图片识别"),
+            on_click=_open_album
+        )
+    )
+
     menu_dlg = ft.AlertDialog(
         title=ft.Text(title),
-        content=ft.Column(
-            [
-                ft.ListTile(
-                    leading=ft.Icon(ft.Icons.CAMERA_ALT),
-                    title=ft.Text("拍照识别"),
-                    subtitle=ft.Text("调用系统相机拍摄条码"),
-                    on_click=_open_camera
-                ),
-                ft.ListTile(
-                    leading=ft.Icon(ft.Icons.PHOTO_LIBRARY),
-                    title=ft.Text("相册选图"),
-                    subtitle=ft.Text("从相册选择条码图片识别"),
-                    on_click=_open_album
-                ),
-            ],
-            tight=True,
-            spacing=8
-        ),
+        content=ft.Column(menu_items, tight=True, spacing=8),
         actions=[ft.TextButton("取消", on_click=lambda e: setattr(menu_dlg, "open", False))]
     )
 
@@ -368,8 +365,7 @@ def add_product_from_scan(page, code, callback):
     def save_product(e):
         model = model_input.value.strip()
         if not model:
-            page.snack_bar = ft.SnackBar(ft.Text("型号不能为空"))
-            page.snack_bar.open = True
+            show_alert(page, "提示", "型号不能为空")
             return
         try:
             price = float(price_input.value or 0)
@@ -377,8 +373,7 @@ def add_product_from_scan(page, code, callback):
             gov = float(gov_input.value or 0)
             old = float(old_input.value or 0)
         except:
-            page.snack_bar = ft.SnackBar(ft.Text("价格/补贴请输入数字"))
-            page.snack_bar.open = True
+            show_alert(page, "提示", "价格/补贴请输入数字")
             return
         conn = get_db_conn()
         cur = conn.cursor()
@@ -391,14 +386,12 @@ def add_product_from_scan(page, code, callback):
                          category_input.value, piece_input.value, price,
                          union, gov, old))
             conn.commit()
-            page.snack_bar = ft.SnackBar(ft.Text("产品添加成功"))
-            page.snack_bar.open = True
+            show_alert(page, "恭喜", "产品添加成功")
             dialog.open = False
             page.update()
             callback(model)
         except Exception as ex:
-            page.snack_bar = ft.SnackBar(ft.Text(f"添加失败: {ex}"))
-            page.snack_bar.open = True
+            show_alert(page, "提示", f"添加失败: {ex}")
         finally:
             conn.close()
 
@@ -1226,14 +1219,7 @@ def main(page: ft.Page):
                 gov_subsidy.value = str(prod.get("gov_subsidy", 0))
                 old_discount.value = str(prod.get("old_discount", 0))
                 page.update()
-                page.snack_bar = ft.SnackBar(
-                    content=ft.Text(f"已加载产品: {prod['model']}"),
-                    behavior=ft.SnackBarBehavior.FLOATING,
-                    margin=ft.Margin(20, 0, 20, 80),
-                    duration=1500,
-                )
-                page.snack_bar.open = True
-                page.update()
+                show_alert(page, "成功", f"已加载产品: {prod['model']}")
             else:
                 def after_add(m):
                     model_input.value = m
@@ -1269,34 +1255,16 @@ def main(page: ft.Page):
                 gov = float(gov_subsidy.value or 0)
                 store = float(store_discount.value or 0)
             except:
-                page.snack_bar = ft.SnackBar(
-                    content=ft.Text("数量和金额必须是数字"),
-                    behavior=ft.SnackBarBehavior.FLOATING,
-                    margin=ft.Margin(20, 0, 20, 80),
-                    duration=1500,
-                )
-                page.snack_bar.open = True
+                show_alert(page, "提示", "数量和金额必须是数字")
                 page.update()
                 return
             if not m or qt <= 0 or unit_price <= 0:
-                page.snack_bar = ft.SnackBar(
-                    content=ft.Text("请完整填写商品信息（型号、数量>0、单价>0）"),
-                    behavior=ft.SnackBarBehavior.FLOATING,
-                    margin=ft.Margin(20, 0, 20, 80),
-                    duration=1500,
-                )
-                page.snack_bar.open = True
+                show_alert(page, "提示", "请完整填写商品信息（型号、数量>0、单价>0）")
                 page.update()
                 return
             prod = get_product_by_model(m)
             if not prod:
-                page.snack_bar = ft.SnackBar(
-                    content=ft.Text(f"型号 {m} 不存在，请先添加产品"),
-                    behavior=ft.SnackBarBehavior.FLOATING,
-                    margin=ft.Margin(20, 0, 20, 80),
-                    duration=1500,
-                )
-                page.snack_bar.open = True
+                show_alert(page, "提示", f"型号 {m} 不存在，请先添加产品")
                 page.update()
 
                 def after_add(new_model):
@@ -1802,8 +1770,7 @@ def main(page: ft.Page):
                     conn.commit()
                     conn.close()
                     load_items()
-                    page.snack_bar = ft.SnackBar(ft.Text(f"凭证识别成功，完整外部单号: {code}"), duration=3000)
-                    page.snack_bar.open = True
+                    show_alert(page, "提示", f"凭证识别成功，完整外部单号: {code}")
                     page.update()
 
                 scan_barcode_only(page, on_scan_code, title="识别支付凭证二维码")
@@ -2305,32 +2272,54 @@ def main(page: ft.Page):
                 finally:
                     conn.close()
 
+            # ---------- 查看SN照片（全平台兼容弹窗版） ----------
             def do_view_sn_photo(e):
                 file_data = get_file_from_db("sn_photos", current_order["out_order_no"])
                 if not file_data:
-                    show_alert(page,"提示", "该订单暂无 SN 照片")
+                    show_alert(page, "提示", "该订单暂无 SN 照片")
                     return
-                from PIL import Image
-                from io import BytesIO
-                img = Image.open(BytesIO(file_data))
-                img.thumbnail((600, 600))
-                tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-                img.save(tmp.name)
-                os.startfile(tmp.name)
 
+                import base64
+                img_base64 = base64.b64encode(file_data).decode("utf-8")
+                img_src = f"data:image/jpeg;base64,{img_base64}"
+
+                img_dlg = ft.AlertDialog(
+                    title=ft.Text("SN照片预览"),
+                    content=ft.Container(
+                        content=ft.Image(src=img_src, fit=ft.ImageFit.CONTAIN),
+                        width=min(get_window_width(page) * 0.85, 600),
+                        height=min(get_window_width(page) * 0.85, 800),
+                    ),
+                    actions=[ft.TextButton("关闭", on_click=lambda _: setattr(img_dlg, "open", False))],
+                )
+                page.overlay.append(img_dlg)
+                img_dlg.open = True
+                page.update()
+
+            # ---------- 查看送货照片（全平台兼容弹窗版） ----------
             def do_view_home_photo(e):
                 biz_no, prefix = get_home_photo_biz_info(order_no, out_order_no)
                 file_data = get_file_from_db("home_photos", biz_no)
                 if not file_data:
-                    show_alert(page,"提示", "该订单暂无送货照片")
+                    show_alert(page, "提示", "该订单暂无送货照片")
                     return
-                from PIL import Image
-                from io import BytesIO
-                img = Image.open(BytesIO(file_data))
-                img.thumbnail((600, 600))
-                tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-                img.save(tmp.name)
-                os.startfile(tmp.name)
+
+                import base64
+                img_base64 = base64.b64encode(file_data).decode("utf-8")
+                img_src = f"data:image/jpeg;base64,{img_base64}"
+
+                img_dlg = ft.AlertDialog(
+                    title=ft.Text("送货照片预览"),
+                    content=ft.Container(
+                        content=ft.Image(src=img_src, fit=ft.ImageFit.CONTAIN),
+                        width=min(get_window_width(page) * 0.85, 600),
+                        height=min(get_window_width(page) * 0.85, 800),
+                    ),
+                    actions=[ft.TextButton("关闭", on_click=lambda _: setattr(img_dlg, "open", False))],
+                )
+                page.overlay.append(img_dlg)
+                img_dlg.open = True
+                page.update()
 
             # ---------- SN码一体化管理（支持多码选择、失败后手动录入） ----------
             def open_sn_manage_dialog(e):
@@ -2412,7 +2401,6 @@ def main(page: ft.Page):
                         try:
                             with open(file_path, "rb") as f:
                                 file_data = f.read()
-
                             conn = get_db_conn()
                             cur = conn.cursor()
                             cur.execute("DELETE FROM erp_files WHERE file_type='sn_photos' AND biz_no=%s",
@@ -2433,7 +2421,6 @@ def main(page: ft.Page):
                             current_order["sn_photo"] = sn_photo_path
                             sn_photo_status.value = "SN照片: 已上传"
                             sn_photo_status.color = ft.Colors.GREEN
-
                             show_alert(page, "成功", "SN码与照片均已保存")
                             sn_dialog.open = False
                             dlg.open = False
@@ -2442,7 +2429,8 @@ def main(page: ft.Page):
                         except Exception as ex:
                             show_alert(page, "错误", f"照片上传失败: {str(ex)}")
 
-                    file_picker.on_result = on_file_pick
+                    # 【关键修正】0.85.3 回调属性为 on_file_pick
+                    file_picker.on_file_pick = on_file_pick
                     page.overlay.append(file_picker)
 
                     def pick_photo(e):
@@ -2469,7 +2457,7 @@ def main(page: ft.Page):
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER
                     )
 
-                # ---------- 手动录入视图（原有代码完全保留） ----------
+                # ---------- 手动录入视图（修正后） ----------
                 def build_manual_view():
                     tip = ft.Text("请先上传SN照片，再输入SN码保存", size=12, text_align=ft.TextAlign.CENTER)
                     sn_input = ft.TextField(label="手动输入SN码", value=current_order["sn_code"], width=280)
@@ -2484,7 +2472,6 @@ def main(page: ft.Page):
                         try:
                             with open(file_path, "rb") as f:
                                 file_data = f.read()
-
                             conn = get_db_conn()
                             cur = conn.cursor()
                             cur.execute("DELETE FROM erp_files WHERE file_type='sn_photos' AND biz_no=%s",
@@ -2512,7 +2499,8 @@ def main(page: ft.Page):
                         except Exception as ex:
                             show_alert(page, "错误", f"照片上传失败: {str(ex)}")
 
-                    file_picker.on_result = on_file_pick
+                    # 【关键修正】0.85.3 回调属性为 on_file_pick
+                    file_picker.on_file_pick = on_file_pick
                     page.overlay.append(file_picker)
 
                     def pick_photo(e):
@@ -2535,7 +2523,6 @@ def main(page: ft.Page):
                             )
                             conn.commit()
                             conn.close()
-
                             current_order["sn_code"] = sn_code
                             sn_entry.value = sn_code
                             show_alert(page, "成功", "SN码已保存")
@@ -2601,17 +2588,20 @@ def main(page: ft.Page):
                 result = cur.fetchone()
                 conn.close()
                 if not result:
-                    show_alert(page,"错误", "未找到订单信息")
+                    show_alert(page, "错误", "未找到订单信息")
                     return
                 cust_name, full_addr = result
 
                 def choose_source():
                     def take_photo(e):
                         picker = ft.FilePicker()
-                        def on_result(e: ft.FilePickerResultEvent):
+
+                        def on_pick_result(e: ft.FilePickerResultEvent):
                             if e.files:
                                 process_image(e.files[0].path, add_watermark=True)
-                        picker.on_result = on_result
+
+                        # 【关键修正】0.85.3 回调属性为 on_file_pick
+                        picker.on_file_pick = on_pick_result
                         page.overlay.append(picker)
                         page.update()
                         picker.pick_files(
@@ -2619,14 +2609,18 @@ def main(page: ft.Page):
                             file_type=ft.FilePickerFileType.IMAGE,
                             source=ft.FilePickerSource.CAMERA
                         )
+
                     def choose_album(e):
                         def ask_watermark():
                             def confirm(watermark):
                                 picker = ft.FilePicker()
-                                def on_result(e: ft.FilePickerResultEvent):
+
+                                def on_pick_result(e: ft.FilePickerResultEvent):
                                     if e.files:
                                         process_image(e.files[0].path, add_watermark=watermark)
-                                picker.on_result = on_result
+
+                                # 【关键修正】0.85.3 回调属性为 on_file_pick
+                                picker.on_file_pick = on_pick_result
                                 page.overlay.append(picker)
                                 page.update()
                                 picker.pick_files(
@@ -2635,6 +2629,7 @@ def main(page: ft.Page):
                                     source=ft.FilePickerSource.GALLERY
                                 )
                                 watermark_dlg.open = False
+
                             watermark_dlg = ft.AlertDialog(
                                 title=ft.Text("是否添加水印？"),
                                 content=ft.Text("水印包含订单号、客户、地址等信息"),
@@ -2646,6 +2641,7 @@ def main(page: ft.Page):
                             page.overlay.append(watermark_dlg)
                             watermark_dlg.open = True
                             page.update()
+
                         ask_watermark()
 
                     menu = ft.AlertDialog(
@@ -2705,11 +2701,11 @@ def main(page: ft.Page):
                         current_order["home_photo"] = home_photo_path
                         home_photo_status.value = "送货照片: 已上传"
                         home_photo_status.color = ft.Colors.GREEN
-                        show_alert(page,"成功", "送货入户照片已上传" + ("（已加水印）" if add_watermark else ""))
+                        show_alert(page, "成功", "送货入户照片已上传" + ("（已加水印）" if add_watermark else ""))
                         dlg.open = False
                         load_trans()
                     except Exception as ex:
-                        show_alert(page,"错误", f"上传失败: {str(ex)}")
+                        show_alert(page, "错误", f"上传失败: {str(ex)}")
 
                 choose_source()
 
@@ -3103,10 +3099,10 @@ def main(page: ft.Page):
 
             page.update()
 
+        # ---------- 报装功能（修复下拉联动+剪贴板复制） ----------
         def report_install(install_id, status, order_no, model, cust_name, qty):
             if status != "待安装":
-                page.snack_bar = ft.SnackBar(ft.Text("只能报装待安装订单"), bgcolor="#ef4444")
-                page.snack_bar.open = True
+                show_alert(page, "提示", "只能报装待安装订单")
                 page.update()
                 return
 
@@ -3122,43 +3118,40 @@ def main(page: ft.Page):
                 label="安装单位",
                 width=200,
                 options=[ft.dropdown.Option(k) for k in team_tel_dict.keys()],
-                value="",
+                value=None,
             )
             tel_field = ft.TextField(label="联系电话", width=200, read_only=False)
             fee_field = ft.TextField(label="安装费用", width=200, value="0")
             remark_field = ft.TextField(label="费用备注", width=200)
 
+            # 修复下拉联动：选中即填充电话，从事件对象直接取值
             def on_team_change(e):
-                selected = team_dropdown.value
-                if selected in team_tel_dict:
+                selected = e.control.value
+                if selected and selected in team_tel_dict:
                     tel_field.value = team_tel_dict[selected]
-                else:
-                    tel_field.value = ""
-                page.update()
+                    page.update()
 
             team_dropdown.on_change = on_team_change
 
             def do_report(e):
-                team = team_dropdown.value.strip()
-                if team and not tel_field.value.strip():
-                    if team in team_tel_dict:
-                        tel_field.value = team_tel_dict[team]
-                        page.update()
-
+                team = team_dropdown.value.strip() if team_dropdown.value else ""
                 tel = tel_field.value.strip()
                 fee = float(fee_field.value or 0) if fee_field.value else 0
                 remark = remark_field.value.strip()
 
+                # 兜底赋值：确认时再次校验，避免下拉失效
+                if team and not tel and team in team_tel_dict:
+                    tel = team_tel_dict[team]
+                    tel_field.value = tel
+
                 if not team or not tel:
-                    page.snack_bar = ft.SnackBar(ft.Text("请选择安装单位并填写联系电话"), bgcolor="#ef4444")
-                    page.snack_bar.open = True
+                    show_alert(page, "提示", "请选择安装单位并填写联系电话")
                     page.update()
                     return
 
                 conn = get_db_conn()
                 if not conn:
-                    page.snack_bar = ft.SnackBar(ft.Text("数据库连接失败"), bgcolor="#ef4444")
-                    page.snack_bar.open = True
+                    show_alert(page, "提示", "数据库连接失败")
                     page.update()
                     return
 
@@ -3170,34 +3163,30 @@ def main(page: ft.Page):
                     rows_affected = cur.rowcount
                     conn.commit()
                     if rows_affected == 0:
-                        page.snack_bar = ft.SnackBar(ft.Text(f"⚠️ 未找到 ID={install_id} 的记录，更新失败"),
-                                                     bgcolor="#ef4444")
-                        page.snack_bar.open = True
+                        show_alert(page, "提示", f"未找到 ID={install_id} 的记录，更新失败")
                         conn.close()
                         page.update()
                         return
-                    page.snack_bar = ft.SnackBar(ft.Text("✅ 报装成功，状态已更新为'已报装'"), bgcolor="#10b981")
-                    page.snack_bar.open = True
                 except Exception as ex:
                     conn.rollback()
-                    page.snack_bar = ft.SnackBar(ft.Text(f"❌ 数据库错误：{ex}"), bgcolor="#ef4444")
-                    page.snack_bar.open = True
+                    show_alert(page, "提示", f"数据库错误：{ex}")
                     conn.close()
                     page.update()
                     return
                 conn.close()
 
+                # 获取订单信息
+                full_addr = "无地址"
+                receiver_phone = "无电话"
                 conn2 = get_db_conn()
                 if conn2:
                     cur2 = conn2.cursor()
                     cur2.execute("SELECT full_addr, phone FROM sale_main WHERE order_no=%s", (order_no,))
                     addr_row = cur2.fetchone()
                     conn2.close()
-                    full_addr = addr_row[0] if addr_row else "无地址"
-                    receiver_phone = addr_row[1] if addr_row else "无电话"
-                else:
-                    full_addr = "无地址"
-                    receiver_phone = "无电话"
+                    if addr_row:
+                        full_addr = addr_row[0] if addr_row[0] else "无地址"
+                        receiver_phone = addr_row[1] if addr_row[1] else "无电话"
 
                 clipboard_text = (
                     f"安装联系人：{receiver_phone}\n"
@@ -3207,23 +3196,38 @@ def main(page: ft.Page):
                     f"费用备注：{remark}"
                 )
 
-                try:
-                    page.set_clipboard(clipboard_text)
-                    page.snack_bar = ft.SnackBar(
-                        ft.Text("✅ 报装信息已复制到剪贴板", size=14),
-                        bgcolor="#10b981",
-                    )
-                    page.snack_bar.open = True
-                except AttributeError:
-                    page.snack_bar = ft.SnackBar(
-                        ft.Text("⚠️ 剪贴板复制失败，请手动复制", size=14),
-                        bgcolor="#f59e0b",
-                    )
-                    page.snack_bar.open = True
-
+                # 关闭报装弹窗
                 dialog.open = False
                 page.update()
                 load_install()
+
+                # 剪贴板复制 + 失败兜底
+                copy_ok = False
+                try:
+                    page.set_clipboard(clipboard_text)
+                    copy_ok = True
+                except Exception:
+                    copy_ok = False
+
+                if copy_ok:
+                    show_alert(page, "成功", "报装成功，信息已复制到剪贴板")
+                else:
+                    # 复制失败时弹窗显示文本，支持手动选中复制
+                    text_dlg = ft.AlertDialog(
+                        title=ft.Text("报装成功（请手动复制信息）"),
+                        content=ft.TextField(
+                            value=clipboard_text,
+                            multiline=True,
+                            read_only=True,
+                            width=300,
+                            min_lines=6,
+                            max_lines=10
+                        ),
+                        actions=[ft.TextButton("关闭", on_click=lambda _: setattr(text_dlg, "open", False))],
+                    )
+                    page.overlay.append(text_dlg)
+                    text_dlg.open = True
+                    page.update()
 
             dialog = ft.AlertDialog(
                 title=ft.Text("报装信息"),
@@ -3234,7 +3238,7 @@ def main(page: ft.Page):
                 ),
                 actions=[
                     ft.TextButton("确认", on_click=do_report),
-                    ft.TextButton("取消", on_click=lambda e: setattr(dialog, 'open', False) or page.update()),
+                    ft.TextButton("取消", on_click=lambda e: setattr(dialog, 'open', False)),
                 ],
             )
             page.overlay.append(dialog)
@@ -3243,8 +3247,7 @@ def main(page: ft.Page):
 
         def confirm_install(install_id, status):
             if status not in ["待安装", "已报装"]:
-                page.snack_bar = ft.SnackBar(ft.Text("只能确认待安装或已报装的订单"), bgcolor="#ef4444")
-                page.snack_bar.open = True
+                show_alert(page, "提示", "只能确认待安装或已报装的订单")
                 page.update()
                 return
 
@@ -3280,18 +3283,14 @@ def main(page: ft.Page):
                     rows_affected = cur.rowcount
                     conn.commit()
                     if rows_affected == 0:
-                        page.snack_bar = ft.SnackBar(ft.Text(f"⚠️ 未找到 ID={install_id} 的记录，更新失败"),
-                                                     bgcolor="#ef4444")
-                        page.snack_bar.open = True
+                        show_alert(page, "提示", f"⚠️ 未找到 ID={install_id} 的记录，更新失败")
                         conn.close()
                         page.update()
                         return
-                    page.snack_bar = ft.SnackBar(ft.Text("✅ 确认安装成功，状态已更新为'已安装'"), bgcolor="#10b981")
-                    page.snack_bar.open = True
+                    show_alert(page, "提示", "✅ 确认安装成功，状态已更新为'已安装'")
                 except Exception as ex:
                     conn.rollback()
-                    page.snack_bar = ft.SnackBar(ft.Text(f"❌ 数据库错误：{ex}"), bgcolor="#ef4444")
-                    page.snack_bar.open = True
+                    show_alert(page, "提示", f"❌ 数据库错误：{ex}")
                     conn.close()
                     page.update()
                     return
@@ -3830,8 +3829,7 @@ def main(page: ft.Page):
                 conn.commit()
                 conn.close()
                 page.dialog.open = False
-                page.snack_bar = ft.SnackBar(ft.Text(f"发票 {invoice_no} 开具成功"))
-                page.snack_bar.open = True
+                show_alert(page, "提示", f"发票 {invoice_no} 开具成功")
                 load_invoice()
                 page.update()
             conn = get_db_conn()
@@ -3881,8 +3879,7 @@ def main(page: ft.Page):
             orders = [row[0] for row in cur.fetchall()]
             conn.close()
             if not orders:
-                page.snack_bar = ft.SnackBar(ft.Text("没有可申报的订单"))
-                page.snack_bar.open = True
+                show_alert(page, "提示", "没有可申报的订单")
                 return
             order_dropdown = ft.Dropdown(label="选择订单", options=[ft.dropdown.Option(o) for o in orders], width=300)
             def do_create(e):
@@ -3899,8 +3896,7 @@ def main(page: ft.Page):
                 conn.commit()
                 conn.close()
                 page.dialog.open = False
-                page.snack_bar = ft.SnackBar(ft.Text(f"申报单 {claim_no} 创建成功"))
-                page.snack_bar.open = True
+                show_alert(page, "提示", f"申报单 {claim_no} 创建成功")
                 load_subsidy()
                 page.update()
             dialog = ft.AlertDialog(
@@ -4065,8 +4061,7 @@ ID: {row[0]}
             rows = cur.fetchall()
             conn.close()
             if not rows:
-                page.snack_bar = ft.SnackBar(ft.Text("未找到明细"))
-                page.snack_bar.open = True
+                show_alert(page, "提示", "未找到明细")
                 page.update()
                 return
             detail_text = f"订单号: {rows[0][0]}\n日期: {rows[0][1]}\n客户: {rows[0][2]}\n电话: {rows[0][3]}\n地址: {rows[0][4]}\n\n商品明细:\n"
@@ -4195,8 +4190,7 @@ ID: {row[0]}
                 conn.commit()
                 conn.close()
                 page.dialog.open = False
-                page.snack_bar = ft.SnackBar(ft.Text("样机信息已更新"))
-                page.snack_bar.open = True
+                show_alert(page, "提示", "样机信息已更新")
                 load_booth()
                 page.update()
             dialog = ft.AlertDialog(
@@ -4215,8 +4209,7 @@ ID: {row[0]}
             conn.commit()
             conn.close()
             load_booth()
-            page.snack_bar = ft.SnackBar(ft.Text("已下样"))
-            page.snack_bar.open = True
+            show_alert(page, "提示", "已下样")
             page.update()
         def add_booth(e):
             model_input = ft.TextField(label="型号", width=200)
@@ -4245,8 +4238,7 @@ ID: {row[0]}
             def save_new(e):
                 model = model_input.value.strip()
                 if not model:
-                    page.snack_bar = ft.SnackBar(ft.Text("型号不能为空"))
-                    page.snack_bar.open = True
+                    show_alert(page, "提示", "型号不能为空")
                     return
                 factory = factory_input.value.strip()
                 category = category_input.value.strip()
@@ -4265,8 +4257,7 @@ ID: {row[0]}
                 conn.commit()
                 conn.close()
                 page.dialog.open = False
-                page.snack_bar = ft.SnackBar(ft.Text("样机上样成功"))
-                page.snack_bar.open = True
+                show_alert(page, "提示", "样机上样成功")
                 load_booth()
                 page.update()
             dialog = ft.AlertDialog(
