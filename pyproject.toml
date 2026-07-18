@@ -1,6 +1,6 @@
 [project]
 name = "JCheng"
-version = "0.1.0"
+version = "0.1.1"
 description = "玖诚电器ERP移动端"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -10,26 +10,28 @@ authors = [
 
 # 本地开发依赖
 dependencies = [
-    "flet==0.85.3",
-    "mysql-connector-python",
-    "Pillow",
-    "numpy",
-    "reportlab",
-    "appdirs",
-    "requests"
-]
-
-# Flet 0.85.3 打包APK唯一读取的依赖配置，必须写全所有需要内置的包（含certifi）
-[tool.flet.dependencies]
-packages = [
-    "flet==0.85.3",
+    "flet>=0.85.3",
     "mysql-connector-python",
     "Pillow",
     "numpy",
     "reportlab",
     "appdirs",
     "requests",
-    "certifi"
+    "pyzbar"
+]
+
+# Flet 0.85.3 打包APK唯一读取的依赖配置，必须写全所有需要内置的包（含certifi）
+[tool.flet.dependencies]
+packages = [
+    "flet>=0.85.3",
+    "mysql-connector-python",
+    "Pillow",
+    "numpy",
+    "reportlab",
+    "appdirs",
+    "requests",
+    "certifi",
+    "pyzbar"
 ]
 
 [tool.flet]
