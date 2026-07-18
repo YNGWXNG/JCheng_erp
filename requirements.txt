@@ -1,0 +1,5 @@
+pillow
+pyzbar
+mysql-connector-python
+requests
+reportlab
