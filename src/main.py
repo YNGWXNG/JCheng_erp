@@ -1355,37 +1355,45 @@ def main(page: ft.Page):
         def save_order(e):
             print("=== 保存订单按钮被点击 ===")
             if not cust_input.value:
-                show_alert(page,"提示", "客户名称不能为空")
+                show_alert(page, "提示", "客户名称不能为空")
                 return
             if not items:
-                show_alert(page,"提示", "请至少添加一个商品")
+                show_alert(page, "提示", "请至少添加一个商品")
                 return
             county = current_county
             street = street_dropdown.value
             community = community_input.value
             receiver_phone = f"{cust_input.value} {phone.value}"
             if not county:
-                show_alert(page,"提示", "请选择所在县")
+                show_alert(page, "提示", "请选择所在县")
                 return
             full_addr = f"{county}{street or ''}{community or ''}{detail_addr.value or ''}"
             try:
                 send_dt = datetime.strptime(send_date.value, "%Y-%m-%d").date()
             except:
-                show_alert(page,"错误", "送货日期格式错误，应为YYYY-MM-DD")
+                show_alert(page, "错误", "送货日期格式错误，应为YYYY-MM-DD")
                 return
             conn = get_db_conn()
             if not conn:
-                show_alert(page,"错误", "数据库连接失败")
+                show_alert(page, "错误", "数据库连接失败")
                 return
             cur = conn.cursor()
             try:
+                # ========== 新增：计算总金额 + 构造支付方式JSON ==========
+                total_order = round(sum(it["total"] for it in items), 2)
+                # 默认支付方式为云闪付，格式如 {"云闪付": 3549.0}
+                payment_method_json = json.dumps({"云闪付": total_order}, ensure_ascii=False)
+
+                # ========== 修改：INSERT语句新增 payment_method 字段 ==========
                 cur.execute("""INSERT INTO sale_main 
-                            (order_no, order_date, send_date, cust_name, phone, receiver_phone, card_holder, card_no, county, street, community, detail_addr, full_addr, remark, order_type, sales_name)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            (order_no, order_date, send_date, cust_name, phone, receiver_phone, card_holder, card_no, 
+                             county, street, community, detail_addr, full_addr, remark, order_type, sales_name, payment_method)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                             (order_no, date.today(), send_dt, cust_input.value, phone.value, receiver_phone,
                              card_holder.value, card_no.value, county, street, community, detail_addr.value, full_addr,
-                             order_remark.value, "标准销售", current_user["real_name"]))
+                             order_remark.value, "标准销售", current_user["real_name"], payment_method_json))
 
+                # 原有商品明细插入逻辑保持不变
                 for it in items:
                     cur.execute("""INSERT INTO sale_items 
                                 (order_no, out_order_no, model, qty, price, old_discount, union_subsidy, gov_subsidy, store_discount,
@@ -1417,10 +1425,11 @@ def main(page: ft.Page):
                                     (date.today(), order_no, cust_input.value, phone.value,
                                      it["factory"], it["model"], it["spec"], it["qty"], "待安装"))
 
+                # ========== 修改：复用已计算的 total_order，删除重复计算 ==========
                 cur.execute("SELECT total_amount FROM base_customer WHERE name=%s AND phone=%s",
                             (cust_input.value, phone.value))
                 cust = cur.fetchone()
-                total_order = sum(it["total"] for it in items)
+                # 删掉原来的 total_order = sum(...) 这行，直接复用前面计算好的值
                 if cust:
                     cur.execute("UPDATE base_customer SET total_amount = total_amount + %s WHERE name=%s AND phone=%s",
                                 (total_order, cust_input.value, phone.value))
@@ -1456,12 +1465,12 @@ def main(page: ft.Page):
                     refresh_items()
                     page.update()
 
-                show_alert(page,"成功", f"订单 {order_no} 保存成功", on_success)
+                show_alert(page, "成功", f"订单 {order_no} 保存成功", on_success)
 
             except Exception as ex:
                 conn.rollback()
                 print(f"保存异常: {ex}")
-                show_alert(page,"错误", f"保存失败: {ex}")
+                show_alert(page, "错误", f"保存失败: {ex}")
             finally:
                 conn.close()
 
@@ -4526,7 +4535,7 @@ ID: {row[0]}
                             perm_col,
                         ],
                         spacing=8,
-                        # scroll=ft.ScrollMode.AUTO,
+                        scroll=ft.ScrollMode.AUTO,
                         width=300,
                     ),
                     actions=[
