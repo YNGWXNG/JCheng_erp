@@ -1,5 +1,9 @@
-pillow
-pyzbar
+flet==0.85.3
 mysql-connector-python
-requests
+Pillow
+numpy
 reportlab
+appdirs
+requests
+certifi
+opencv-python
