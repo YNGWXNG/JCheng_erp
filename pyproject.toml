@@ -35,9 +35,11 @@ packages = [
 ]
 
 [tool.flet]
-org = "com.jiuchengcompany.jiuchengapp"
-product = "JCheng"
+org = "com.jiucheng"
+product = "jiuchengerp"
 copyright = "Copyright (C) 2023-2026 by jiucheng"
+main = "src/main.py"
+assets_dir = "src/assets"
 
 [tool.flet.android]
 permissions = [
@@ -45,10 +47,13 @@ permissions = [
     "READ_MEDIA_IMAGES",
     "READ_EXTERNAL_STORAGE",
     "WRITE_EXTERNAL_STORAGE",
-    "INTERNET"
+    "INTERNET",
+    "ACCESS_NETWORK_STATE",
+    "ACCESS_WIFI_STATE"
 ]
 min_sdk_version = 24
-target_sdk_version = 34
-
+target_sdk_version = 33
+compile_sdk_version = 33
+hardware_accelerated = true
 [tool.flet.app]
 path = "src"
