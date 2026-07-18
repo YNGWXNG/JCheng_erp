@@ -184,148 +184,70 @@ def show_alert(page: ft.Page, title, content, on_ok=None):
 
 
 # ===================== 通用扫码函数（Flet 0.85.3 全平台适配版） =====================
-def scan_barcode_only(page: ft.Page, callback, title="扫码识别"):
-    """
-    通用条码/二维码识别（手机端原生相机+相册，桌面端仅相册）
-    适配 Flet 0.85.3 版本API，修复 on_result 参数报错
-    """
-    # 本地解析图片中的条码
+def scan_barcode_only(page: ft.Page, handle_result, title="扫码识别商品"):
+    # 安卓/桌面通用解码函数（OpenCV，打包不崩溃）
     def _decode_barcode(image_path):
+        import cv2
+        import numpy as np
+        from PIL import Image
+        code_list = []
         try:
-            from pyzbar.pyzbar import decode
-            from PIL import Image
-            img = Image.open(image_path)
-            raw_results = decode(img)
-            code_list = []
-            for item in raw_results:
-                code_str = item.data.decode("utf-8", errors="ignore").strip()
-                if code_str and code_str not in code_list:
-                    code_list.append(code_str)
-            return code_list
-        except Exception as e:
-            print(f"条码解析失败: {e}")
-            return []
+            img_pil = Image.open(image_path).convert("L")
+            img_cv = np.array(img_pil)
+            qr_detector = cv2.QRCodeDetector()
+            qr_data, _, _ = qr_detector.detectAndDecode(img_cv)
+            if qr_data and qr_data.strip():
+                code_list.append(qr_data.strip())
+            try:
+                bar_detector = cv2.barcode_BarcodeDetector()
+                detect_ok, bar_codes, _, _ = bar_detector.detectAndDecode(img_cv)
+                if detect_ok and bar_codes:
+                    for code in bar_codes:
+                        code_str = code.strip()
+                        if code_str and code_str not in code_list:
+                            code_list.append(code_str)
+            except Exception:
+                pass
+        except Exception as err:
+            print(f"解码异常: {err}")
+        return code_list
 
-    # 选图/拍照结果回调
+    # 文件选择回调逻辑
     def _on_pick_result(e: ft.FilePickerResultEvent):
-        if not e.files or len(e.files) == 0 or not e.files[0].path:
+        print("=== 文件选择回调触发 ===")
+        if not e.files or len(e.files) == 0:
             return
         img_path = e.files[0].path
-        codes = _decode_barcode(img_path)
-
-        if not codes:
-            show_alert(page, "识别失败", "未检测到有效条码，请对准后重试")
+        code_list = _decode_barcode(img_path)
+        if not code_list:
+            show_alert(page, "识别失败", "未识别到条码，请重新拍摄清晰图片")
             return
+        handle_result(code_list[0])
 
-        # 多码选择逻辑
-        if len(codes) > 1:
-            def _select_code(selected_code):
-                choice_dlg.open = False
-                page.update()
-                callback(selected_code)
-
-            items = [
-                ft.ListTile(
-                    title=ft.Text(code),
-                    on_click=lambda _, c=code: _select_code(c)
-                )
-                for code in codes
-            ]
-            choice_dlg = ft.AlertDialog(
-                title=ft.Text("检测到多个条码，请选择"),
-                content=ft.Column(items, scroll=ft.ScrollMode.AUTO, height=200),
-                actions=[ft.TextButton("取消", on_click=lambda _: setattr(choice_dlg, "open", False))]
-            )
-            page.overlay.append(choice_dlg)
-            choice_dlg.open = True
-            page.update()
-        else:
-            callback(codes[0])
-
-    # 全局复用FilePicker实例，避免重复创建
+    # 初始化FilePicker（0.85.3标准，仅挂载不立即唤起）
     if not hasattr(page, "_barcode_file_picker"):
-        # 【关键修正】0.85.3 回调参数为 on_file_pick
-        picker = ft.FilePicker(on_file_pick=_on_pick_result)
+        print("新建FilePicker实例")
+        picker = ft.FilePicker()
+        picker.on_result = _on_pick_result
         page.overlay.append(picker)
         page._barcode_file_picker = picker
+        page.update()
+    picker = page._barcode_file_picker
+
+    # ========== 关键分支：区分桌面/移动端 ==========
+    if page.platform == ft.PagePlatform.WINDOWS:
+        # Windows桌面直接弹窗提示，不执行pick_files，规避所有超时/协程报错
+        show_alert(page, "调试提示", "Windows桌面不支持文件拾取，请打包APK在安卓手机测试扫码功能")
+        return
     else:
-        picker = page._barcode_file_picker
-
-    # 调起相机拍照识别
-    def _open_camera(e):
-        menu_dlg.open = False
-        page.update()
-
-        # 安卓端动态申请相机权限
-        if page.platform == "android":
-            def _permission_callback(e):
-                if e.data == "granted":
-                    picker.pick_files(
-                        allow_multiple=False,
-                        file_type=ft.FilePickerFileType.IMAGE,
-                        source=ft.FilePickerSource.CAMERA
-                    )
-                else:
-                    show_alert(page, "权限被拒绝", "请在系统设置中开启相机权限后重试")
-            page._pending_permission_callback = _permission_callback
-            page.request_permission("android.permission.CAMERA")
-        else:
-            show_alert(page, "提示", "电脑端不支持调用相机，请使用相册选图")
-
-    # 打开相册选图识别
-    def _open_album(e):
-        menu_dlg.open = False
-        page.update()
-
-        # 安卓端动态申请存储权限
-        if page.platform == "android":
-            def _permission_callback(e):
-                if e.data == "granted":
-                    picker.pick_files(
-                        allow_multiple=False,
-                        file_type=ft.FilePickerFileType.IMAGE,
-                        source=ft.FilePickerSource.GALLERY
-                    )
-                else:
-                    show_alert(page, "权限被拒绝", "请在系统设置中开启存储权限后重试")
-            page._pending_permission_callback = _permission_callback
-            page.request_permission("android.permission.READ_MEDIA_IMAGES")
-        else:
-            picker.pick_files(
-                allow_multiple=False,
-                file_type=ft.FilePickerFileType.IMAGE,
-                source=ft.FilePickerSource.GALLERY
-            )
-
-    # 菜单适配：手机端显示拍照+相册，桌面端仅显示相册
-    menu_items = []
-    if page.platform == "android":
-        menu_items.append(
-            ft.ListTile(
-                leading=ft.Icon(ft.Icons.CAMERA_ALT),
-                title=ft.Text("拍照识别"),
-                subtitle=ft.Text("调用系统相机拍摄条码"),
-                on_click=_open_camera
-            )
+        # 仅安卓/ios真机执行拾取逻辑，手机端无超时BUG
+        print("唤起文件选择器（仅移动端生效）")
+        # 手机端原生环境不会触发10s超时，无需async/run_task包装
+        picker.pick_files(
+            allow_multiple=False,
+            file_type=ft.FilePickerFileType.IMAGE
         )
-    menu_items.append(
-        ft.ListTile(
-            leading=ft.Icon(ft.Icons.PHOTO_LIBRARY),
-            title=ft.Text("相册选图"),
-            subtitle=ft.Text("从相册选择条码图片识别"),
-            on_click=_open_album
-        )
-    )
-
-    menu_dlg = ft.AlertDialog(
-        title=ft.Text(title),
-        content=ft.Column(menu_items, tight=True, spacing=8),
-        actions=[ft.TextButton("取消", on_click=lambda e: setattr(menu_dlg, "open", False))]
-    )
-
-    page.overlay.append(menu_dlg)
-    menu_dlg.open = True
-    page.update()
+        page.update()
 
 
 def scan_barcode_from_image(page: ft.Page, on_match_success):
