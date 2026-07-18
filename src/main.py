@@ -182,6 +182,24 @@ def show_alert(page: ft.Page, title, content, on_ok=None):
     dlg.open = True
     page.update()
 
+def request_android_permission(page, permission, callback=None):
+    """Android 平台请求权限，非 Android 直接回调成功"""
+    if page.platform != "android":
+        if callback:
+            callback("granted")
+        return
+    try:
+        if permission in page.get_platform_permissions():
+            if callback:
+                callback("granted")
+        else:
+            if callback:
+                page._pending_permission_callback = callback
+            page.request_permission(permission)
+    except Exception as e:
+        print(f"权限请求异常: {e}")
+        if callback:
+            callback("denied")
 
 # ===================== 通用扫码函数（Flet 0.85.3 全平台适配版） =====================
 def scan_barcode_only(page: ft.Page, handle_result, title="扫码识别商品"):
@@ -224,9 +242,8 @@ def scan_barcode_only(page: ft.Page, handle_result, title="扫码识别商品"):
             return
         handle_result(code_list[0])
 
-    # 初始化FilePicker（0.85.3标准，仅挂载不立即唤起）
+    # 初始化 FilePicker
     if not hasattr(page, "_barcode_file_picker"):
-        print("新建FilePicker实例")
         picker = ft.FilePicker()
         picker.on_result = _on_pick_result
         page.overlay.append(picker)
@@ -234,20 +251,33 @@ def scan_barcode_only(page: ft.Page, handle_result, title="扫码识别商品"):
         page.update()
     picker = page._barcode_file_picker
 
-    # ========== 关键分支：区分桌面/移动端 ==========
-    if page.platform == ft.PagePlatform.WINDOWS:
-        # Windows桌面直接弹窗提示，不执行pick_files，规避所有超时/协程报错
-        show_alert(page, "调试提示", "Windows桌面不支持文件拾取，请打包APK在安卓手机测试扫码功能")
-        return
+    def open_picker():
+        if page.platform == ft.PagePlatform.WINDOWS:
+            show_alert(page, "调试提示", "Windows桌面不支持文件拾取，请打包APK在安卓手机测试扫码功能")
+        else:
+            picker.pick_files(
+                allow_multiple=False,
+                file_type=ft.FilePickerFileType.IMAGE
+            )
+            page.update()
+
+    # ---------- 权限处理 ----------
+    if page.platform == "android":
+        # 选择图片需要存储权限（Android 13+ 用 READ_MEDIA_IMAGES，否则 READ_EXTERNAL_STORAGE）
+        if hasattr(page, 'platform_version') and page.platform_version >= 33:
+            perm = "android.permission.READ_MEDIA_IMAGES"
+        else:
+            perm = "android.permission.READ_EXTERNAL_STORAGE"
+
+        def perm_callback(e):
+            if e.data == "granted":
+                open_picker()
+            else:
+                show_alert(page, "权限被拒绝", "需要存储权限才能选择图片，请在系统设置中开启")
+            page.update()
+        request_android_permission(page,perm, perm_callback)
     else:
-        # 仅安卓/ios真机执行拾取逻辑，手机端无超时BUG
-        print("唤起文件选择器（仅移动端生效）")
-        # 手机端原生环境不会触发10s超时，无需async/run_task包装
-        picker.pick_files(
-            allow_multiple=False,
-            file_type=ft.FilePickerFileType.IMAGE
-        )
-        page.update()
+        open_picker()
 
 
 def scan_barcode_from_image(page: ft.Page, on_match_success):
@@ -410,9 +440,17 @@ def main(page: ft.Page):
     # page.window_width = 400
     # page.window_height = 700
     page.window_resizable = True
-
     current_user = None
     main_content = ft.Column(expand=True, spacing=0, scroll=ft.ScrollMode.AUTO)
+
+    def on_permission_result(e):
+        if e.data == "granted":
+            print(f"✅ 权限已授予: {e.permission}")
+        else:
+            print(f"❌ 权限被拒绝: {e.permission}")
+            # 可弹出提示引导用户去设置开启
+    page.on_permission_result = on_permission_result
+
 
     # ---------- 全屏配置覆盖层 ----------
     config_overlay = ft.Container(
@@ -447,25 +485,6 @@ def main(page: ft.Page):
         visible=False,
     )
 
-    # ---------- 全局权限回调 ----------
-    def on_permission_result(e):
-        if hasattr(page, "_pending_permission_callback"):
-            cb = page._pending_permission_callback
-            cb(e)
-            delattr(page, "_pending_permission_callback")
-    page.on_permission_result = on_permission_result
-
-    def request_all_permissions():
-        if page.platform == "android":
-            try:
-                page.request_permission("android.permission.CAMERA")
-                page.request_permission("android.permission.READ_MEDIA_IMAGES")
-                page.request_permission("android.permission.READ_EXTERNAL_STORAGE")
-                page.request_permission("android.permission.WRITE_EXTERNAL_STORAGE")
-            except Exception as e:
-                print(f"权限申请异常: {e}")
-
-    request_all_permissions()
 
     def get_field_width(page, ratio=1, subtract=40):
         base_width = get_window_width(page)
@@ -2208,7 +2227,7 @@ def main(page: ft.Page):
                 img_dlg = ft.AlertDialog(
                     title=ft.Text("SN照片预览"),
                     content=ft.Container(
-                        content=ft.Image(src=img_src, fit=ft.ImageFit.CONTAIN),
+                        content=ft.Image(src=img_src, fit=0),
                         width=min(get_window_width(page) * 0.85, 600),
                         height=min(get_window_width(page) * 0.85, 800),
                     ),
@@ -2233,7 +2252,7 @@ def main(page: ft.Page):
                 img_dlg = ft.AlertDialog(
                     title=ft.Text("送货照片预览"),
                     content=ft.Container(
-                        content=ft.Image(src=img_src, fit=ft.ImageFit.CONTAIN),
+                        content=ft.Image(src=img_src, fit=0),
                         width=min(get_window_width(page) * 0.85, 600),
                         height=min(get_window_width(page) * 0.85, 800),
                     ),
@@ -2490,12 +2509,20 @@ def main(page: ft.Page):
                     ]
                 )
 
+                # 权限请求（统一使用 request_android_permission）
                 if page.platform == "android":
-                    try:
-                        page.request_permission("android.permission.CAMERA")
-                        page.request_permission("android.permission.READ_MEDIA_IMAGES")
-                    except:
+                    # 需要相机和存储权限，分别请求（可合并处理）
+                    def perm_cb(e):
+                        # 权限结果忽略，因为如果被拒绝，后续操作会由系统处理
                         pass
+
+                    request_android_permission("android.permission.CAMERA", perm_cb)
+                    # 存储权限
+                    if hasattr(page, 'platform_version') and page.platform_version >= 33:
+                        perm = "android.permission.READ_MEDIA_IMAGES"
+                    else:
+                        perm = "android.permission.READ_EXTERNAL_STORAGE"
+                    request_android_permission(page,perm, perm_cb)
 
                 page.overlay.append(sn_dialog)
                 sn_dialog.open = True
