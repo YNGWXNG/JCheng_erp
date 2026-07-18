@@ -16,6 +16,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 import sys
 import os
+import math
 from pathlib import Path
 import appdirs
 import asyncio
@@ -184,109 +185,151 @@ def show_alert(page: ft.Page, title, content, on_ok=None):
 # ===================== 通用扫码函数（仅返回识别码，不查询产品） =====================
 def scan_barcode_only(page: ft.Page, callback, title="扫码识别"):
     """
-    打开一个扫码弹窗，识别后仅返回码字符串给callback
-    权限处理：自动请求相机权限，若被拒绝则提示用户
+    通用条码/二维码识别（手机端原生相机+相册，桌面端兼容）
+    接口与原函数完全一致，上层所有调用无需修改
     """
-    dialog_ref = None
-    tip_text = ft.Text("对准条码自动识别", size=12, text_align=ft.TextAlign.CENTER)
+    # 本地解析图片中的条码
+    def _decode_barcode(image_path):
+        try:
+            from pyzbar.pyzbar import decode
+            from PIL import Image
+            img = Image.open(image_path)
+            raw_results = decode(img)
+            # 清洗去重
+            code_list = []
+            for item in raw_results:
+                code_str = item.data.decode("utf-8", errors="ignore").strip()
+                if code_str and code_str not in code_list:
+                    code_list.append(code_str)
+            return code_list
+        except Exception as e:
+            print(f"条码解析失败: {e}")
+            return []
 
-    def handle_scan_success(code):
-        tip_text.value = f"识别成功：{code}"
-        tip_text.color = ft.Colors.GREEN
-        page.update()
-        callback(code)
-        def close_dialog():
-            if dialog_ref and dialog_ref.open:
-                dialog_ref.open = False
-            if dialog_ref in page.overlay:
-                page.overlay.remove(dialog_ref)
-            page.update()
-        threading.Timer(0.8, close_dialog).start()
+    # 选图/拍照结果回调
+    def _on_pick_result(e: ft.FilePickerResultEvent):
+        if not e.files or len(e.files) == 0 or not e.files[0].path:
+            return
+        img_path = e.files[0].path
+        codes = _decode_barcode(img_path)
 
-    def on_scan_result(e):
-        if e.barcodes and len(e.barcodes) > 1:
-            def choose_barcode(code):
+        if not codes:
+            show_alert(page, "识别失败", "未检测到有效条码，请对准后重试")
+            return
+
+        # 多码选择逻辑（与原业务完全兼容）
+        if len(codes) > 1:
+            def _select_code(selected_code):
                 choice_dlg.open = False
                 page.update()
-                handle_scan_success(code)
-            items = []
-            for bc in e.barcodes:
-                code_str = bc.data.decode('utf-8', errors='ignore')
-                items.append(ft.ListTile(
-                    title=ft.Text(code_str),
-                    on_click=lambda _, c=code_str: choose_barcode(c)
-                ))
+                callback(selected_code)
+
+            items = [
+                ft.ListTile(
+                    title=ft.Text(code),
+                    on_click=lambda _, c=code: _select_code(c)
+                )
+                for code in codes
+            ]
             choice_dlg = ft.AlertDialog(
                 title=ft.Text("检测到多个条码，请选择"),
                 content=ft.Column(items, scroll=ft.ScrollMode.AUTO, height=200),
-                actions=[ft.TextButton("取消", on_click=lambda _: (setattr(choice_dlg, 'open', False), page.update()))]
+                actions=[ft.TextButton("取消", on_click=lambda _: setattr(choice_dlg, "open", False))]
             )
             page.overlay.append(choice_dlg)
             choice_dlg.open = True
             page.update()
-            return
-        if e.data:
-            scanner.disabled = True
-            page.update()
-            handle_scan_success(e.data)
+        else:
+            # 单码直接执行业务回调
+            callback(codes[0])
 
-    scanner = ft.BarcodeScanner(
-        on_scan=on_scan_result,
-        width=min(320, (get_window_width(page) or DEFAULT_WIDTH) - 40),
-        height=320,
-        resolution=ft.BarcodeScannerResolution.MEDIUM
-    )
+    # 全局复用FilePicker实例，避免重复创建
+    if not hasattr(page, "_barcode_file_picker"):
+        picker = ft.FilePicker(on_result=_on_pick_result)
+        page.overlay.append(picker)
+        page._barcode_file_picker = picker
+    else:
+        picker = page._barcode_file_picker
 
-    def open_album(e):
-        tip_text.value = ""
-        page.update()
-        scanner.pick_image()
-
-    def close_dialog(e):
-        if dialog_ref:
-            dialog_ref.open = False
-            if dialog_ref in page.overlay:
-                page.overlay.remove(dialog_ref)
+    # 调起相机拍照识别
+    def _open_camera(e):
+        menu_dlg.open = False
         page.update()
 
-    dialog_content = ft.Column(
-        [scanner, tip_text],
-        width=min(320, (get_window_width(page) or DEFAULT_WIDTH) - 40),
-        spacing=8,
-        scroll=ft.ScrollMode.AUTO
-    )
-
-    def open_scanner_dialog():
-        nonlocal dialog_ref
-        dialog_ref = ft.AlertDialog(
-            title=ft.Text(title),
-            content=dialog_content,
-            modal=True,
-            content_padding=ft.Padding(12, 10, 12, 10),
-            actions=[
-                ft.TextButton("相册识别", on_click=open_album),
-                ft.TextButton("关闭", on_click=close_dialog)
-            ]
-        )
-        page.overlay.append(dialog_ref)
-        dialog_ref.open = True
-        page.update()
-
-    # 权限检查与请求
-    if page.platform == "android":
-        if "android.permission.CAMERA" not in page.get_platform_permissions():
-            def permission_callback(e):
+        # 安卓端动态申请相机权限
+        if page.platform == "android":
+            def _permission_callback(e):
                 if e.data == "granted":
-                    open_scanner_dialog()
+                    picker.pick_files(
+                        allow_multiple=False,
+                        file_type=ft.FilePickerFileType.IMAGE,
+                        source=ft.FilePickerSource.CAMERA
+                    )
                 else:
-                    show_alert(page, "权限被拒绝", "需要相机权限才能扫码，请在系统设置中开启")
-                page.update()
-            page._pending_permission_callback = permission_callback
+                    show_alert(page, "权限被拒绝", "请在系统设置中开启相机权限后重试")
+            page._pending_permission_callback = _permission_callback
             page.request_permission("android.permission.CAMERA")
         else:
-            open_scanner_dialog()
-    else:
-        open_scanner_dialog()
+            # 桌面端直接调用（仅调试用）
+            picker.pick_files(
+                allow_multiple=False,
+                file_type=ft.FilePickerFileType.IMAGE,
+                source=ft.FilePickerSource.CAMERA
+            )
+
+    # 打开相册选图识别
+    def _open_album(e):
+        menu_dlg.open = False
+        page.update()
+
+        # 安卓端动态申请存储权限
+        if page.platform == "android":
+            def _permission_callback(e):
+                if e.data == "granted":
+                    picker.pick_files(
+                        allow_multiple=False,
+                        file_type=ft.FilePickerFileType.IMAGE,
+                        source=ft.FilePickerSource.GALLERY
+                    )
+                else:
+                    show_alert(page, "权限被拒绝", "请在系统设置中开启存储权限后重试")
+            page._pending_permission_callback = _permission_callback
+            page.request_permission("android.permission.READ_MEDIA_IMAGES")
+        else:
+            picker.pick_files(
+                allow_multiple=False,
+                file_type=ft.FilePickerFileType.IMAGE,
+                source=ft.FilePickerSource.GALLERY
+            )
+
+    # 选择来源弹窗
+    menu_dlg = ft.AlertDialog(
+        title=ft.Text(title),
+        content=ft.Column(
+            [
+                ft.ListTile(
+                    leading=ft.Icon(ft.Icons.CAMERA_ALT),
+                    title=ft.Text("拍照识别"),
+                    subtitle=ft.Text("调用系统相机拍摄条码"),
+                    on_click=_open_camera
+                ),
+                ft.ListTile(
+                    leading=ft.Icon(ft.Icons.PHOTO_LIBRARY),
+                    title=ft.Text("相册选图"),
+                    subtitle=ft.Text("从相册选择条码图片识别"),
+                    on_click=_open_album
+                ),
+            ],
+            tight=True,
+            spacing=8
+        ),
+        actions=[ft.TextButton("取消", on_click=lambda e: setattr(menu_dlg, "open", False))]
+    )
+
+    page.overlay.append(menu_dlg)
+    menu_dlg.open = True
+    page.update()
+
 
 def scan_barcode_from_image(page: ft.Page, on_match_success):
     """
@@ -1269,12 +1312,11 @@ def main(page: ft.Page):
                 final_unit = after_store
             else:
                 if after_store <= 10000:
-                    final_unit = after_store * (1 - gov / 100)
+                    final_unit = math.ceil(after_store * (1 - gov / 100)*100)/100
                 else:
                     final_unit = after_store - 1500
             total = final_unit * qt
-            total = round(total, 2)
-            t_price = round(after_store, 2)
+            t_price = after_store
 
             items.append({
                 "model": m,
@@ -1670,9 +1712,9 @@ def main(page: ft.Page):
                         ft.Column(spacing=5),
                     ],
                     spacing=10,
-                    # scroll=ft.ScrollMode.AUTO,
+                    scroll=ft.ScrollMode.AUTO,
                     width=min(get_window_width(page) * 0.9 if get_window_width(page) else 400, 500),
-                    height=min(get_window_width(page) * 0.7 if get_window_width(page) else 500, 600),
+                    height=min(get_window_width(page) * 0.9 if get_window_width(page) else 500, 600),
                 ),
                 actions=[
                     ft.TextButton("关闭", on_click=lambda e: setattr(detail_win, 'open', False))
@@ -2192,7 +2234,7 @@ def main(page: ft.Page):
             trans_date_input = ft.TextField(label="实际送货日期", value=date.today().isoformat(), expand=True)
             delivery01 = ft.TextField(label="送  货  人", value=delivery01_name or "麻跃进", expand=True)
             delivery02 = ft.TextField(label="共同送货人", value=delivery02_name or "徐连配", expand=True)
-            need_delivery_cb = ft.Checkbox(label="需要送货", value=True)
+            need_delivery_cb = ft.Checkbox(label="送货", value=True)
 
             status_label = ft.Text(f"当前状态: {status_val}", weight=ft.FontWeight.BOLD)
             sn_photo_status = ft.Text("SN照片: 已上传" if sn_photo else "SN照片: 未上传",
@@ -2284,102 +2326,22 @@ def main(page: ft.Page):
             # ---------- SN码一体化管理（支持多码选择、失败后手动录入） ----------
             def open_sn_manage_dialog(e):
                 sn_dialog = None
-                current_mode = "scan"  # scan:扫码模式 / upload:扫码成功后传照片 / manual:手动录入模式
+                # menu:菜单 / upload:上传照片 / manual:手动录入
+                current_mode = "menu"
 
                 def refresh_view():
-                    if current_mode == "scan":
-                        sn_dialog.content = build_scan_view()
+                    if current_mode == "menu":
+                        sn_dialog.content = build_menu_view()
                     elif current_mode == "upload":
                         sn_dialog.content = build_upload_view()
                     elif current_mode == "manual":
                         sn_dialog.content = build_manual_view()
                     page.update()
 
-                # 视图1：原生扫码（支持多码选择）
-                def build_scan_view():
-                    tip = ft.Text("对准SN条码自动识别", size=12, text_align=ft.TextAlign.CENTER)
-                    scan_attempt = 0
-
-                    def on_scan_success(e):
-                        nonlocal scan_attempt
-                        barcodes = e.barcodes if hasattr(e, 'barcodes') and e.barcodes else []
-                        if len(barcodes) > 1:
-                            def choose_barcode(code):
-                                choice_dlg.open = False
-                                page.update()
-                                process_code(code)
-
-                            items = []
-                            for bc in barcodes:
-                                code_str = bc.data.decode('utf-8', errors='ignore')
-                                items.append(ft.ListTile(
-                                    title=ft.Text(code_str),
-                                    on_click=lambda _, c=code_str: choose_barcode(c)
-                                ))
-                            choice_dlg = ft.AlertDialog(
-                                title=ft.Text("检测到多个条码，请选择"),
-                                content=ft.Column(items, scroll=ft.ScrollMode.AUTO, height=200),
-                                actions=[ft.TextButton("取消", on_click=lambda _: (setattr(choice_dlg, 'open', False), page.update()))]
-                            )
-                            page.overlay.append(choice_dlg)
-                            choice_dlg.open = True
-                            page.update()
-                            return
-
-                        if e.data:
-                            process_code(e.data)
-                        else:
-                            scan_attempt += 1
-                            if scan_attempt >= 3:
-                                tip.value = "已连续失败3次，请拍照或手动输入"
-                                tip.color = ft.Colors.RED
-                                nonlocal current_mode
-                                current_mode = "manual"
-                                refresh_view()
-                            else:
-                                tip.value = f"未识别到条码，请重试（{scan_attempt}/3）"
-                                tip.color = ft.Colors.ORANGE
-                            scanner.disabled = False
-                            page.update()
-
-                    def process_code(code):
-                        sn_code = code.strip()
-                        try:
-                            conn = get_db_conn()
-                            cur = conn.cursor()
-                            cur.execute(
-                                "UPDATE transport SET sn_code=%s WHERE out_order_no=%s",
-                                (sn_code, current_order["out_order_no"])
-                            )
-                            conn.commit()
-                            conn.close()
-
-                            current_order["sn_code"] = sn_code
-                            sn_entry.value = sn_code
-                            tip.value = f"识别成功：{sn_code}\n请上传SN码照片存档"
-                            tip.color = ft.Colors.GREEN
-                            page.update()
-
-                            nonlocal current_mode
-                            current_mode = "upload"
-                            refresh_view()
-                        except Exception as ex:
-                            tip.value = f"保存失败：{str(ex)[:30]}"
-                            tip.color = ft.Colors.RED
-                            scanner.disabled = False
-                            page.update()
-
-                    scanner = ft.BarcodeScanner(
-                        on_scan=on_scan_success,
-                        width=min(320, (get_window_width(page) or DEFAULT_WIDTH) - 40),
-                        height=320,
-                        resolution=ft.BarcodeScannerResolution.MEDIUM
-                    )
-
-                    def pick_image_scan(e):
-                        tip.value = ""
-                        page.update()
-                        scanner.pick_image()
+                # ---------- 菜单视图（替代原实时扫码视图） ----------
+                def build_menu_view():
+                    def go_scan(e):
+                        scan_barcode_only(page, process_code, title="扫描SN条码")
 
                     def go_manual(e):
                         nonlocal current_mode
@@ -2388,22 +2350,48 @@ def main(page: ft.Page):
 
                     return ft.Column(
                         [
-                            scanner,
-                            tip,
-                            ft.Row(
-                                [
-                                    ft.TextButton("相册选图识别", on_click=pick_image_scan),
-                                    ft.TextButton("识别失败？手动录入", on_click=go_manual)
-                                ],
-                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN
-                            )
+                            ft.Text("SN码录入", size=16, weight=ft.FontWeight.BOLD, text_align=ft.TextAlign.CENTER),
+                            ft.Divider(height=10),
+                            ft.ListTile(
+                                leading=ft.Icon(ft.Icons.CAMERA_ALT, color=ft.Colors.BLUE),
+                                title=ft.Text("扫码录入"),
+                                subtitle=ft.Text("调用相机扫描SN条码"),
+                                on_click=go_scan
+                            ),
+                            ft.ListTile(
+                                leading=ft.Icon(ft.Icons.EDIT, color=ft.Colors.GREY),
+                                title=ft.Text("手动录入"),
+                                subtitle=ft.Text("扫码失败时手动输入"),
+                                on_click=go_manual
+                            ),
                         ],
                         width=min(320, (get_window_width(page) or DEFAULT_WIDTH) - 40),
                         spacing=8,
-                        # scroll=ft.ScrollMode.AUTO
                     )
 
-                # 视图2：扫码成功后，上传SN照片
+                # ---------- 扫码结果处理（原有业务逻辑完全保留） ----------
+                def process_code(code):
+                    sn_code = code.strip()
+                    try:
+                        conn = get_db_conn()
+                        cur = conn.cursor()
+                        cur.execute(
+                            "UPDATE transport SET sn_code=%s WHERE out_order_no=%s",
+                            (sn_code, current_order["out_order_no"])
+                        )
+                        conn.commit()
+                        conn.close()
+
+                        current_order["sn_code"] = sn_code
+                        sn_entry.value = sn_code
+                        # 识别成功自动切换到上传照片视图
+                        nonlocal current_mode
+                        current_mode = "upload"
+                        refresh_view()
+                    except Exception as ex:
+                        show_alert(page, "保存失败", str(ex)[:30])
+
+                # ---------- 上传照片视图（原有代码完全保留） ----------
                 def build_upload_view():
                     tip = ft.Text("请拍摄或选择SN照片完成存档", size=12, text_align=ft.TextAlign.CENTER)
                     file_picker = ft.FilePicker()
@@ -2454,19 +2442,25 @@ def main(page: ft.Page):
                             file_type=ft.FilePickerFileType.IMAGE
                         )
 
+                    def back_to_menu(e):
+                        nonlocal current_mode
+                        current_mode = "menu"
+                        refresh_view()
+
                     return ft.Column(
                         [
                             ft.Icon(ft.Icons.CHECK_CIRCLE, color=ft.Colors.GREEN, size=48),
                             ft.Text("SN码识别成功", size=16, text_align=ft.TextAlign.CENTER, color=ft.Colors.GREEN),
                             tip,
-                            ft.ElevatedButton("上传SN照片", on_click=pick_photo, expand=True)
+                            ft.ElevatedButton("上传SN照片", on_click=pick_photo, expand=True),
+                            ft.TextButton("返回菜单", on_click=back_to_menu)
                         ],
                         width=min(320, (get_window_width(page) or DEFAULT_WIDTH) - 40),
                         spacing=12,
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER
                     )
 
-                # 视图3：手动兜底模式
+                # ---------- 手动录入视图（原有代码完全保留） ----------
                 def build_manual_view():
                     tip = ft.Text("请先上传SN照片，再输入SN码保存", size=12, text_align=ft.TextAlign.CENTER)
                     sn_input = ft.TextField(label="手动输入SN码", value=current_order["sn_code"], width=280)
@@ -2543,9 +2537,9 @@ def main(page: ft.Page):
                         except Exception as ex:
                             show_alert(page, "错误", f"保存失败: {str(ex)}")
 
-                    def back_to_scan(e):
+                    def back_to_menu(e):
                         nonlocal current_mode
-                        current_mode = "scan"
+                        current_mode = "menu"
                         refresh_view()
 
                     return ft.Column(
@@ -2556,7 +2550,7 @@ def main(page: ft.Page):
                             sn_input,
                             ft.Row(
                                 [
-                                    ft.TextButton("返回扫码", on_click=back_to_scan),
+                                    ft.TextButton("返回菜单", on_click=back_to_menu),
                                     ft.ElevatedButton("保存SN码", on_click=save_sn_code)
                                 ],
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN
@@ -2564,17 +2558,17 @@ def main(page: ft.Page):
                         ],
                         width=min(320, (get_window_width(page) or DEFAULT_WIDTH) - 40),
                         spacing=10,
-                        # scroll=ft.ScrollMode.AUTO
+                        scroll=ft.ScrollMode.AUTO
                     )
 
-                # 构建主弹窗
+                # ---------- 构建主弹窗 ----------
                 sn_dialog = ft.AlertDialog(
                     title=ft.Text("SN码录入"),
-                    content=build_scan_view(),
+                    content=build_menu_view(),
                     modal=True,
                     content_padding=ft.Padding(12, 10, 12, 10),
                     actions=[
-                        ft.TextButton("关闭", on_click=lambda e: (setattr(sn_dialog, 'open', False), page.update()))
+                        ft.TextButton("关闭", on_click=lambda e: (setattr(sn_dialog, "open", False), page.update()))
                     ]
                 )
 
@@ -2744,9 +2738,9 @@ def main(page: ft.Page):
                     ),
                 ],
                 spacing=8,
-                # scroll=ft.ScrollMode.AUTO,
-                width=min(get_window_width(page) - 40, 420) if get_window_width(page) else 320,
-                height=min(get_window_width(page) - 120, 600) if get_window_width(page) else 500,
+                scroll=ft.ScrollMode.AUTO,
+                width=min(get_window_width(page) - 20, 420) if get_window_width(page) else 320,
+                height=min(get_window_width(page) - 50, 600) if get_window_width(page) else 500,
             )
 
             dlg = ft.AlertDialog(
