@@ -37,8 +37,11 @@ packages = [
 org = "com.jiucheng"
 product = "jiuchengerp"
 copyright = "Copyright (C) 2023-2026 by jiucheng"
-main = "src/main.py"
-assets_dir = "src/assets"
+assets = "src/assets"   # 修正资源目录字段
+
+[tool.flet.app]
+path = "src"
+entry_point = "main:main"   # 确保指向正确的入口
 
 [tool.flet.android]
 min_sdk_version = 24
