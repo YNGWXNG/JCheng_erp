@@ -1,26 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- ========== 相机权限 ========== -->
-    <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
-    <!-- ========== 相册/存储权限（全安卓版本兼容） ========== -->
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-    <uses-permission 
-        android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
-    <uses-permission 
-        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="29" />
-
-    <!-- ========== 网络权限（连接数据库必需） ========== -->
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-
-    <!-- ========== 仅追加属性，不覆盖原有Activity配置 ========== -->
     <application
         android:allowBackup="true"
         android:hardwareAccelerated="true"
@@ -28,5 +11,3 @@
         android:networkSecurityConfig="@xml/network_security_config"
         tools:node="merge">
     </application>
-
-</manifest>
