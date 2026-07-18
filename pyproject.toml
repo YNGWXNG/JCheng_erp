@@ -16,7 +16,7 @@ dependencies = [
     "numpy",
     "reportlab",
     "appdirs",
-    "requests"，
+    "requests",
     "opencv-python"
 ]
 
