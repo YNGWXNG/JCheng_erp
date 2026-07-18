@@ -16,8 +16,8 @@ dependencies = [
     "numpy",
     "reportlab",
     "appdirs",
-    "requests",
-    "pyzbar"
+    "requests"，
+    "opencv-python"
 ]
 
 # Flet 0.85.3 打包APK唯一读取的依赖配置，必须写全所有需要内置的包（含certifi）
@@ -31,7 +31,7 @@ packages = [
     "appdirs",
     "requests",
     "certifi",
-    "pyzbar"
+    "opencv-python"
 ]
 
 [tool.flet]
