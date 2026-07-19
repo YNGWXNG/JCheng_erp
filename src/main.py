@@ -183,7 +183,6 @@ def show_alert(page: ft.Page, title, content, on_ok=None):
     page.update()
 
 def request_android_permission(page, permission, callback=None):
-    """Android 平台请求权限，非 Android 直接回调成功"""
     if page.platform != "android":
         if callback:
             callback("granted")
@@ -263,7 +262,7 @@ def scan_barcode_only(page: ft.Page, handle_result, title="扫码识别商品"):
 
     # ---------- 权限处理 ----------
     if page.platform == "android":
-        # 选择图片需要存储权限（Android 13+ 用 READ_MEDIA_IMAGES，否则 READ_EXTERNAL_STORAGE）
+        # 根据 Android 版本选择存储权限
         if hasattr(page, 'platform_version') and page.platform_version >= 33:
             perm = "android.permission.READ_MEDIA_IMAGES"
         else:
@@ -275,7 +274,8 @@ def scan_barcode_only(page: ft.Page, handle_result, title="扫码识别商品"):
             else:
                 show_alert(page, "权限被拒绝", "需要存储权限才能选择图片，请在系统设置中开启")
             page.update()
-        request_android_permission(page,perm, perm_callback)
+
+        request_android_permission(page, perm, perm_callback)
     else:
         open_picker()
 
@@ -448,7 +448,11 @@ def main(page: ft.Page):
             print(f"✅ 权限已授予: {e.permission}")
         else:
             print(f"❌ 权限被拒绝: {e.permission}")
-            # 可弹出提示引导用户去设置开启
+        if hasattr(page, "_pending_permission_callback"):
+            cb = page._pending_permission_callback
+            cb(e)
+            delattr(page, "_pending_permission_callback")
+
     page.on_permission_result = on_permission_result
 
 
@@ -2214,20 +2218,28 @@ def main(page: ft.Page):
                     conn.close()
 
             # ---------- 查看SN照片（全平台兼容弹窗版） ----------
+            import tempfile
+
             def do_view_sn_photo(e):
                 file_data = get_file_from_db("sn_photos", current_order["out_order_no"])
                 if not file_data:
                     show_alert(page, "提示", "该订单暂无 SN 照片")
                     return
 
-                import base64
-                img_base64 = base64.b64encode(file_data).decode("utf-8")
-                img_src = f"data:image/jpeg;base64,{img_base64}"
+                # 写入临时文件
+                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                    tmp.write(file_data)
+                    tmp_path = tmp.name
 
                 img_dlg = ft.AlertDialog(
                     title=ft.Text("SN照片预览"),
                     content=ft.Container(
-                        content=ft.Image(src=img_src, fit=0),
+                        content=ft.Image(
+                            src=tmp_path,  # 文件路径
+                            fit=0,
+                            width=min(get_window_width(page) * 0.85, 600),
+                            height=min(get_window_width(page) * 0.85, 800),
+                        ),
                         width=min(get_window_width(page) * 0.85, 600),
                         height=min(get_window_width(page) * 0.85, 800),
                     ),
@@ -2237,6 +2249,16 @@ def main(page: ft.Page):
                 img_dlg.open = True
                 page.update()
 
+                # 可选：对话框关闭后删除临时文件
+                def on_close(e):
+                    try:
+                        os.unlink(tmp_path)
+                    except:
+                        pass
+                    setattr(img_dlg, "open", False)
+                    page.update()
+                # 可以绑定关闭按钮，但简单起见忽略清理（临时文件会在应用退出时被系统清理）
+
             # ---------- 查看送货照片（全平台兼容弹窗版） ----------
             def do_view_home_photo(e):
                 biz_no, prefix = get_home_photo_biz_info(order_no, out_order_no)
@@ -2245,14 +2267,21 @@ def main(page: ft.Page):
                     show_alert(page, "提示", "该订单暂无送货照片")
                     return
 
-                import base64
-                img_base64 = base64.b64encode(file_data).decode("utf-8")
-                img_src = f"data:image/jpeg;base64,{img_base64}"
+                # 写入临时文件
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                    tmp.write(file_data)
+                    tmp_path = tmp.name
 
                 img_dlg = ft.AlertDialog(
                     title=ft.Text("送货照片预览"),
                     content=ft.Container(
-                        content=ft.Image(src=img_src, fit=0),
+                        content=ft.Image(
+                            src=tmp_path,  # 使用临时文件路径
+                            fit=0,  # 0 对应 ImageFit.NONE，保持原样
+                            width=min(get_window_width(page) * 0.85, 600),
+                            height=min(get_window_width(page) * 0.85, 800),
+                        ),
                         width=min(get_window_width(page) * 0.85, 600),
                         height=min(get_window_width(page) * 0.85, 800),
                     ),
