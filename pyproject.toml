@@ -48,3 +48,11 @@ min_sdk_version = 24
 target_sdk_version = 33
 compile_sdk_version = 33
 hardware_accelerated = true
+permissions = [
+    "CAMERA",
+    "READ_MEDIA_IMAGES",        # Android 13+ 图片权限
+    "READ_EXTERNAL_STORAGE",    # Android 12 及以下
+    "WRITE_EXTERNAL_STORAGE",
+    "INTERNET",
+    "ACCESS_NETWORK_STATE"
+]
