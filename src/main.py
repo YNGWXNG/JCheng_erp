@@ -229,21 +229,22 @@ def scan_barcode_only(page: ft.Page, handle_result, title="扫码识别商品"):
             print(f"解码异常: {err}")
         return code_list
 
-    # 文件选择回调逻辑
-    def _on_pick_result(e: ft.FilePickerResultEvent):
-        if not e.files:
+    # 文件选择回调逻辑（去除类型注解）
+    def _on_pick_result(e):
+        print("=== 文件选择回调触发 ===")
+        if not e.files or len(e.files) == 0:
             return
         img_path = e.files[0].path
         code_list = _decode_barcode(img_path)
-        if code_list:
-            handle_result(code_list[0])
-        else:
-            show_alert(page, "识别失败", "未识别到条码")
+        if not code_list:
+            show_alert(page, "识别失败", "未识别到条码，请重新拍摄清晰图片")
+            return
+        handle_result(code_list[0])
 
     # 初始化 FilePicker
     if not hasattr(page, "_barcode_file_picker"):
         picker = ft.FilePicker()
-        picker.on_result = _on_pick_result
+        picker.on_result = _on_pick_result   # 0.85.3 使用 on_result 属性
         page.overlay.append(picker)
         page._barcode_file_picker = picker
         page.update()
@@ -251,14 +252,17 @@ def scan_barcode_only(page: ft.Page, handle_result, title="扫码识别商品"):
 
     def open_picker():
         if page.platform == ft.PagePlatform.WINDOWS:
-            show_alert(page, "提示", "Windows桌面不支持文件拾取，请打包APK测试")
+            show_alert(page, "调试提示", "Windows桌面不支持文件拾取，请打包APK在安卓手机测试扫码功能")
         else:
-            picker.pick_files(allow_multiple=False, file_type=ft.FilePickerFileType.IMAGE)
+            picker.pick_files(
+                allow_multiple=False,
+                file_type=ft.FilePickerFileType.IMAGE
+            )
             page.update()
 
-    # 请求权限（仅 Android）
+    # 权限处理
     if page.platform == "android":
-        # 根据 Android 版本选择存储权限
+        # 选择图片需要存储权限（Android 13+ 用 READ_MEDIA_IMAGES，否则 READ_EXTERNAL_STORAGE）
         if hasattr(page, 'platform_version') and page.platform_version >= 33:
             perm = "android.permission.READ_MEDIA_IMAGES"
         else:
@@ -268,7 +272,7 @@ def scan_barcode_only(page: ft.Page, handle_result, title="扫码识别商品"):
             if e.data == "granted":
                 open_picker()
             else:
-                show_alert(page, "权限被拒绝", "需要存储权限才能选择图片")
+                show_alert(page, "权限被拒绝", "需要存储权限才能选择图片，请在系统设置中开启")
             page.update()
         request_android_permission(page, perm, perm_callback)
     else:
