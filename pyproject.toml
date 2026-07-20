@@ -9,7 +9,7 @@ authors = [
 ]
 
 dependencies = [
-    "flet==0.85.3",
+    "flet>=0.85.3",
     "mysql-connector-python",
     "Pillow",
     "numpy",
@@ -22,7 +22,7 @@ dependencies = [
 
 [tool.flet.dependencies]
 packages = [
-    "flet==0.85.3",
+    "flet>=0.85.3",
     "mysql-connector-python",
     "Pillow",
     "numpy",
