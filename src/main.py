@@ -196,7 +196,7 @@ def request_android_permission(page, permission, callback=None):
                 page._pending_permission_callback = callback
             page.request_permission(permission)
     except Exception as e:
-        print(f"权限请求异常: {e}")
+        print(f"[权限] 异常: {e}")
         if callback:
             callback("denied")
 
@@ -231,15 +231,14 @@ def scan_barcode_only(page: ft.Page, handle_result, title="扫码识别商品"):
 
     # 文件选择回调逻辑
     def _on_pick_result(e: ft.FilePickerResultEvent):
-        print("=== 文件选择回调触发 ===")
-        if not e.files or len(e.files) == 0:
+        if not e.files:
             return
         img_path = e.files[0].path
         code_list = _decode_barcode(img_path)
-        if not code_list:
-            show_alert(page, "识别失败", "未识别到条码，请重新拍摄清晰图片")
-            return
-        handle_result(code_list[0])
+        if code_list:
+            handle_result(code_list[0])
+        else:
+            show_alert(page, "识别失败", "未识别到条码")
 
     # 初始化 FilePicker
     if not hasattr(page, "_barcode_file_picker"):
@@ -252,15 +251,12 @@ def scan_barcode_only(page: ft.Page, handle_result, title="扫码识别商品"):
 
     def open_picker():
         if page.platform == ft.PagePlatform.WINDOWS:
-            show_alert(page, "调试提示", "Windows桌面不支持文件拾取，请打包APK在安卓手机测试扫码功能")
+            show_alert(page, "提示", "Windows桌面不支持文件拾取，请打包APK测试")
         else:
-            picker.pick_files(
-                allow_multiple=False,
-                file_type=ft.FilePickerFileType.IMAGE
-            )
+            picker.pick_files(allow_multiple=False, file_type=ft.FilePickerFileType.IMAGE)
             page.update()
 
-    # ---------- 权限处理 ----------
+    # 请求权限（仅 Android）
     if page.platform == "android":
         # 根据 Android 版本选择存储权限
         if hasattr(page, 'platform_version') and page.platform_version >= 33:
@@ -272,9 +268,8 @@ def scan_barcode_only(page: ft.Page, handle_result, title="扫码识别商品"):
             if e.data == "granted":
                 open_picker()
             else:
-                show_alert(page, "权限被拒绝", "需要存储权限才能选择图片，请在系统设置中开启")
+                show_alert(page, "权限被拒绝", "需要存储权限才能选择图片")
             page.update()
-
         request_android_permission(page, perm, perm_callback)
     else:
         open_picker()
@@ -444,14 +439,12 @@ def main(page: ft.Page):
     main_content = ft.Column(expand=True, spacing=0, scroll=ft.ScrollMode.AUTO)
 
     def on_permission_result(e):
-        if e.data == "granted":
-            print(f"✅ 权限已授予: {e.permission}")
-        else:
-            print(f"❌ 权限被拒绝: {e.permission}")
         if hasattr(page, "_pending_permission_callback"):
             cb = page._pending_permission_callback
             cb(e)
             delattr(page, "_pending_permission_callback")
+        else:
+            print(f"权限结果: {e.permission} -> {e.data}")
 
     page.on_permission_result = on_permission_result
 
@@ -1115,7 +1108,7 @@ def main(page: ft.Page):
                 finally:
                     conn.close()
             street_dropdown.options = [ft.dropdown.Option(s) for s in street_list]
-            street_dropdown.value = None
+            street_dropdown.value = "蓼皋街道"
             street_dropdown.update()
             page.update()
 
