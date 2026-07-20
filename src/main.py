@@ -185,24 +185,36 @@ def show_alert(page: ft.Page, title, content, on_ok=None):
 def request_android_permission(page, permission, callback=None):
     if page.platform != "android":
         if callback:
-            callback("granted")
+            class FakeEvent:
+                def __init__(self, data, perm):
+                    self.data = data
+                    self.permission = perm
+            callback(FakeEvent("granted", permission))
         return
     try:
         if permission in page.get_platform_permissions():
+            class FakeEvent:
+                def __init__(self, data, perm):
+                    self.data = data
+                    self.permission = perm
             if callback:
-                callback("granted")
+                callback(FakeEvent("granted", permission))
         else:
             if callback:
                 page._pending_permission_callback = callback
             page.request_permission(permission)
     except Exception as e:
-        print(f"[权限] 异常: {e}")
+        print(f"权限请求异常: {e}")
         if callback:
-            callback("denied")
+            class FakeEvent:
+                def __init__(self, data, perm):
+                    self.data = data
+                    self.permission = perm
+            callback(FakeEvent("denied", permission))
 
 # ===================== 通用扫码函数（Flet 0.85.3 全平台适配版） =====================
 def scan_barcode_only(page: ft.Page, handle_result, title="扫码识别商品"):
-    # 安卓/桌面通用解码函数（OpenCV，打包不崩溃）
+    # 解码函数保持不变
     def _decode_barcode(image_path):
         import cv2
         import numpy as np
@@ -229,7 +241,7 @@ def scan_barcode_only(page: ft.Page, handle_result, title="扫码识别商品"):
             print(f"解码异常: {err}")
         return code_list
 
-    # 文件选择回调逻辑（去除类型注解）
+    # 文件选择回调（正确的回调参数）
     def _on_pick_result(e):
         print("=== 文件选择回调触发 ===")
         if not e.files or len(e.files) == 0:
@@ -241,10 +253,11 @@ def scan_barcode_only(page: ft.Page, handle_result, title="扫码识别商品"):
             return
         handle_result(code_list[0])
 
-    # 初始化 FilePicker
+    # 初始化 FilePicker（只挂载一次）
     if not hasattr(page, "_barcode_file_picker"):
+        print("新建FilePicker实例")
         picker = ft.FilePicker()
-        picker.on_result = _on_pick_result   # 0.85.3 使用 on_result 属性
+        picker.on_result = _on_pick_result  # 注意：是 on_result
         page.overlay.append(picker)
         page._barcode_file_picker = picker
         page.update()
@@ -260,9 +273,9 @@ def scan_barcode_only(page: ft.Page, handle_result, title="扫码识别商品"):
             )
             page.update()
 
-    # 权限处理
+    # 权限请求（仅 Android）
     if page.platform == "android":
-        # 选择图片需要存储权限（Android 13+ 用 READ_MEDIA_IMAGES，否则 READ_EXTERNAL_STORAGE）
+        # 根据 Android 版本选择存储权限
         if hasattr(page, 'platform_version') and page.platform_version >= 33:
             perm = "android.permission.READ_MEDIA_IMAGES"
         else:
@@ -272,7 +285,7 @@ def scan_barcode_only(page: ft.Page, handle_result, title="扫码识别商品"):
             if e.data == "granted":
                 open_picker()
             else:
-                show_alert(page, "权限被拒绝", "需要存储权限才能选择图片，请在系统设置中开启")
+                show_alert(page, "权限被拒绝", "需要存储权限才能选择图片")
             page.update()
         request_android_permission(page, perm, perm_callback)
     else:
@@ -2537,18 +2550,17 @@ def main(page: ft.Page):
 
                 # 权限请求（统一使用 request_android_permission）
                 if page.platform == "android":
-                    # 需要相机和存储权限，分别请求（可合并处理）
                     def perm_cb(e):
-                        # 权限结果忽略，因为如果被拒绝，后续操作会由系统处理
+                        # 可以忽略回调，因为权限结果会由 on_permission_result 处理
                         pass
 
-                    request_android_permission("android.permission.CAMERA", perm_cb)
-                    # 存储权限
+                    request_android_permission(page, "android.permission.CAMERA", perm_cb)
+                    # 存储权限...
                     if hasattr(page, 'platform_version') and page.platform_version >= 33:
                         perm = "android.permission.READ_MEDIA_IMAGES"
                     else:
                         perm = "android.permission.READ_EXTERNAL_STORAGE"
-                    request_android_permission(page,perm, perm_cb)
+                    request_android_permission(page, perm, perm_cb)
 
                 page.overlay.append(sn_dialog)
                 sn_dialog.open = True
