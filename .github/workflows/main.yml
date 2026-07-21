@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  FLET_VERSION: "0.85.3"
+  FLET_VERSION: "0.86.1"
 
 jobs:
   build-android:
