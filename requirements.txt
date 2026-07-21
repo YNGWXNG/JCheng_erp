@@ -1,4 +1,4 @@
-flet==0.85.3
+flet==0.86.1
 mysql-connector-python
 Pillow
 numpy
