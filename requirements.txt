@@ -1,9 +1,0 @@
-flet>=0.11
-flet-camera>=0.1
-Pillow>=9.0
-numpy>=1.21
-requests>=2.28
-reportlab>=3.6
-mysql-connector-python>=8.0
-opencv-python-headless>=4.7
-pyzbar>=0.1.8
