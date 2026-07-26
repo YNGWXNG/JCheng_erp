@@ -1,62 +1,33 @@
-name: Build Flet Android APK
+name: Build Android APK
 
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
 
-env:
-  # Optionally override decode server here (or set in repo Actions variables)
-  SERVER_DECODE_URL: ${{ secrets.SERVER_DECODE_URL || '' }}
-
 jobs:
-  build:
+  build-apk:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
+      - name: Pull Buildozer Docker image
+        run: docker pull kivy/buildozer
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Install build dependencies
+      - name: Run Buildozer (build APK)
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          # flet-mobile contains the pack tooling for Android
-          pip install "flet-mobile[android]"
+          docker run --rm \
+            --privileged \
+            -e "ANDROID_HOME=/opt/android-sdk" \
+            -v "${{ github.workspace }}:/home/user/hostcwd" \
+            -w "/home/user/hostcwd" \
+            kivy/buildozer \
+            /bin/bash -lc "pip install --upgrade pip && buildozer -v android debug"
 
-      - name: Build Android APK (release)
-        env:
-          SERVER_DECODE_URL: ${{ env.SERVER_DECODE_URL }}
-        run: |
-          # Ensure flet pack will use non-interactive mode in CI
-          # This command will download Android SDK components on first run (may take time).
-          flet pack android main.py --release --name "JiuchengERP" || (echo "flet pack failed" && exit 1)
-
-      - name: Upload APK artifact
+      - name: Upload build artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: JiuchengERP-apk
-          path: dist/*.apk
-
-# Optional signing / play-store upload notes (not active here):
-# - If you want to sign with your own keystore automatically, add your keystore as a repository secret (base64),
-#   decode it in the workflow and pass flet pack options to use the keystore.
-# - Example (outline, not active):
-#   echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > my.keystore
-#   flet pack android main.py --release --key keystore=my.keystore --key-alias="$ALIAS" --key-pass="$KEY_PASS"
-#
-# If you choose to use secrets, put them in GitHub repository Settings -> Secrets -> Actions,
-# and reference them as ${{ secrets.YOUR_SECRET }} in the workflow (ensure proper YAML syntax).
+          name: jiucheng-android-apk
+          path: bin/*.apk
