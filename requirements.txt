@@ -1,0 +1,10 @@
+flet==0.86.2   # replace with the Flet version you are using
+flet_camera
+Pillow
+requests
+mysql-connector-python
+numpy
+reportlab
+# optional: add opencv-python, pyzbar if you want local decoding in builds that support native libs
+# opencv-python
+# pyzbar
