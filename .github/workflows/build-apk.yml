@@ -31,8 +31,8 @@ jobs:
 
       - name: Build APK (auto-answer all prompts)
         run: |
-          yes | flet build apk \
-            --verbose \
+          flet build apk \
+            --verbose --yes\
             --android-permissions \
               android.permission.INTERNET \
               android.permission.CAMERA \
