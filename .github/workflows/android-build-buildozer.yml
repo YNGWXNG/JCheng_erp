@@ -1,0 +1,22 @@
+name: Build Android (buildozer)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker (for buildozer)
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build with buildozer (Docker)
+        uses: docker://kivy/buildozer
+        with:
+          args: >
+            /bin/bash -lc "pip install -r requirements.txt || true;
+            buildozer android debug"
