@@ -1,0 +1,34 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:   # 允许手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: flet/flet-build:0.86.2   # 与你本地 flet 版本严格对应
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build APK
+        run: |
+          flet build apk \
+            --verbose \
+            --android-permissions \
+              android.permission.INTERNET \
+              android.permission.CAMERA \
+              android.permission.READ_EXTERNAL_STORAGE \
+              android.permission.WRITE_EXTERNAL_STORAGE \
+              android.permission.READ_MEDIA_IMAGES \
+            --include-packages flet_camera
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: JCheng
+          path: build/apk/*.apk
