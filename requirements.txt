@@ -1,0 +1,10 @@
+flet>=0.11
+flet-camera>=0.1
+pillow
+numpy
+requests
+reportlab
+mysql-connector-python
+opencv-python-headless
+pyzbar
+pytest
