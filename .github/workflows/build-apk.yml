@@ -17,7 +17,7 @@ jobs:
 
       - name: Build APK
         run: |
-          flet build apk \ --yes
+          flet build apk --yes\ 
             --verbose \
             --android-permissions \
               android.permission.INTERNET \
