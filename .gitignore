@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+*.apk
+*.keystore
+.env
+.DS_Store
+.idea/
+.vscode/
