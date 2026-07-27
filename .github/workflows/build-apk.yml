@@ -32,8 +32,7 @@ jobs:
           --android-permissions CAMERA \
           --android-permissions READ_EXTERNAL_STORAGE \
           --android-permissions WRITE_EXTERNAL_STORAGE \
-          --android-permissions READ_MEDIA_IMAGES \
-          --assets-dir src/assets
+          --android-permissions READ_MEDIA_IMAGES
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
