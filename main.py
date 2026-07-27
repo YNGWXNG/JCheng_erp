@@ -240,8 +240,10 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
         try:
             if e.files:
                 path_result = resolve_picker_file(page, e.files[0])
+                if not path_result:
+                    print("[Picker] resolve_picker_file 返回空")
         except Exception as ex:
-            print(f"[pick_image_async] resolve error: {ex}")
+            print(f"[Picker] on_result error: {ex}")
         finally:
             event.set()
 
@@ -254,59 +256,51 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
                 dialog_title="选择图片"
             )
         else:
-            await picker.pick_files(
-                allow_multiple=False,
-                file_type=ft.FilePickerFileType.IMAGE,
-                allowed_extensions=["jpg", "jpeg", "png", "bmp"],
-                dialog_title="选择图片"
-            )
+            await picker.pick_files(...)
         await asyncio.wait_for(event.wait(), timeout=120)
-    except asyncio.TimeoutError:
-        print("[pick_image_async] 用户选择超时")
     except Exception as ex:
-        print(f"[pick_image_async] 异常: {ex}")
+        print(f"[Picker] 异常: {ex}")
     finally:
         try:
             if picker in page.overlay:
                 page.overlay.remove(picker)
         except:
             pass
-        try:
-            page.update()
-        except:
-            pass
+        page.update()
     return path_result
 
 def resolve_picker_file(page: ft.Page, file: ft.FilePickerFile) -> Optional[str]:
     if not file:
         return None
-    uri = file.path
-    try:
-        if uri and isinstance(uri, str) and uri.startswith("content://"):
-            data = page.get_file_content(uri)
-            if not data:
-                print("[FileResolver] page.get_file_content returned empty")
-                return None
+    # 优先使用 data 字段（某些 FilePicker 返回二进制）
+    if hasattr(file, "data") and file.data:
+        try:
             ext = os.path.splitext(file.name or "")[1] or ".jpg"
             tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-            tmp.write(data)
+            tmp.write(file.data)
             tmp.flush()
             tmp.close()
             return tmp.name
-        else:
-            if uri and os.path.exists(uri):
-                return uri
-            if hasattr(file, "data") and file.data:
-                ext = os.path.splitext(file.name or "")[1] or ".jpg"
-                tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-                tmp.write(file.data)
-                tmp.flush()
-                tmp.close()
-                return tmp.name
-            return None
-    except Exception as e:
-        print(f"[FileResolver] 解析URI失败: {e}")
-        return None
+        except Exception as e:
+            print(f"[FileResolver] 读取 data 失败: {e}")
+
+    uri = file.path
+    if uri:
+        if uri.startswith("content://"):
+            try:
+                data = page.get_file_content(uri)
+                if data:
+                    ext = os.path.splitext(file.name or "")[1] or ".jpg"
+                    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+                    tmp.write(data)
+                    tmp.flush()
+                    tmp.close()
+                    return tmp.name
+            except Exception as e:
+                print(f"[FileResolver] get_file_content 异常: {e}")
+        elif os.path.exists(uri):
+            return uri
+    return None
 
 def compress_image_to_bytes(file_path: str, max_long_edge: int = MAX_IMAGE_LONG_EDGE) -> bytes:
     with PILImage.open(file_path) as img:
@@ -322,12 +316,12 @@ def compress_image_to_bytes(file_path: str, max_long_edge: int = MAX_IMAGE_LONG_
 
 # ---------- 相机视图 ----------
 def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
+    # 桌面端直接打开文件选择
     if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS):
-        async def desktop_pick():
+        async def _pick():
             path = await pick_image_async(page)
-            if path:
-                on_picture_taken(path)
-        page.run_task(desktop_pick)
+            if path: on_picture_taken(path)
+        page.run_task(_pick)
         return
 
     camera_ref = ft.Ref[fc.Camera]()
@@ -342,9 +336,6 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                 pass
             page.update()
 
-    def on_close(e):
-        close_camera()
-
     async def take_picture():
         try:
             path = await camera_ref.current.take_picture()
@@ -352,15 +343,18 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                 close_camera()
                 on_picture_taken(path)
             else:
-                raise Exception("拍照返回路径无效")
+                raise Exception("拍照路径无效")
         except Exception as ex:
             print(f"[Camera] 拍照失败: {ex}")
             close_camera()
-            async def gallery_fallback():
+            # 自动回退到图库，并提示
+            page.snack_bar = ft.SnackBar(ft.Text("拍照失败，已为您打开相册"))
+            page.snack_bar.open = True
+            page.update()
+            async def fallback():
                 path = await pick_image_async(page)
-                if path:
-                    on_picture_taken(path)
-            page.run_task(gallery_fallback)
+                if path: on_picture_taken(path)
+            page.run_task(fallback)
 
     camera_view = ft.Container(
         expand=True,
@@ -372,7 +366,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                               on_click=lambda e: page.run_task(take_picture),
                               style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=15)),
                 ft.IconButton(ft.Icons.CLOSE, icon_size=32,
-                              on_click=on_close,
+                              on_click=lambda e: close_camera(),
                               style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=10)),
             ], alignment=ft.MainAxisAlignment.CENTER, spacing=30, bottom=40)
         ])
@@ -507,69 +501,28 @@ def _server_decode_image_bytes(img_bytes: bytes) -> List[str]:
         return []
 
 def barcode_image_decode(file_path: str, prefer_online_if_android: bool = True) -> List[str]:
-    result_codes: List[str] = []
-
-    if prefer_online_if_android and (os.getenv("FLET_LOCAL_PLATFORM", "").lower() == "android" or "ANDROID_ARGUMENT" in os.environ):
-        try:
-            img_bytes = compress_image_to_bytes(file_path)
-            codes = _server_decode_image_bytes(img_bytes)
-            if codes:
-                return codes
-        except Exception as ex:
-            print(f"[barcode] online-first (android) error: {ex}")
-
+    # 直接使用在线解码
     try:
-        import cv2
-        import numpy as np
-        img_pil = PILImage.open(file_path).convert("L")
-        img_cv = np.array(img_pil)
+        img_bytes = compress_image_to_bytes(file_path)
+        codes = _server_decode_image_bytes(img_bytes)
+        if codes:
+            return codes
+    except Exception as ex:
+        print(f"[Barcode] 在线解码失败: {ex}")
 
-        try:
-            qr_det = cv2.QRCodeDetector()
-            qr_data, _, _ = qr_det.detectAndDecode(img_cv)
-            if qr_data and qr_data.strip():
-                result_codes.append(qr_data.strip())
-        except Exception as ex:
-            print(f"[barcode][opencv][qr] error: {ex}")
-
-        try:
-            bar_det = cv2.barcode_BarcodeDetector()
-            ok, bar_codes, _, _ = bar_det.detectAndDecode(img_cv)
-            if ok and bar_codes is not None:
-                for code in bar_codes:
-                    code_str = code.strip()
-                    if code_str and code_str not in result_codes:
-                        result_codes.append(code_str)
-        except Exception as ex:
-            print(f"[barcode][opencv][barcode] not available or error: {ex}")
+    # 最终兜底：本地 pyzbar（可能性低）
+    try:
+        from pyzbar.pyzbar import decode as pyzbar_decode
+        from PIL import Image as PILImageLocal
+        img = PILImageLocal.open(file_path).convert("RGB")
+        decoded = pyzbar_decode(img)
+        for d in decoded:
+            s = d.data.decode("utf-8", errors="ignore").strip()
+            if s:
+                return [s]
     except Exception as e:
-        print(f"[barcode] OpenCV import/usage failed: {e}")
-
-    if not result_codes:
-        try:
-            from pyzbar.pyzbar import decode as pyzbar_decode
-            from PIL import Image as PILImageLocal
-            img = PILImageLocal.open(file_path).convert("RGB")
-            decoded = pyzbar_decode(img)
-            for d in decoded:
-                s = d.data.decode("utf-8", errors="ignore").strip()
-                if s and s not in result_codes:
-                    result_codes.append(s)
-        except Exception as e:
-            print(f"[barcode] pyzbar fallback error: {e}")
-
-    if not result_codes:
-        try:
-            img_bytes = compress_image_to_bytes(file_path)
-            server_codes = _server_decode_image_bytes(img_bytes)
-            for c in server_codes:
-                cs = c.strip()
-                if cs and cs not in result_codes:
-                    result_codes.append(cs)
-        except Exception as ex:
-            print(f"[barcode] server fallback error: {ex}")
-
-    return result_codes
+        print(f"[Barcode] pyzbar 失败: {e}")
+    return []
 
 def unified_barcode_scan(page: ft.Page, result_callback: Callable[[str], None], title: str = "扫码识别"):
     print(f"[Barcode] unified_barcode_scan called, title='{title}'")
