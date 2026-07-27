@@ -14,13 +14,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
+      # Use the runner-provided env var instead of the runner context expression.
+      ANDROID_SDK_ROOT: $RUNNER_TEMP/android-sdk
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up JDK (required for Android tooling)
+        id: setup-java
         uses: actions/setup-java@v3
         with:
           distribution: temurin
@@ -34,20 +36,22 @@ jobs:
 
       - name: Install Android SDK command-line tools and packages
         run: |
-          set -e
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y unzip wget
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
           cd "$ANDROID_SDK_ROOT"
-          # Download commandline tools (adjust version URL if Google updates)
           TOOL_URL="https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip"
           wget -q -O cmdline-tools.zip "$TOOL_URL"
           unzip -q cmdline-tools.zip -d cmdline-tools
-          # Move into the expected path: cmdline-tools/latest
           mkdir -p cmdline-tools/latest
+          # Move contents into cmdline-tools/latest (the sdk expects cmdline-tools/<name>/bin or latest)
           mv cmdline-tools/cmdline-tools/* cmdline-tools/latest/ || true
           rm cmdline-tools.zip
-          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
+          # Make tools available to later steps by writing to GITHUB_PATH
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+          # Accept licenses and install platforms/build-tools
           yes | sdkmanager --licenses
           sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
         shell: bash
@@ -69,8 +73,8 @@ jobs:
 
       - name: Build APK
         run: |
-          set -e
-          # flet will prompt; auto-confirm with yes.
+          set -euo pipefail
+          # auto-confirm prompts
           yes | flet build apk --verbose \
             --android-permissions INTERNET \
             --android-permissions CAMERA \
@@ -78,8 +82,6 @@ jobs:
             --android-permissions WRITE_EXTERNAL_STORAGE \
             --android-permissions READ_MEDIA_IMAGES
         shell: bash
-        env:
-          JAVA_HOME: ${{ steps.setup-java.outputs.java-home || env.JAVA_HOME }}
 
       - name: Upload APK artifact
         if: always()
