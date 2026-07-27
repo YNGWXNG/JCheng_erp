@@ -46,6 +46,9 @@ PERMISSION_ICONS = {
 
 _permission_instructions_shown = set()
 
+_camera_permission_hint_shown = False
+_storage_permission_hint_shown = False
+
 def get_window_width(page):
     try:
         if hasattr(page, 'width') and page.width:
@@ -186,6 +189,15 @@ def show_alert(page: ft.Page, title, content, on_ok=None):
     dlg.open = True
     page.update()
 
+# 全局变量记录是否已显示过指引
+_camera_permission_hint_shown = False
+_storage_permission_hint_shown = False
+
+def reset_permission_hints():
+    global _camera_permission_hint_shown, _storage_permission_hint_shown
+    _camera_permission_hint_shown = False
+    _storage_permission_hint_shown = False
+
 def show_grant_permission_instructions(page: ft.Page, permission_name: str):
     global _permission_instructions_shown
     if permission_name in _permission_instructions_shown:
@@ -207,48 +219,15 @@ def show_grant_permission_instructions(page: ft.Page, permission_name: str):
     except Exception as ex:
         print("[Permission] failed to show instruction dialog:", ex)
 
-async def request_android_permission_async(page: ft.Page, permission: str) -> bool:
-    if page.platform != ft.PagePlatform.ANDROID:
-        return True
-    try:
-        req = getattr(page, "request_permission", None)
-        if callable(req):
-            try:
-                result = await req(permission)
-                print(f"[Permission] {permission} -> {result} (via page.request_permission)")
-                return bool(result)
-            except Exception as ex:
-                print(f"[Permission] page.request_permission raised: {ex}")
-        print(f"[Permission] page.request_permission not available; falling back for {permission}")
-        try:
-            show_grant_permission_instructions(page, permission)
-        except Exception as ex:
-            print("[Permission] warning: cannot show instructions dialog:", ex)
-        return True
-    except Exception as e:
-        print(f"[Permission] unexpected error requesting permission: {e}")
-        return False
-
 async def check_camera_media_permissions_async(page: ft.Page) -> bool:
+    """仅检测安卓平台，不再尝试弹窗或请求运行时权限（因不可用）"""
     if page.platform != ft.PagePlatform.ANDROID:
         return True
-    perms = [ANDROID_PERM_CAMERA]
-    try:
-        ver = int(page.platform_version) if page.platform_version else 0
-    except:
-        ver = 0
-    if ver >= 33:
-        perms.append(ANDROID_PERM_READ_MEDIA_IMAGES)
-    else:
-        perms.append(ANDROID_PERM_READ_EXTERNAL_STORAGE)
-    for p in perms:
-        ok = await request_android_permission_async(page, p)
-        if not ok:
-            print(f"[Permission] {p} denied or not granted")
-            return False
+    # 由于 request_permission 不可用，直接返回 True，权限问题由系统处理
     return True
 
 async def pick_image_async(page: ft.Page) -> Optional[str]:
+    """动态创建 FilePicker，选图后返回本地路径或 None，用后即销毁"""
     path_result = None
     picker = ft.FilePicker()
     page.overlay.append(picker)
@@ -260,7 +239,7 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
             if e.files:
                 path_result = resolve_picker_file(page, e.files[0])
         except Exception as ex:
-            print("[pick_image_async] resolve error:", ex)
+            print(f"[pick_image_async] resolve error: {ex}")
         finally:
             event.set()
 
@@ -279,13 +258,20 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
                 allowed_extensions=["jpg", "jpeg", "png", "bmp"],
                 dialog_title="选择图片"
             )
+        # 等待用户选择或取消（超时 120 秒）
         await asyncio.wait_for(event.wait(), timeout=120)
+    except asyncio.TimeoutError:
+        print("[pick_image_async] Timeout waiting for file selection")
     except Exception as ex:
-        print("[pick_image_async] error:", ex)
+        print(f"[pick_image_async] error: {ex}")
     finally:
-        if picker in page.overlay:
-            page.overlay.remove(picker)
-        page.update()
+        # 确保清理，并处理可能出现的移除异常
+        try:
+            if picker in page.overlay:
+                page.overlay.remove(picker)
+                page.update()
+        except Exception as clean_ex:
+            print(f"[pick_image_async] cleanup error: {clean_ex}")
     return path_result
 
 def resolve_picker_file(page: ft.Page, file: ft.FilePickerFile) -> Optional[str]:
@@ -366,7 +352,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         except Exception as ex:
             print(f"[Camera] 拍照失败: {ex}")
             close_camera()
-            show_alert(page, "拍照失败", "将打开相册供您选择图片")
+            # 回退到相册（相册失败会自行提示权限）
             async def gallery_fallback():
                 path = await pick_image_async(page)
                 if path:
@@ -392,34 +378,39 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
     page.update()
 
 def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], None], title: str = "选择图片"):
+    global _camera_permission_hint_shown, _storage_permission_hint_shown
     is_desktop = page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS)
 
     def on_gallery(e):
         dlg.open = False
         page.update()
         async def pick():
-            granted = await check_camera_media_permissions_async(page)
-            if not granted:
-                show_alert(page, "权限不足", "需要存储权限读取图片")
-                return
             path = await pick_image_async(page)
             if path:
                 on_image_selected(path)
+            else:
+                # 选择失败（可能权限不足），显示存储权限指引（仅一次）
+                if not _storage_permission_hint_shown:
+                    _storage_permission_hint_shown = True
+                    show_grant_permission_instructions(page, "存储空间")
+                else:
+                    show_alert(page, "提示", "无法读取图片，请确认已授予存储权限")
         page.run_task(pick)
 
     def on_camera(e):
         dlg.open = False
         page.update()
         async def start_camera():
-            granted = await check_camera_media_permissions_async(page)
-            if not granted:
-                show_alert(page, "权限不足", "请在手机设置中授予玖诚电器ERP相机权限")
-                return
             try:
                 show_camera_view(page, on_image_selected)
             except Exception as err:
                 print("[Camera] open error:", err)
-                show_alert(page, "相机启动失败", "请确认已授权相机权限，或改用相册上传")
+                # 相机启动失败，显示相机权限指引（仅一次）
+                if not _camera_permission_hint_shown:
+                    _camera_permission_hint_shown = True
+                    show_grant_permission_instructions(page, "相机")
+                else:
+                    show_alert(page, "相机启动失败", "请确认已授予相机权限")
         page.run_task(start_camera)
 
     def on_cancel(e):
@@ -775,6 +766,9 @@ def main(page: ft.Page):
     print(f"Platform: {page.platform}")
 
     page.title = "玖诚电器ERP"
+    global _camera_permission_hint_shown, _storage_permission_hint_shown
+    _camera_permission_hint_shown = False
+    _storage_permission_hint_shown = False
     try:
         page.window_icon = resource_path("logo.ico")
         page.icon = resource_path("login_bg.png")
