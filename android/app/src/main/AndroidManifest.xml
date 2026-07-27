@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.jiuchengerp.app">
+
+    <!-- 网络权限（访问数据库、API） -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- 相机权限（拍照、扫码） -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- 存储读写（旧版本安卓） -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+
+    <!-- Android 13+ 媒体图片权限（选相册） -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+
+    <!-- 相机硬件特性声明（若设备无摄像头可设为 false 避免安装限制） -->
+    <uses-feature android:name="android.hardware.camera" android:required="true" />
+    <!-- 如果需要自动对焦（扫码），可添加 -->
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <!-- 兼容 Android 10 及以下文件访问 -->
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="JChengERP"
+        android:requestLegacyExternalStorage="true"
+        android:usesCleartextTraffic="true"
+        android:theme="@style/Theme.AppCompat.Light.NoActionBar">
+
+        <!-- 主 Activity -->
+        <activity
+            android:name="com.flet.app.FletActivity"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:exported="true"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- FileProvider 配置（用于相机拍照后的临时文件） -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+    </application>
+
+</manifest>
