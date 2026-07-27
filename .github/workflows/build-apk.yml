@@ -28,7 +28,12 @@ jobs:
     - name: Build APK
       run: |
         yes | flet build apk --verbose \
-          --android-permissions INTERNET,CAMERA,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,READ_MEDIA_IMAGES
+          --android-permissions INTERNET \
+          --android-permissions CAMERA \
+          --android-permissions READ_EXTERNAL_STORAGE \
+          --android-permissions WRITE_EXTERNAL_STORAGE \
+          --android-permissions READ_MEDIA_IMAGES \
+          --assets-dir src/assets
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
