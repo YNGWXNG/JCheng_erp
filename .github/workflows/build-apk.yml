@@ -45,7 +45,6 @@ jobs:
           unzip -q cmdline-tools.zip -d cmdline-tools
           rm cmdline-tools.zip
 
-          # 统一目录结构为 cmdline-tools/latest/bin
           if [ -d cmdline-tools/cmdline-tools ]; then
             mv cmdline-tools/cmdline-tools cmdline-tools/latest || true
           else
@@ -89,14 +88,11 @@ jobs:
         run: |
           set -euo pipefail
           (set +o pipefail; yes 2>/dev/null | flet build apk --verbose \
-            --android-manifest android/app/src/main/AndroidManifest.xml \
             --android-permissions android.permission.INTERNET=true \
             --android-permissions android.permission.CAMERA=true \
             --android-permissions android.permission.READ_EXTERNAL_STORAGE=true \
             --android-permissions android.permission.WRITE_EXTERNAL_STORAGE=true \
-            --android-permissions android.permission.READ_MEDIA_IMAGES=true \
-            --assets-dir assets \
-            --include-packages flet_camera)
+            --android-permissions android.permission.READ_MEDIA_IMAGES=true)
         shell: bash
 
       - name: Upload APK artifact
