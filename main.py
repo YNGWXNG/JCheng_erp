@@ -385,11 +385,11 @@ def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], N
         dlg.open = False
         page.update()
         async def pick():
+            global _storage_permission_hint_shown
             path = await pick_image_async(page)
             if path:
                 on_image_selected(path)
             else:
-                # 选择失败（可能权限不足），显示存储权限指引（仅一次）
                 if not _storage_permission_hint_shown:
                     _storage_permission_hint_shown = True
                     show_grant_permission_instructions(page, "存储空间")
@@ -401,11 +401,11 @@ def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], N
         dlg.open = False
         page.update()
         async def start_camera():
+            global _camera_permission_hint_shown
             try:
                 show_camera_view(page, on_image_selected)
             except Exception as err:
                 print("[Camera] open error:", err)
-                # 相机启动失败，显示相机权限指引（仅一次）
                 if not _camera_permission_hint_shown:
                     _camera_permission_hint_shown = True
                     show_grant_permission_instructions(page, "相机")
