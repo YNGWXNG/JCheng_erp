@@ -5,37 +5,85 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
+    env:
+      ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
+      - name: Set up JDK (required for Android tooling)
+        uses: actions/setup-java@v3
+        with:
+          distribution: temurin
+          java-version: '17'
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install "flet>=0.85.3,<0.87.0" flet-camera
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Set up Python (with pip cache)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
 
-    - name: Build APK
-      run: |
-        yes | flet build apk --verbose \
-          --android-permissions INTERNET \
-          --android-permissions CAMERA \
-          --android-permissions READ_EXTERNAL_STORAGE \
-          --android-permissions WRITE_EXTERNAL_STORAGE \
-          --android-permissions READ_MEDIA_IMAGES
+      - name: Install Android SDK command-line tools and packages
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y unzip wget
+          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          cd "$ANDROID_SDK_ROOT"
+          # Download commandline tools (adjust version URL if Google updates)
+          TOOL_URL="https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip"
+          wget -q -O cmdline-tools.zip "$TOOL_URL"
+          unzip -q cmdline-tools.zip -d cmdline-tools
+          # Move into the expected path: cmdline-tools/latest
+          mkdir -p cmdline-tools/latest
+          mv cmdline-tools/cmdline-tools/* cmdline-tools/latest/ || true
+          rm cmdline-tools.zip
+          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
+          yes | sdkmanager --licenses
+          sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+        shell: bash
 
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: JCheng
-        path: build/apk/*.apk
+      - name: Show environment info
+        run: |
+          java -version
+          python --version
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          ls -la "$ANDROID_SDK_ROOT"
+        shell: bash
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install "flet>=0.85.3,<0.87.0" flet-camera
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        shell: bash
+
+      - name: Build APK
+        run: |
+          set -e
+          # flet will prompt; auto-confirm with yes.
+          yes | flet build apk --verbose \
+            --android-permissions INTERNET \
+            --android-permissions CAMERA \
+            --android-permissions READ_EXTERNAL_STORAGE \
+            --android-permissions WRITE_EXTERNAL_STORAGE \
+            --android-permissions READ_MEDIA_IMAGES
+        shell: bash
+        env:
+          JAVA_HOME: ${{ steps.setup-java.outputs.java-home || env.JAVA_HOME }}
+
+      - name: Upload APK artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: JCheng-apk
+          path: build/apk/**/*.apk
