@@ -14,7 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      # Use the runner-provided env var instead of the runner context expression.
       ANDROID_SDK_ROOT: $RUNNER_TEMP/android-sdk
 
     steps:
@@ -45,13 +44,19 @@ jobs:
           wget -q -O cmdline-tools.zip "$TOOL_URL"
           unzip -q cmdline-tools.zip -d cmdline-tools
           mkdir -p cmdline-tools/latest
-          # Move contents into cmdline-tools/latest (the sdk expects cmdline-tools/<name>/bin or latest)
           mv cmdline-tools/cmdline-tools/* cmdline-tools/latest/ || true
           rm cmdline-tools.zip
-          # Make tools available to later steps by writing to GITHUB_PATH
+
+          # Make sdk tools available in this step immediately
+          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
+          # Ensure sdkmanager is executable (sometimes permissions can be off)
+          chmod -R +x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" || true
+
+          # Make the paths available for subsequent steps
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
-          # Accept licenses and install platforms/build-tools
+
+          # Accept licenses and install packages
           yes | sdkmanager --licenses
           sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
         shell: bash
@@ -74,7 +79,6 @@ jobs:
       - name: Build APK
         run: |
           set -euo pipefail
-          # auto-confirm prompts
           yes | flet build apk --verbose \
             --android-permissions INTERNET \
             --android-permissions CAMERA \
