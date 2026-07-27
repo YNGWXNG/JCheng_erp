@@ -18,38 +18,34 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up JDK (required for Android tooling)
+      - name: Set up JDK 17
         uses: actions/setup-java@v3
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Python (with pip cache)
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install Android SDK command-line tools and packages
+      - name: Install Android SDK command-line tools
         run: |
           set -euo pipefail
+          sudo apt-get update && sudo apt-get install -y unzip wget
 
-          sudo apt-get update
-          sudo apt-get install -y unzip wget
-
-          # Compute ANDROID_SDK_ROOT at runtime and persist it for later steps
           ANDROID_SDK_ROOT="$RUNNER_TEMP/android-sdk"
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
 
           cd "$ANDROID_SDK_ROOT"
-
           TOOL_URL="https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip"
           wget -q -O cmdline-tools.zip "$TOOL_URL"
           unzip -q cmdline-tools.zip -d cmdline-tools
           rm cmdline-tools.zip
 
-          # Normalize different zip layouts into cmdline-tools/latest/bin
+          # 统一目录结构为 cmdline-tools/latest/bin
           if [ -d cmdline-tools/cmdline-tools ]; then
             mv cmdline-tools/cmdline-tools cmdline-tools/latest || true
           else
@@ -62,35 +58,25 @@ jobs:
             done
           fi
 
-          ls -la cmdline-tools || true
-
-          # Ensure executables are set and add to PATH for this shell and subsequent steps
           chmod -R +x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" || true
           export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
 
           SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          if [ ! -x "$SDKMANAGER" ]; then chmod +x "$SDKMANAGER" || true; fi
-
-          # Accept licenses without failing the step due to SIGPIPE from yes
           (set +o pipefail; yes 2>/dev/null | "$SDKMANAGER" --licenses)
-
-          # Install platform tools / SDK / build-tools
           "$SDKMANAGER" "platform-tools" "platforms;android-33" "build-tools;33.0.2"
         shell: bash
 
-      - name: Show environment info
+      - name: Show environment
         run: |
           echo "JAVA_HOME=$JAVA_HOME"
           java -version || true
           python --version || true
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
           ls -la "$ANDROID_SDK_ROOT" || true
-        shell: bash
-        # ANDROID_SDK_ROOT is loaded from GITHUB_ENV after the previous step; include a fallback
         env:
-          ANDROID_SDK_ROOT: $RUNNER_TEMP/android-sdk
+          ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
 
       - name: Install Python dependencies
         run: |
@@ -102,13 +88,15 @@ jobs:
       - name: Build APK
         run: |
           set -euo pipefail
-          # Avoid failing on SIGPIPE from yes by disabling pipefail for the pipeline
           (set +o pipefail; yes 2>/dev/null | flet build apk --verbose \
+            --android-manifest android/app/src/main/AndroidManifest.xml \
             --android-permissions android.permission.INTERNET=true \
             --android-permissions android.permission.CAMERA=true \
             --android-permissions android.permission.READ_EXTERNAL_STORAGE=true \
             --android-permissions android.permission.WRITE_EXTERNAL_STORAGE=true \
-            --android-permissions android.permission.READ_MEDIA_IMAGES=true)
+            --android-permissions android.permission.READ_MEDIA_IMAGES=true \
+            --assets-dir assets \
+            --include-packages flet_camera)
         shell: bash
 
       - name: Upload APK artifact
