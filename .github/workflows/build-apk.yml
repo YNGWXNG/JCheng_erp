@@ -104,11 +104,11 @@ jobs:
           set -euo pipefail
           # Avoid failing on SIGPIPE from yes by disabling pipefail for the pipeline
           (set +o pipefail; yes 2>/dev/null | flet build apk --verbose \
-            --android-permissions INTERNET \
-            --android-permissions CAMERA \
-            --android-permissions READ_EXTERNAL_STORAGE \
-            --android-permissions WRITE_EXTERNAL_STORAGE \
-            --android-permissions READ_MEDIA_IMAGES)
+            --android-permissions android.permission.INTERNET=true
+            --android-permissions android.permission.CAMERA=true
+            --android-permissions android.permission.READ_EXTERNAL_STORAGE=true
+            --android-permissions android.permission.WRITE_EXTERNAL_STORAGE=true
+            --android-permissions android.permission.READ_MEDIA_IMAGES=true)
         shell: bash
 
       - name: Upload APK artifact
