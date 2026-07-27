@@ -13,8 +13,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    env:
-      ANDROID_SDK_ROOT: $RUNNER_TEMP/android-sdk
 
     steps:
       - name: Checkout code
@@ -36,38 +34,68 @@ jobs:
       - name: Install Android SDK command-line tools and packages
         run: |
           set -euo pipefail
+
           sudo apt-get update
           sudo apt-get install -y unzip wget
+
+          # Set ANDROID_SDK_ROOT using the runner-provided env (expand here)
+          ANDROID_SDK_ROOT="$RUNNER_TEMP/android-sdk"
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+
           cd "$ANDROID_SDK_ROOT"
+
           TOOL_URL="https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip"
           wget -q -O cmdline-tools.zip "$TOOL_URL"
           unzip -q cmdline-tools.zip -d cmdline-tools
-          mkdir -p cmdline-tools/latest
-          mv cmdline-tools/cmdline-tools/* cmdline-tools/latest/ || true
           rm cmdline-tools.zip
 
-          # Make sdk tools available in this step immediately
-          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
-          # Ensure sdkmanager is executable (sometimes permissions can be off)
+          # Handle different unzip layouts robustly:
+          if [ -d cmdline-tools/cmdline-tools ]; then
+            # usual layout: cmdline-tools/cmdline-tools/{bin,...}
+            mv cmdline-tools/cmdline-tools cmdline-tools/latest
+          else
+            # sometimes the zip extracts into a named folder, find first folder that has bin/
+            for d in cmdline-tools/*; do
+              if [ -d "$d/bin" ]; then
+                mkdir -p cmdline-tools/latest
+                # move contents into latest
+                mv "$d"/* cmdline-tools/latest/ 2>/dev/null || true
+                break
+              fi
+            done
+          fi
+
+          ls -la cmdline-tools
+          # make tools executable
           chmod -R +x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" || true
 
-          # Make the paths available for subsequent steps
+          # Make tools available to this shell immediately and to later steps
+          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
 
-          # Accept licenses and install packages
-          yes | sdkmanager --licenses
-          sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then chmod +x "$SDKMANAGER" || true; fi
+
+          # Accept licenses and install required packages
+          yes | "$SDKMANAGER" --licenses
+          "$SDKMANAGER" "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+
         shell: bash
 
       - name: Show environment info
         run: |
-          java -version
-          python --version
+          # ANDROID_SDK_ROOT was exported into GITHUB_ENV by previous step
+          echo "JAVA_HOME=$JAVA_HOME"
+          java -version || true
+          python --version || true
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          ls -la "$ANDROID_SDK_ROOT"
+          ls -la "$ANDROID_SDK_ROOT" || true
         shell: bash
+        env:
+          # allow this step to see the runner variable until GITHUB_ENV is loaded
+          ANDROID_SDK_ROOT: $RUNNER_TEMP/android-sdk
 
       - name: Install Python dependencies
         run: |
@@ -79,6 +107,7 @@ jobs:
       - name: Build APK
         run: |
           set -euo pipefail
+          # Use flet to build APK; auto-confirm any prompts
           yes | flet build apk --verbose \
             --android-permissions INTERNET \
             --android-permissions CAMERA \
@@ -91,5 +120,5 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: JCheng-apk
+          name: JCheng
           path: build/apk/**/*.apk
