@@ -21,9 +21,6 @@ import flet_camera as fc
 
 SERVER_DECODE_URL = os.getenv("SERVER_DECODE_URL", "https://api.qrserver.com/v1/read-qr-code/")
 
-ANDROID_PERM_CAMERA = "android.permission.CAMERA"
-ANDROID_PERM_READ_MEDIA_IMAGES = "android.permission.READ_MEDIA_IMAGES"
-ANDROID_PERM_READ_EXTERNAL_STORAGE = "android.permission.READ_EXTERNAL_STORAGE"
 MAX_IMAGE_LONG_EDGE = 1280
 DEFAULT_WIDTH = 360
 
@@ -44,11 +41,7 @@ PERMISSION_ICONS = {
     "更多": ft.Icons.SETTINGS,
 }
 
-_permission_instructions_shown = set()
-
-_camera_permission_hint_shown = False
-_storage_permission_hint_shown = False
-
+# ---------- 辅助函数 ----------
 def get_window_width(page):
     try:
         if hasattr(page, 'width') and page.width:
@@ -189,27 +182,20 @@ def show_alert(page: ft.Page, title, content, on_ok=None):
     dlg.open = True
     page.update()
 
-# 全局变量记录是否已显示过指引
-_camera_permission_hint_shown = False
-_storage_permission_hint_shown = False
-
-def reset_permission_hints():
-    global _camera_permission_hint_shown, _storage_permission_hint_shown
-    _camera_permission_hint_shown = False
-    _storage_permission_hint_shown = False
-
+# ---------- 权限指引（使用 page 属性记录，避免 global） ----------
 def show_grant_permission_instructions(page: ft.Page, permission_name: str):
-    global _permission_instructions_shown
-    if permission_name in _permission_instructions_shown:
+    if not hasattr(page, '_shown_instructions'):
+        page._shown_instructions = set()
+    if permission_name in page._shown_instructions:
         return
-    _permission_instructions_shown.add(permission_name)
+    page._shown_instructions.add(permission_name)
 
     try:
         dlg = ft.AlertDialog(
             title=ft.Text("需要权限", weight=ft.FontWeight.BOLD),
             content=ft.Column([
                 ft.Text(f"应用需要权限：{permission_name}"),
-                ft.Text("如果应用无法自动弹出授权窗口，请手动前往 “设置 → 应用 → 玖诚电器ERP → 权限” 授予相应权限，然后返回应用重试。", size=12)
+                ft.Text("请前往 “设置 → 应用 → 玖诚电器ERP → 权限” 授予相应权限，然后返回重试。", size=12)
             ], tight=True),
             actions=[ft.TextButton("知道了", on_click=lambda e: setattr(dlg, 'open', False))]
         )
@@ -217,17 +203,10 @@ def show_grant_permission_instructions(page: ft.Page, permission_name: str):
         dlg.open = True
         page.update()
     except Exception as ex:
-        print("[Permission] failed to show instruction dialog:", ex)
+        print("[Permission] 无法显示权限指引:", ex)
 
-async def check_camera_media_permissions_async(page: ft.Page) -> bool:
-    """仅检测安卓平台，不再尝试弹窗或请求运行时权限（因不可用）"""
-    if page.platform != ft.PagePlatform.ANDROID:
-        return True
-    # 由于 request_permission 不可用，直接返回 True，权限问题由系统处理
-    return True
-
+# ---------- 一次性文件选择器（无 global 依赖） ----------
 async def pick_image_async(page: ft.Page) -> Optional[str]:
-    """动态创建 FilePicker，选图后返回本地路径或 None，用后即销毁"""
     path_result = None
     picker = ft.FilePicker()
     page.overlay.append(picker)
@@ -258,20 +237,22 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
                 allowed_extensions=["jpg", "jpeg", "png", "bmp"],
                 dialog_title="选择图片"
             )
-        # 等待用户选择或取消（超时 120 秒）
         await asyncio.wait_for(event.wait(), timeout=120)
     except asyncio.TimeoutError:
-        print("[pick_image_async] Timeout waiting for file selection")
+        print("[pick_image_async] 用户选择超时")
     except Exception as ex:
-        print(f"[pick_image_async] error: {ex}")
+        print(f"[pick_image_async] 异常: {ex}")
     finally:
-        # 确保清理，并处理可能出现的移除异常
+        # 忽略清理时的异常
         try:
             if picker in page.overlay:
                 page.overlay.remove(picker)
-                page.update()
-        except Exception as clean_ex:
-            print(f"[pick_image_async] cleanup error: {clean_ex}")
+        except:
+            pass
+        try:
+            page.update()
+        except:
+            pass
     return path_result
 
 def resolve_picker_file(page: ft.Page, file: ft.FilePickerFile) -> Optional[str]:
@@ -317,7 +298,9 @@ def compress_image_to_bytes(file_path: str, max_long_edge: int = MAX_IMAGE_LONG_
         img.convert("RGB").save(buf, format="JPEG", quality=80, optimize=True)
         return buf.getvalue()
 
+# ---------- 相机视图 ----------
 def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
+    # 桌面端直接用文件选择器
     if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS):
         async def desktop_pick():
             path = await pick_image_async(page)
@@ -352,7 +335,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         except Exception as ex:
             print(f"[Camera] 拍照失败: {ex}")
             close_camera()
-            # 回退到相册（相册失败会自行提示权限）
+            # 回退到相册（不做额外权限检查，让相册选择器自行处理）
             async def gallery_fallback():
                 path = await pick_image_async(page)
                 if path:
@@ -377,21 +360,24 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
     page.overlay.append(camera_view)
     page.update()
 
+# ---------- 图片来源选择对话框（修复版） ----------
 def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], None], title: str = "选择图片"):
-    global _camera_permission_hint_shown, _storage_permission_hint_shown
+    # 使用 page 属性存储提示状态，避免 global 错误
+    if not hasattr(page, '_permission_hints'):
+        page._permission_hints = {'camera': False, 'storage': False}
+
     is_desktop = page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS)
 
     def on_gallery(e):
         dlg.open = False
         page.update()
         async def pick():
-            global _storage_permission_hint_shown
             path = await pick_image_async(page)
             if path:
                 on_image_selected(path)
             else:
-                if not _storage_permission_hint_shown:
-                    _storage_permission_hint_shown = True
+                if not page._permission_hints['storage']:
+                    page._permission_hints['storage'] = True
                     show_grant_permission_instructions(page, "存储空间")
                 else:
                     show_alert(page, "提示", "无法读取图片，请确认已授予存储权限")
@@ -401,13 +387,12 @@ def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], N
         dlg.open = False
         page.update()
         async def start_camera():
-            global _camera_permission_hint_shown
             try:
                 show_camera_view(page, on_image_selected)
             except Exception as err:
                 print("[Camera] open error:", err)
-                if not _camera_permission_hint_shown:
-                    _camera_permission_hint_shown = True
+                if not page._permission_hints['camera']:
+                    page._permission_hints['camera'] = True
                     show_grant_permission_instructions(page, "相机")
                 else:
                     show_alert(page, "相机启动失败", "请确认已授予相机权限")
@@ -440,7 +425,8 @@ def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], N
     page.overlay.append(dlg)
     dlg.open = True
     page.update()
-# ===================== 条码解码相关 =====================
+
+# ---------- 条码解码 ----------
 def _server_decode_image_bytes(img_bytes: bytes) -> List[str]:
     codes: List[str] = []
     if not SERVER_DECODE_URL:
@@ -761,14 +747,12 @@ def get_file_from_db(file_type, biz_no):
     conn.close()
     return row[0] if row else None
 
+# ---------- 主应用 ----------
 def main(page: ft.Page):
     print("=== APP START ===")
     print(f"Platform: {page.platform}")
 
     page.title = "玖诚电器ERP"
-    global _camera_permission_hint_shown, _storage_permission_hint_shown
-    _camera_permission_hint_shown = False
-    _storage_permission_hint_shown = False
     try:
         page.window_icon = resource_path("logo.ico")
         page.icon = resource_path("login_bg.png")
@@ -778,6 +762,12 @@ def main(page: ft.Page):
     page.padding = 0
     page.spacing = 0
     page.window_resizable = True
+
+    # 初始化权限提示状态（挂到 page 上）
+    if not hasattr(page, '_permission_hints'):
+        page._permission_hints = {'camera': False, 'storage': False}
+    if not hasattr(page, '_shown_instructions'):
+        page._shown_instructions = set()
 
     current_user = None
     main_content = ft.Column(expand=True, spacing=0, scroll=ft.ScrollMode.AUTO)
@@ -1153,6 +1143,7 @@ def main(page: ft.Page):
                 show_stock()
             elif label == "更多":
                 show_more_menu()
+
     def show_profile():
         if not current_user:
             return
@@ -1163,8 +1154,6 @@ def main(page: ft.Page):
         if expire:
             info += f"\n有效期至：{expire}"
         show_alert(page, "个人资料", info)
-
-    # 下面接着的是所有业务界面函数（show_home, show_sale, show_order_query 等）
     # ---------------------------- 首页 ----------------------------
     def show_home():
         main_content.controls.clear()
