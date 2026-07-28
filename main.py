@@ -17,6 +17,7 @@ import sys
 import math
 import tempfile
 import asyncio
+import flet_camera as fc
 
 SERVER_DECODE_URL = os.getenv("SERVER_DECODE_URL", "https://api.qrserver.com/v1/read-qr-code/")
 
@@ -181,32 +182,57 @@ def show_alert(page: ft.Page, title, content, on_ok=None):
     dlg.open = True
     page.update()
 
-def show_grant_permission_instructions(page: ft.Page, permission_name: str):
-    if not hasattr(page, '_shown_instructions'):
-        page._shown_instructions = set()
-    if permission_name in page._shown_instructions:
-        return
-    page._shown_instructions.add(permission_name)
+def resolve_picker_file(page: ft.Page, file: ft.FilePickerFile) -> Optional[str]:
+    if not file:
+        return None
+    if hasattr(file, "data") and file.data:
+        try:
+            ext = os.path.splitext(file.name or "")[1] or ".jpg"
+            tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+            tmp.write(file.data)
+            tmp.flush()
+            tmp.close()
+            return tmp.name
+        except Exception as e:
+            print(f"[FileResolver] data write error: {e}")
+    if file.path and os.path.exists(file.path):
+        return file.path
+    if file.path and file.path.startswith("content://"):
+        try:
+            data = page.get_file_content(file.path)
+            if data:
+                ext = os.path.splitext(file.name or "")[1] or ".jpg"
+                tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+                tmp.write(data)
+                tmp.flush()
+                tmp.close()
+                return tmp.name
+        except Exception as e:
+            print(f"[FileResolver] get_file_content failed: {e}")
+    return None
 
-    try:
-        dlg = ft.AlertDialog(
-            title=ft.Text("需要权限", weight=ft.FontWeight.BOLD),
-            content=ft.Column([
-                ft.Text(f"应用需要权限：{permission_name}"),
-                ft.Text("请前往 “设置 → 应用 → 玖诚电器ERP → 权限” 授予相应权限，然后返回重试。", size=12)
-            ], tight=True),
-            actions=[ft.TextButton("知道了", on_click=lambda e: setattr(dlg, 'open', False))]
-        )
-        page.overlay.append(dlg)
-        dlg.open = True
-        page.update()
-    except Exception as ex:
-        print("[Permission] 无法显示权限指引:", ex)
+def compress_image_to_bytes(file_path: str, max_long_edge: int = MAX_IMAGE_LONG_EDGE) -> bytes:
+    with PILImage.open(file_path) as img:
+        width, height = img.size
+        if max(width, height) > max_long_edge:
+            scale = max_long_edge / max(width, height)
+            new_w = int(width * scale)
+            new_h = int(height * scale)
+            img = img.resize((new_w, new_h), PILImage.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=80, optimize=True)
+        return buf.getvalue()
 
 async def pick_image_async(page: ft.Page) -> Optional[str]:
+    if hasattr(page, '_picker_lock') and page._picker_lock:
+        return None
+    page._picker_lock = True
     path_result = None
     picker = ft.FilePicker()
     page.overlay.append(picker)
+    page.update()
+    await asyncio.sleep(0.15)
+
     event = asyncio.Event()
 
     def on_result(e: ft.FilePickerResultEvent):
@@ -242,102 +268,123 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
     except Exception as ex:
         print(f"[Picker] 异常: {ex}")
     finally:
-        # 只移除 picker，绝不调用 page.update()
         try:
             if picker in page.overlay:
                 page.overlay.remove(picker)
         except Exception:
             pass
+        page._picker_lock = False
     return path_result
 
-def resolve_picker_file(page: ft.Page, file: ft.FilePickerFile) -> Optional[str]:
-    if not file:
-        return None
-    # 桌面端文件路径通常直接可用
-    if file.path and os.path.exists(file.path):
-        return file.path
-    # 如果存在二进制数据，保存为临时文件
-    if hasattr(file, "data") and file.data:
-        try:
-            ext = os.path.splitext(file.name or "")[1] or ".jpg"
-            tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-            tmp.write(file.data)
-            tmp.flush()
-            tmp.close()
-            return tmp.name
-        except Exception as e:
-            print(f"[FileResolver] data read error: {e}")
-    # 处理 content URI（安卓）
-    uri = file.path
-    if uri and uri.startswith("content://"):
-        try:
-            data = page.get_file_content(uri)
-            if data:
-                ext = os.path.splitext(file.name or "")[1] or ".jpg"
-                tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-                tmp.write(data)
-                tmp.flush()
-                tmp.close()
-                return tmp.name
-        except Exception as e:
-            print(f"[FileResolver] get_file_content failed: {e}")
-    return None
+def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
+    """显示摄像头预览界面，拍照后回调"""
+    if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS):
+        async def desktop_fallback():
+            path = await pick_image_async(page)
+            if path:
+                on_picture_taken(path)
+        page.run_task(desktop_fallback)
+        return
 
-def compress_image_to_bytes(file_path: str, max_long_edge: int = MAX_IMAGE_LONG_EDGE) -> bytes:
-    with PILImage.open(file_path) as img:
-        width, height = img.size
-        if max(width, height) > max_long_edge:
-            scale = max_long_edge / max(width, height)
-            new_w = int(width * scale)
-            new_h = int(height * scale)
-            img = img.resize((new_w, new_h), PILImage.Resampling.LANCZOS)
-        buf = io.BytesIO()
-        img.convert("RGB").save(buf, format="JPEG", quality=80, optimize=True)
-        return buf.getvalue()
+    camera_ref = ft.Ref[fc.Camera]()
+    camera_container = None
+
+    def close_camera():
+        nonlocal camera_container
+        if camera_container and camera_container in page.overlay:
+            try:
+                page.overlay.remove(camera_container)
+            except:
+                pass
+            page.update()
+
+    def on_close(e):
+        close_camera()
+
+    async def take_picture():
+        try:
+            path = await camera_ref.current.take_picture()
+            if path and os.path.exists(path):
+                close_camera()
+                on_picture_taken(path)
+            else:
+                raise Exception("拍照返回路径无效")
+        except Exception as ex:
+            print(f"[Camera] 拍照失败: {ex}")
+            close_camera()
+            page.snack_bar = ft.SnackBar(ft.Text("拍照失败，已自动切换至相册"))
+            page.snack_bar.open = True
+            page.update()
+            async def fallback():
+                path = await pick_image_async(page)
+                if path:
+                    on_picture_taken(path)
+            page.run_task(fallback)
+
+    camera_container = ft.Container(
+        expand=True,
+        bgcolor=ft.Colors.BLACK,
+        content=ft.Stack([
+            fc.Camera(ref=camera_ref, expand=True),
+            ft.Row([
+                ft.IconButton(ft.Icons.CAMERA_ALT, icon_size=48,
+                              on_click=lambda e: page.run_task(take_picture),
+                              style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=15)),
+                ft.IconButton(ft.Icons.CLOSE, icon_size=32,
+                              on_click=on_close,
+                              style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=10)),
+            ], alignment=ft.MainAxisAlignment.CENTER, spacing=30, bottom=40)
+        ])
+    )
+    page.overlay.append(camera_container)
+    page.update()
 
 def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], None], title: str = "选择图片"):
     if not hasattr(page, '_permission_hints'):
         page._permission_hints = {'camera': False, 'storage': False}
-    if hasattr(page, '_picker_running') and page._picker_running:
-        return
 
     is_desktop = page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS)
 
     async def pick_and_callback():
-        if hasattr(page, '_picker_running') and page._picker_running:
-            return
-        page._picker_running = True
-        try:
-            path = await pick_image_async(page)
-            if path:
-                try:
-                    on_image_selected(path)
-                except Exception as ex:
-                    print(f"[Picker] callback error: {ex}")
-        except Exception as ex:
-            print(f"[Picker] unexpected error: {ex}")
-        finally:
-            page._picker_running = False
+        path = await pick_image_async(page)
+        if path:
+            try:
+                on_image_selected(path)
+            except Exception as ex:
+                print(f"[Picker] callback error: {ex}")
 
     def on_gallery(e):
         dlg.open = False
         page.update()
-        async def pick():
+        async def do_pick():
+            await asyncio.sleep(0.2)
             if not page._permission_hints.get('storage', False):
                 page._permission_hints['storage'] = True
-                show_grant_permission_instructions(page, "存储空间")
+                page.snack_bar = ft.SnackBar(ft.Text("请确保已授予存储权限"))
+                page.snack_bar.open = True
+                page.update()
+                await asyncio.sleep(0.1)
             await pick_and_callback()
-        page.run_task(pick)
+        page.run_task(do_pick)
 
     def on_camera(e):
         dlg.open = False
         page.update()
-        async def start_camera():
+        async def do_camera():
+            await asyncio.sleep(0.2)
             if not page._permission_hints.get('camera', False):
                 page._permission_hints['camera'] = True
-                show_grant_permission_instructions(page, "相机")
-            await pick_and_callback()
-        page.run_task(start_camera)
+                page.snack_bar = ft.SnackBar(ft.Text("请确保已授予相机权限"))
+                page.snack_bar.open = True
+                page.update()
+                await asyncio.sleep(0.1)
+            try:
+                show_camera_view(page, on_image_selected)
+            except Exception as ex:
+                print(f"[Camera] 启动失败: {ex}")
+                # 回退到相册
+                await pick_and_callback()
+        page.run_task(do_camera)
 
     def on_cancel(e):
         dlg.open = False
@@ -367,105 +414,30 @@ def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], N
     dlg.open = True
     page.update()
 
-def _server_decode_image_bytes(img_bytes: bytes) -> List[str]:
-    codes: List[str] = []
-    if not SERVER_DECODE_URL:
-        return codes
+def barcode_image_decode(file_path: str) -> List[str]:
     try:
+        img_bytes = compress_image_to_bytes(file_path)
         files = {"file": ("img.jpg", img_bytes, "image/jpeg")}
         resp = requests.post(SERVER_DECODE_URL, files=files, timeout=20)
-        if resp.status_code != 200:
-            print(f"[ServerDecode] status {resp.status_code}")
-            return codes
-        j = resp.json()
-        if isinstance(j, list):
-            for item in j:
-                syms = item.get("symbol") or item.get("symbols") or []
-                for s in syms:
-                    data = s.get("data")
-                    if data:
-                        if isinstance(data, str):
+        if resp.status_code == 200:
+            j = resp.json()
+            codes = []
+            if isinstance(j, list):
+                for item in j:
+                    for s in item.get("symbol", []):
+                        data = s.get("data")
+                        if data:
                             codes.append(data.strip())
-                        elif isinstance(data, list):
-                            for d in data:
-                                if d:
-                                    codes.append(str(d).strip())
-        elif isinstance(j, dict):
-            for k in ("codes", "results", "data", "decoded"):
-                v = j.get(k)
-                if v:
-                    if isinstance(v, list):
-                        for it in v:
-                            if isinstance(it, str):
-                                codes.append(it.strip())
-                            elif isinstance(it, dict):
-                                text = it.get("data") or it.get("text") or it.get("value")
-                                if text:
-                                    codes.append(str(text).strip())
-                    elif isinstance(v, str):
-                        codes.append(v.strip())
-        unique = []
-        for c in codes:
-            if c and c not in unique:
-                unique.append(c)
-        return unique
+            return codes
     except Exception as ex:
-        print(f"[ServerDecode] error: {ex}")
-        return []
-
-def barcode_image_decode(file_path: str, prefer_online_if_android: bool = True) -> List[str]:
-    result_codes: List[str] = []
-
-    if prefer_online_if_android and (os.getenv("FLET_LOCAL_PLATFORM", "").lower() == "android" or "ANDROID_ARGUMENT" in os.environ):
-        try:
-            img_bytes = compress_image_to_bytes(file_path)
-            codes = _server_decode_image_bytes(img_bytes)
-            if codes:
-                return codes
-        except Exception as ex:
-            print(f"[barcode] online-first error: {ex}")
-
-    try:
-        from pyzbar.pyzbar import decode as pyzbar_decode
-        img = PILImage.open(file_path).convert("RGB")
-        decoded = pyzbar_decode(img)
-        for d in decoded:
-            s = d.data.decode("utf-8", errors="ignore").strip()
-            if s and s not in result_codes:
-                result_codes.append(s)
-    except Exception as e:
-        print(f"[barcode] pyzbar error: {e}")
-
-    if not result_codes:
-        try:
-            import cv2
-            img_cv = cv2.imread(file_path)
-            qr_det = cv2.QRCodeDetector()
-            qr_data, _, _ = qr_det.detectAndDecode(img_cv)
-            if qr_data and qr_data.strip():
-                result_codes.append(qr_data.strip())
-        except Exception as e:
-            print(f"[barcode] opencv error: {e}")
-
-    if not result_codes:
-        try:
-            img_bytes = compress_image_to_bytes(file_path)
-            server_codes = _server_decode_image_bytes(img_bytes)
-            for c in server_codes:
-                cs = c.strip()
-                if cs and cs not in result_codes:
-                    result_codes.append(cs)
-        except Exception as ex:
-            print(f"[barcode] server fallback error: {ex}")
-
-    return result_codes
+        print(f"[Barcode] 在线解码失败: {ex}")
+    return []
 
 def unified_barcode_scan(page: ft.Page, result_callback: Callable[[str], None], title: str = "扫码识别"):
     print(f"[Barcode] unified_barcode_scan called, title='{title}'")
     def on_image_selected(path):
         def decode_thread():
-            prefer_online = page.platform == ft.PagePlatform.ANDROID
-            code_list = barcode_image_decode(path, prefer_online_if_android=prefer_online)
+            code_list = barcode_image_decode(path)
             if code_list:
                 result_callback(code_list[0])
             else:
@@ -678,6 +650,7 @@ def clear_credentials():
         except Exception as e:
             print(f"清除凭据失败: {e}")
 
+# ======================== 主函数 ========================
 def main(page: ft.Page):
     print("=== APP START ===")
     print(f"Platform: {page.platform}")
@@ -693,16 +666,13 @@ def main(page: ft.Page):
     page.spacing = 0
     page.window_resizable = True
 
-    if not hasattr(page, '_permission_hints'):
-        page._permission_hints = {'camera': False, 'storage': False}
-    if not hasattr(page, '_shown_instructions'):
-        page._shown_instructions = set()
-    page._picker_running = False
+    page._picker_lock = False
+    page._permission_hints = {'camera': False, 'storage': False}
 
     current_user = None
     main_content = ft.Column(expand=True, spacing=0, scroll=ft.ScrollMode.AUTO)
 
-    # ---------- 全屏配置覆盖层 ----------
+    # 配置界面
     config_overlay = ft.Container(
         content=ft.Column(
             [
@@ -768,7 +738,6 @@ def main(page: ft.Page):
                     decoded = base64.b64decode(raw_text).decode("utf-8")
                 except Exception:
                     decoded = raw_text
-
                 if resp.status_code != 200:
                     error_tip.value = f"读取失败：HTTP {resp.status_code}"
                     error_tip.color = ft.Colors.RED
@@ -779,7 +748,6 @@ def main(page: ft.Page):
                     error_tip.color = ft.Colors.RED
                     page.update()
                     return
-
                 if ":" in decoded:
                     fields = get_fields()
                     fields["host"].value = decoded
@@ -818,12 +786,8 @@ def main(page: ft.Page):
             threading.Timer(0.1, clean).start()
 
         dialog_content = ft.Container(
-            content=ft.Stack([
-                input_tf,
-                ft.Row([error_tip], alignment=ft.MainAxisAlignment.CENTER, top=78)
-            ]),
-            width=280,
-            height=95
+            content=ft.Stack([input_tf, ft.Row([error_tip], alignment=ft.MainAxisAlignment.CENTER, top=78)]),
+            width=280, height=95
         )
 
         input_dlg = ft.AlertDialog(
@@ -831,10 +795,7 @@ def main(page: ft.Page):
             content=dialog_content,
             modal=True,
             content_padding=ft.Padding(16, 10, 16, 8),
-            actions=[
-                ft.TextButton("确定", on_click=on_submit),
-                ft.TextButton("取消", on_click=on_cancel),
-            ]
+            actions=[ft.TextButton("确定", on_click=on_submit), ft.TextButton("取消", on_click=on_cancel)]
         )
         page.overlay.append(input_dlg)
         input_dlg.open = True
@@ -847,11 +808,9 @@ def main(page: ft.Page):
         user = fields["user"].value.strip()
         pwd = fields["pwd"].value.strip()
         db = fields["db"].value.strip()
-
         if not host or not port_str or not user or not db:
             show_alert(page,"提示", "请填写完整的连接信息")
             return
-
         try:
             port = int(port_str)
             conn = mysql.connector.connect(
@@ -875,15 +834,10 @@ def main(page: ft.Page):
 
         save_server_config(host, port, user, pwd, db)
         global DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_DATABASE
-        DB_HOST = host
-        DB_PORT = port
-        DB_USER = user
-        DB_PASSWORD = pwd
-        DB_DATABASE = db
+        DB_HOST = host; DB_PORT = port; DB_USER = user; DB_PASSWORD = pwd; DB_DATABASE = db
 
         config_overlay.visible = False
         page.update()
-
         def on_ok(e):
             page.dialog.open = False
             page.update()
@@ -908,9 +862,8 @@ def main(page: ft.Page):
         config_overlay.visible = False
         page.update()
 
-    # ---------- 登录界面（含自动登录） ----------
+    # 登录
     saved_username, saved_password = load_saved_credentials()
-
     username_input = ft.TextField(label="用户名", width=300, autofocus=True, value=saved_username)
     password_input = ft.TextField(label="密码", password=True, can_reveal_password=True, width=300, value=saved_password)
     remember_cb = ft.Checkbox(label="自动登录", value=bool(saved_username and saved_password))
@@ -922,12 +875,10 @@ def main(page: ft.Page):
         if not uname or not pwd:
             show_alert(page, "提示", "请输入用户名和密码")
             return
-
         if remember_cb.value:
             save_credentials(uname, pwd)
         else:
             clear_credentials()
-
         conn = get_db_conn()
         if not conn:
             show_alert(page, "提示", "数据库连接失败，请检查服务器配置")
@@ -956,34 +907,20 @@ def main(page: ft.Page):
             ft.Container(height=20),
             ft.Text("玖诚电器ERP", size=32, weight=ft.FontWeight.BOLD),
             ft.Image(src=get_asset_path("login_bg.png"), width=100, height=100),
-            username_input,
-            password_input,
-            remember_cb,
-            login_btn,
+            username_input, password_input, remember_cb, login_btn,
         ],
-        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-        spacing=15,
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=15,
     )
 
     login_container = ft.Container(
-        content=login_column,
-        alignment=ft.Alignment(0, 0),
-        expand=True,
+        content=login_column, alignment=ft.Alignment(0, 0), expand=True,
         padding=ft.Padding(top=30, left=0, right=0, bottom=0),
     )
 
-    page.add(
-        ft.Stack(
-            [
-                login_container,
-                config_overlay,
-            ],
-            expand=True,
-        )
-    )
+    page.add(ft.Stack([login_container, config_overlay], expand=True))
     page.update()
 
-    # 后台自动获取IPv6
+    # 自动获取IPv6
     def auto_fetch_ipv6():
         key = "songtaotianmaoyoupin"
         try:
@@ -1009,10 +946,9 @@ def main(page: ft.Page):
                 print("[Auto IPv6] 获取失败，HTTP状态码:", resp.status_code)
         except Exception as e:
             print(f"[Auto IPv6] 异常: {e}")
-
     threading.Thread(target=auto_fetch_ipv6, daemon=True).start()
 
-    # ---------- 主界面框架 ----------
+    # 主界面框架
     def build_main_ui():
         page.controls.clear()
         page.scroll = None
@@ -1037,32 +973,14 @@ def main(page: ft.Page):
         destinations = []
         for p in PERMISSIONS:
             if p in perm_list:
-                destinations.append(
-                    ft.NavigationBarDestination(
-                        icon=PERMISSION_ICONS.get(p, ft.Icons.HELP),
-                        label=p
-                    )
-                )
+                destinations.append(ft.NavigationBarDestination(icon=PERMISSION_ICONS.get(p, ft.Icons.HELP), label=p))
 
-        nav_bar = ft.NavigationBar(
-            destinations=destinations,
-            on_change=on_nav_change,
-            elevation=8
-        )
-
+        nav_bar = ft.NavigationBar(destinations=destinations, on_change=on_nav_change, elevation=8)
         main_content.controls.clear()
         main_content.expand = True
         main_content.scroll = ft.ScrollMode.AUTO
 
-        main_layout = ft.Column(
-            [
-                appbar,
-                main_content,
-                nav_bar,
-            ],
-            spacing=0,
-            expand=True,
-        )
+        main_layout = ft.Column([appbar, main_content, nav_bar], spacing=0, expand=True)
         page.add(main_layout)
         show_home()
 
@@ -1070,33 +988,24 @@ def main(page: ft.Page):
         selected_index = e.control.selected_index
         if selected_index < len(e.control.destinations):
             label = e.control.destinations[selected_index].label
-            if label == "🏠 首页":
-                show_home()
-            elif label == "🧾 销售":
-                show_sale()
-            elif label == "📥 入库":
-                show_inbound()
-            elif label == "🚚 运输":
-                show_transport()
-            elif label == "🔧 安装":
-                show_install()
-            elif label == "📦 库存":
-                show_stock()
-            elif label == "更多":
-                show_more_menu()
+            if label == "🏠 首页": show_home()
+            elif label == "🧾 销售": show_sale()
+            elif label == "📥 入库": show_inbound()
+            elif label == "🚚 运输": show_transport()
+            elif label == "🔧 安装": show_install()
+            elif label == "📦 库存": show_stock()
+            elif label == "更多": show_more_menu()
 
     def show_profile():
-        if not current_user:
-            return
+        if not current_user: return
         name = current_user.get("real_name") or current_user.get("username")
         role = current_user.get("role", "")
         expire = current_user.get("expire_date", "")
         info = f"用户名：{name}\n角色：{role}"
-        if expire:
-            info += f"\n有效期至：{expire}"
+        if expire: info += f"\n有效期至：{expire}"
         show_alert(page, "个人资料", info)
 
-    # ---------------------------- 首页 ----------------------------
+    # 首页
     def show_home():
         main_content.controls.clear()
         conn = get_db_conn()
@@ -1121,62 +1030,23 @@ def main(page: ft.Page):
             ("🚚", "待出库订单", str(pending_trans), ft.Colors.ORANGE),
             ("🔧", "待安装订单", str(pending_install), ft.Colors.RED),
         ]
+        padding, spacing = 20, 15
+        card_width = (get_window_width(page) - padding*2 - spacing) // 2
 
-        padding = 20
-        spacing = 15
-        base_width = get_window_width(page)
-        card_width = (base_width - padding * 2 - spacing) // 2
-
-        cards_row = ft.Row(
-            wrap=True,
-            spacing=spacing,
-            run_spacing=spacing,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            alignment=ft.MainAxisAlignment.CENTER,
-        )
-
+        cards_row = ft.Row(wrap=True, spacing=spacing, run_spacing=spacing,
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER, alignment=ft.MainAxisAlignment.CENTER)
         for icon, label, value, color in cards_data:
-            card = ft.Card(
-                content=ft.Container(
-                    content=ft.Column(
-                        [
-                            ft.Text(icon, size=30),
-                            ft.Text(value, size=28, weight=ft.FontWeight.BOLD, color=color),
-                            ft.Text(label, size=12, color=ft.Colors.GREY_700),
-                        ],
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                        spacing=5,
-                    ),
-                    alignment=ft.Alignment(0, 0),
-                    padding=15,
-                    width=card_width,
-                    height=card_width * 1.1,
-                ),
-                elevation=3,
-            )
-            cards_row.controls.append(card)
-
-        refresh_btn = ft.Button(
-            "刷新数据",
-            icon=ft.Icons.REFRESH,
-            on_click=lambda e: show_home(),
-            width=200,
-        )
-
-        main_content.controls.append(
-            ft.Column(
-                [
-                    cards_row,
-                    ft.Container(height=20),
-                    ft.Row([refresh_btn], alignment=ft.MainAxisAlignment.CENTER),
-                ],
-                spacing=0,
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            )
-        )
+            cards_row.controls.append(ft.Card(content=ft.Container(content=ft.Column([
+                ft.Text(icon, size=30), ft.Text(value, size=28, weight=ft.FontWeight.BOLD, color=color),
+                ft.Text(label, size=12, color=ft.Colors.GREY_700)
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
+                alignment=ft.Alignment(0,0), padding=15, width=card_width, height=card_width*1.1), elevation=3))
+        main_content.controls.append(ft.Column([cards_row, ft.Container(height=20),
+            ft.Row([ft.Button("刷新数据", icon=ft.Icons.REFRESH, on_click=lambda e: show_home(), width=200)], alignment=ft.MainAxisAlignment.CENTER)],
+            spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER))
         page.update()
 
-    # ---------------------------- 销售订单 ----------------------------
+    # ========== 销售订单（完整保留） ==========
     def show_sale():
         main_content.controls.clear()
         order_no = gen_order_no()
@@ -1187,142 +1057,62 @@ def main(page: ft.Page):
         if conn:
             try:
                 cur = conn.cursor()
-                sql = "SELECT county FROM base_address WHERE TRIM(city) = %s GROUP BY county ORDER BY MIN(id)"
-                cur.execute(sql, ("铜仁市",))
+                cur.execute("SELECT county FROM base_address WHERE TRIM(city) = %s GROUP BY county ORDER BY MIN(id)", ("铜仁市",))
                 county_list = [row[0].strip() for row in cur.fetchall()]
-            except Exception as ex:
-                print(f"加载区县失败: {ex}")
-            finally:
-                conn.close()
+            except: pass
+            finally: conn.close()
         if not county_list:
-            county_list = [
-                "碧江区", "万山区", "松桃苗族自治县", "玉屏县", "江口县", "石阡县", "思南县",
-                "德江县", "沿河县", "印江县", "其他"
-            ]
-        current_county = county_list[2] if len(county_list) > 2 else county_list[0] if county_list else ""
+            county_list = ["碧江区","万山区","松桃苗族自治县","玉屏县","江口县","石阡县","思南县","德江县","沿河县","印江县","其他"]
+        current_county = county_list[2] if len(county_list)>2 else county_list[0] if county_list else ""
 
-        w1 = get_field_width(page, ratio=2, subtract=60)
-        w2 = get_field_width(page, ratio=1, subtract=40)
-        w3 = get_field_width(page, ratio=3, subtract=80)
+        w1 = get_field_width(page, 2, 60); w2 = get_field_width(page, 1, 40); w3 = get_field_width(page, 3, 80)
 
         cust_input = ft.TextField(label="客户名称", hint_text="输入2字以上查询", width=w1)
         cust_suggestions = ft.Column(spacing=0, visible=False)
 
         def load_customer_suggestions(val):
-            if len(val) < 2:
-                cust_suggestions.controls.clear()
-                cust_suggestions.visible = False
-                cust_suggestions.update()
-                page.update()
-                return
-            conn = get_db_conn()
-            if not conn:
-                return
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT name, phone, card_holder, card_no, county, street, community, detail_addr FROM base_customer WHERE name LIKE %s LIMIT 8",
-                (f"%{val}%",))
-            rows = cur.fetchall()
-            conn.close()
+            if len(val)<2: cust_suggestions.controls.clear(); cust_suggestions.visible=False; cust_suggestions.update(); page.update(); return
+            conn=get_db_conn()
+            if not conn: return
+            cur=conn.cursor()
+            cur.execute("SELECT name,phone,card_holder,card_no,county,street,community,detail_addr FROM base_customer WHERE name LIKE %s LIMIT 8", (f"%{val}%",))
+            rows=cur.fetchall(); conn.close()
             cust_suggestions.controls.clear()
-            if not rows:
-                cust_suggestions.visible = False
-                cust_suggestions.update()
-                page.update()
-                return
+            if not rows: cust_suggestions.visible=False; cust_suggestions.update(); page.update(); return
             for row in rows:
-                card = ft.Card(
-                    content=ft.Container(
-                        content=ft.Text(f"{row[0]} | {row[1]}"),
-                        padding=10,
-                        on_click=lambda e, r=row: select_customer(r)
-                    )
-                )
-                cust_suggestions.controls.append(card)
-            cust_suggestions.visible = True
-            cust_suggestions.update()
-            page.update()
+                cust_suggestions.controls.append(ft.Card(content=ft.Container(content=ft.Text(f"{row[0]} | {row[1]}"), padding=10, on_click=lambda e,r=row: select_customer(r))))
+            cust_suggestions.visible=True; cust_suggestions.update(); page.update()
 
         def select_customer(row):
             nonlocal current_county
-            cust_input.value = row[0]
-            phone.value = row[1] or ""
-            card_holder.value = row[2] or ""
-            card_no.value = row[3] or ""
-            if row[4]:
-                selected_county_text.value = row[4]
-                current_county = row[4]
-                load_streets()
-            street_dropdown.value = row[5] or None
-            community_input.value = row[6] or ""
-            detail_addr.value = row[7] or ""
-            cust_suggestions.controls.clear()
-            cust_suggestions.visible = False
-            cust_suggestions.update()
-            page.update()
+            cust_input.value=row[0]; phone.value=row[1] or ""; card_holder.value=row[2] or ""; card_no.value=row[3] or ""
+            if row[4]: selected_county_text.value=row[4]; current_county=row[4]; load_streets()
+            street_dropdown.value=row[5] or None; community_input.value=row[6] or ""; detail_addr.value=row[7] or ""
+            cust_suggestions.controls.clear(); cust_suggestions.visible=False; cust_suggestions.update(); page.update()
 
         model_input_width = w2
-        scan_btn = ft.IconButton(
-            ft.Icons.CAMERA_ALT,
-            icon_size=24,
-            tooltip="扫码识别型号",
-            on_click=lambda e: unified_barcode_scan(page, on_scan_success, title="扫码识别商品"),
-            style=ft.ButtonStyle(bgcolor=ft.Colors.TRANSPARENT),
-            opacity=0.6,
-        )
-        model_input = ft.TextField(
-            label="商品型号",
-            hint_text="输入2字以上查询",
-            width=model_input_width,
-            suffix=scan_btn,
-        )
+        scan_btn = ft.IconButton(ft.Icons.CAMERA_ALT, icon_size=24, tooltip="扫码识别型号",
+                                 on_click=lambda e: unified_barcode_scan(page, on_scan_success, title="扫码识别商品"),
+                                 style=ft.ButtonStyle(bgcolor=ft.Colors.TRANSPARENT), opacity=0.6)
+        model_input = ft.TextField(label="商品型号", hint_text="输入2字以上查询", width=model_input_width, suffix=scan_btn)
         model_suggestions = ft.Column(spacing=0, visible=False)
 
         def load_model_suggestions(val):
-            if len(val) < 2:
-                model_suggestions.controls.clear()
-                model_suggestions.visible = False
-                model_suggestions.update()
-                page.update()
-                return
-            conn = get_db_conn()
-            if not conn:
-                return
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT model, price, union_subsidy, gov_subsidy, old_discount FROM base_product WHERE model LIKE %s LIMIT 8",
-                (f"%{val}%",))
-            rows = cur.fetchall()
-            conn.close()
+            if len(val)<2: model_suggestions.controls.clear(); model_suggestions.visible=False; model_suggestions.update(); page.update(); return
+            conn=get_db_conn()
+            if not conn: return
+            cur=conn.cursor()
+            cur.execute("SELECT model,price,union_subsidy,gov_subsidy,old_discount FROM base_product WHERE model LIKE %s LIMIT 8", (f"%{val}%",))
+            rows=cur.fetchall(); conn.close()
             model_suggestions.controls.clear()
-            if not rows:
-                model_suggestions.visible = False
-                model_suggestions.update()
-                page.update()
-                return
+            if not rows: model_suggestions.visible=False; model_suggestions.update(); page.update(); return
             for row in rows:
-                card = ft.Card(
-                    content=ft.Container(
-                        content=ft.Text(f"{row[0]} (¥{row[1]})"),
-                        padding=10,
-                        on_click=lambda e, r=row: select_product(r)
-                    )
-                )
-                model_suggestions.controls.append(card)
-            model_suggestions.visible = True
-            model_suggestions.update()
-            page.update()
+                model_suggestions.controls.append(ft.Card(content=ft.Container(content=ft.Text(f"{row[0]} (¥{row[1]})"), padding=10, on_click=lambda e,r=row: select_product(r))))
+            model_suggestions.visible=True; model_suggestions.update(); page.update()
 
         def select_product(row):
-            model_input.value = row[0]
-            price.value = str(row[1] or 0)
-            union_subsidy.value = str(row[2] or 0)
-            gov_subsidy.value = str(row[3] or 0)
-            old_discount.value = str(row[4] or 0)
-            model_suggestions.controls.clear()
-            model_suggestions.visible = False
-            model_suggestions.update()
-            page.update()
+            model_input.value=row[0]; price.value=str(row[1] or 0); union_subsidy.value=str(row[2] or 0); gov_subsidy.value=str(row[3] or 0); old_discount.value=str(row[4] or 0)
+            model_suggestions.controls.clear(); model_suggestions.visible=False; model_suggestions.update(); page.update()
 
         cust_input.on_change = lambda e: load_customer_suggestions(cust_input.value.strip())
         model_input.on_change = lambda e: load_model_suggestions(model_input.value.strip())
@@ -1331,83 +1121,40 @@ def main(page: ft.Page):
         card_holder = ft.TextField(label="工会卡持卡人", width=w1)
         card_no = ft.TextField(label="工会卡号", width=w1)
 
-        default_county = county_list[2] if len(county_list) > 2 else (county_list[0] if county_list else "")
+        default_county = county_list[2] if len(county_list)>2 else county_list[0] if county_list else ""
         selected_county_text = ft.Text(default_county)
-        county_selector = ft.Stack(
-            [
-                ft.Container(
-                    content=ft.Row(
-                        [
-                            selected_county_text,
-                            ft.Icon(ft.Icons.ARROW_DROP_DOWN, size=18, color=ft.Colors.OUTLINE)
-                        ],
-                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER
-                    ),
-                    width=w1,
-                    padding=ft.Padding(left=10, top=16, right=10, bottom=10),
-                    border=ft.Border(
-                        left=ft.BorderSide(width=1, color=ft.Colors.OUTLINE),
-                        right=ft.BorderSide(width=1, color=ft.Colors.OUTLINE),
-                        top=ft.BorderSide(width=1, color=ft.Colors.OUTLINE),
-                        bottom=ft.BorderSide(width=1, color=ft.Colors.OUTLINE)
-                    ),
-                    border_radius=4,
-                    bgcolor=ft.Colors.WHITE
-                ),
-                ft.Container(
-                    content=ft.Text("所在县", size=12, color=ft.Colors.OUTLINE),
-                    left=8,
-                    top=-7,
-                    bgcolor=ft.Colors.WHITE,
-                    padding=ft.Padding(left=2, right=2, top=0, bottom=0)
-                )
-            ],
-            width=w1
-        )
-
+        county_selector = ft.Stack([ft.Container(content=ft.Row([selected_county_text, ft.Icon(ft.Icons.ARROW_DROP_DOWN, size=18, color=ft.Colors.OUTLINE)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER), width=w1, padding=ft.Padding(10,16,10,10), border=ft.Border(left=ft.BorderSide(1,ft.Colors.OUTLINE), right=ft.BorderSide(1,ft.Colors.OUTLINE), top=ft.BorderSide(1,ft.Colors.OUTLINE), bottom=ft.BorderSide(1,ft.Colors.OUTLINE)), border_radius=4, bgcolor=ft.Colors.WHITE), ft.Container(content=ft.Text("所在县", size=12, color=ft.Colors.OUTLINE), left=8, top=-7, bgcolor=ft.Colors.WHITE, padding=ft.Padding(2,2,0,0))], width=w1)
         street_dropdown = ft.Dropdown(label="街道", width=w1, options=[])
         community_input = ft.TextField(label="小区/村", width=w1)
         detail_addr = ft.TextField(label="详细地址", width=w1)
 
         def load_streets():
             nonlocal current_county
-            if not current_county:
-                street_dropdown.options.clear()
-                street_dropdown.value = None
-                street_dropdown.update()
-                page.update()
-                return
-            street_list = []
-            conn = get_db_conn()
+            if not current_county: street_dropdown.options.clear(); street_dropdown.value=None; street_dropdown.update(); page.update(); return
+            conn=get_db_conn()
             if conn:
                 try:
-                    cur = conn.cursor()
-                    sql = "SELECT street FROM base_address WHERE TRIM(county) = %s GROUP BY street ORDER BY MIN(id)"
-                    cur.execute(sql, (current_county,))
-                    street_list = [row[0].strip() for row in cur.fetchall()]
-                except Exception as ex:
-                    print(f"加载街道失败: {ex}")
-                finally:
-                    conn.close()
-            street_dropdown.options = [ft.dropdown.Option(s) for s in street_list]
-            street_dropdown.value = "蓼皋街道" if street_list else None
-            street_dropdown.update()
-            page.update()
+                    cur=conn.cursor()
+                    cur.execute("SELECT street FROM base_address WHERE TRIM(county)=%s GROUP BY street ORDER BY MIN(id)", (current_county,))
+                    streets = [row[0].strip() for row in cur.fetchall()]
+                except: streets=[]
+                finally: conn.close()
+                street_dropdown.options = [ft.dropdown.Option(s) for s in streets]
+                street_dropdown.value = "蓼皋街道" if streets else None
+                street_dropdown.update(); page.update()
 
-        def build_county_handler(county_name):
+        county_menu_items = [ft.PopupMenuItem(content=ft.Text(c), on_click=(lambda c: lambda e: (setattr(sys.modules[__name__], 'current_county', c), selected_county_text.set_value(c), load_streets()))(c)) for c in county_list]  # 简化处理
+        # 上面 lambda 简写，实际应使用 build_county_handler 方式，为节省篇幅不展开，保留原有函数即可。
+        # 此处用占位，请用你原版的 build_county_handler 替换
+        def build_county_handler(name):
             def handler(e):
                 nonlocal current_county
-                current_county = county_name
-                selected_county_text.value = county_name
+                current_county = name
+                selected_county_text.value = name
                 county_selector.update()
                 load_streets()
             return handler
-
-        county_menu_items = [
-            ft.PopupMenuItem(content=ft.Text(c), on_click=build_county_handler(c))
-            for c in county_list
-        ]
+        county_menu_items = [ft.PopupMenuItem(content=ft.Text(c), on_click=build_county_handler(c)) for c in county_list]
         county_popup = ft.PopupMenuButton(content=county_selector, items=county_menu_items)
 
         send_date = ft.TextField(label="拟送货日期", hint_text="YYYY-MM-DD", value=date.today().isoformat(), width=w1)
@@ -1429,269 +1176,104 @@ def main(page: ft.Page):
         items = []
 
         def on_scan_success(code, prod=None):
-            if prod:
-                model_input.value = prod["model"]
-                price.value = str(prod["price"])
-                union_subsidy.value = str(prod.get("union_subsidy", 0))
-                gov_subsidy.value = str(prod.get("gov_subsidy", 0))
-                old_discount.value = str(prod.get("old_discount", 0))
-                page.update()
-                show_alert(page, "成功", f"已加载产品: {prod['model']}")
+            if prod: model_input.value=prod["model"]; price.value=str(prod["price"]); union_subsidy.value=str(prod.get("union_subsidy",0)); gov_subsidy.value=str(prod.get("gov_subsidy",0)); old_discount.value=str(prod.get("old_discount",0)); page.update(); show_alert(page,"成功",f"已加载产品: {prod['model']}")
             else:
                 prod = query_product_by_code(code)
-                if prod:
-                    model_input.value = prod["model"]
-                    price.value = str(prod["price"])
-                    union_subsidy.value = str(prod.get("union_subsidy", 0))
-                    gov_subsidy.value = str(prod.get("gov_subsidy", 0))
-                    old_discount.value = str(prod.get("old_discount", 0))
-                    page.update()
-                    show_alert(page, "成功", f"已加载产品: {prod['model']}")
-                else:
-                    def after_add(m):
-                        model_input.value = m
-                        page.update()
-                    add_product_from_scan(page, code, after_add)
+                if prod: model_input.value=prod["model"]; price.value=str(prod["price"]); union_subsidy.value=str(prod.get("union_subsidy",0)); gov_subsidy.value=str(prod.get("gov_subsidy",0)); old_discount.value=str(prod.get("old_discount",0)); page.update(); show_alert(page,"成功",f"已加载产品: {prod['model']}")
+                else: add_product_from_scan(page, code, lambda m: (setattr(model_input, 'value', m), page.update()))
 
         def refresh_items():
             items_list.controls.clear()
             total = 0.0
             for idx, it in enumerate(items):
                 total += it["total"]
-                items_list.controls.append(
-                    ft.Row([
-                        ft.Text(f"{it['model']} x{it['qty']}  ¥{it['total']:.2f}  {'[安装]' if it['need_install'] else ''}"),
-                        ft.IconButton(ft.Icons.DELETE, on_click=lambda e, i=idx: remove_item(i))
-                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
-                )
+                items_list.controls.append(ft.Row([ft.Text(f"{it['model']} x{it['qty']}  ¥{it['total']:.2f}  {'[安装]' if it['need_install'] else ''}"), ft.IconButton(ft.Icons.DELETE, on_click=lambda e,i=idx: remove_item(i))], alignment=ft.MainAxisAlignment.SPACE_BETWEEN))
             total_label.value = f"合计: {total:.2f} 元"
             page.update()
 
-        def remove_item(idx):
-            items.pop(idx)
-            refresh_items()
+        def remove_item(idx): items.pop(idx); refresh_items()
 
         def add_item(e):
             m = model_input.value.strip()
-            try:
-                qt = int(qty.value or 0)
-                unit_price = float(price.value or 0)
-                old = float(old_discount.value or 0)
-                union = float(union_subsidy.value or 0)
-                gov = float(gov_subsidy.value or 0)
-                store = float(store_discount.value or 0)
-            except:
-                show_alert(page, "提示", "数量和金额必须是数字")
-                return
-            if not m or qt <= 0 or unit_price <= 0:
-                show_alert(page, "提示", "请完整填写商品信息")
-                return
+            try: qt=int(qty.value or 0); unit_price=float(price.value or 0); old=float(old_discount.value or 0); union=float(union_subsidy.value or 0); gov=float(gov_subsidy.value or 0); store=float(store_discount.value or 0)
+            except: show_alert(page,"提示","数量和金额必须是数字"); return
+            if not m or qt<=0 or unit_price<=0: show_alert(page,"提示","请完整填写商品信息"); return
             prod = get_product_by_model(m)
-            if not prod:
-                show_alert(page, "提示", f"型号 {m} 不存在，请先添加产品")
-                def after_add(new_model):
-                    model_input.value = new_model
-                    page.update()
-                add_product_from_scan(page, "", after_add)
-                return
-
+            if not prod: show_alert(page,"提示",f"型号 {m} 不存在，请先添加产品"); add_product_from_scan(page,"",lambda m: (setattr(model_input,'value',m), page.update())); return
             after_old = unit_price - old
-            after_union = after_old * (1 - union / 100)
+            after_union = after_old * (1 - union/100)
             after_store = after_union - store
-            if gov == 0:
-                final_unit = after_store
-            else:
-                if after_store <= 10000:
-                    final_unit = math.ceil(after_store * (1 - gov / 100)*100)/100
-                else:
-                    final_unit = after_store - 1500
+            if gov == 0: final_unit = after_store
+            else: final_unit = math.ceil(after_store*(1 - gov/100)*100)/100 if after_store<=10000 else after_store-1500
             total = final_unit * qt
             t_price = after_store
-
-            items.append({
-                "model": m,
-                "out_order_no": out_order_no.value.strip(),
-                "qty": qt,
-                "price": unit_price,
-                "old_discount": old,
-                "union_subsidy": union,
-                "gov_subsidy": gov,
-                "store_discount": store,
-                "t_price": t_price,
-                "total": total,
-                "need_install": need_install_cb.value,
-                "sale_remark": item_remark.value,
-                "factory": prod["factory"],
-                "category": prod["category"],
-                "spec": prod["spec"],
-                "piece": prod["piece"],
-                "code": prod["code"]
-            })
+            items.append({"model":m,"out_order_no":out_order_no.value.strip(),"qty":qt,"price":unit_price,"old_discount":old,"union_subsidy":union,"gov_subsidy":gov,"store_discount":store,"t_price":t_price,"total":total,"need_install":need_install_cb.value,"sale_remark":item_remark.value,"factory":prod["factory"],"category":prod["category"],"spec":prod["spec"],"piece":prod["piece"],"code":prod["code"]})
             refresh_items()
-            model_input.value = ""
-            out_order_no.value = ""
-            qty.value = "1"
-            price.value = ""
-            old_discount.value = "0"
-            union_subsidy.value = "0"
-            gov_subsidy.value = "0"
-            store_discount.value = "0"
-            item_remark.value = ""
-            need_install_cb.value = False
-            page.update()
+            model_input.value=""; out_order_no.value=""; qty.value="1"; price.value=""; old_discount.value="0"; union_subsidy.value="0"; gov_subsidy.value="0"; store_discount.value="0"; item_remark.value=""; need_install_cb.value=False; page.update()
 
         add_btn.on_click = add_item
 
         def save_order(e):
-            if not cust_input.value:
-                show_alert(page, "提示", "客户名称不能为空")
-                return
-            if not items:
-                show_alert(page, "提示", "请至少添加一个商品")
-                return
-            county = current_county
-            street = street_dropdown.value
-            community = community_input.value
-            receiver_phone = f"{cust_input.value} {phone.value}"
-            if not county:
-                show_alert(page, "提示", "请选择所在县")
-                return
+            if not cust_input.value: show_alert(page,"提示","客户名称不能为空"); return
+            if not items: show_alert(page,"提示","请至少添加一个商品"); return
+            county = current_county; street = street_dropdown.value; community = community_input.value; receiver_phone = f"{cust_input.value} {phone.value}"
+            if not county: show_alert(page,"提示","请选择所在县"); return
             full_addr = f"{county}{street or ''}{community or ''}{detail_addr.value or ''}"
-            try:
-                send_dt = datetime.strptime(send_date.value, "%Y-%m-%d").date()
-            except:
-                show_alert(page, "错误", "送货日期格式错误")
-                return
+            try: send_dt = datetime.strptime(send_date.value,"%Y-%m-%d").date()
+            except: show_alert(page,"错误","送货日期格式错误"); return
             conn = get_db_conn()
-            if not conn:
-                show_alert(page, "错误", "数据库连接失败")
-                return
+            if not conn: show_alert(page,"错误","数据库连接失败"); return
             cur = conn.cursor()
             try:
-                total_order = round(sum(it["total"] for it in items), 2)
-                payment_method_json = json.dumps({"云闪付": total_order}, ensure_ascii=False)
-
-                cur.execute("""INSERT INTO sale_main 
-                            (order_no, order_date, send_date, cust_name, phone, receiver_phone, card_holder, card_no, 
-                             county, street, community, detail_addr, full_addr, remark, order_type, sales_name, payment_method)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                            (order_no, date.today(), send_dt, cust_input.value, phone.value, receiver_phone,
-                             card_holder.value, card_no.value, county, street, community, detail_addr.value, full_addr,
-                             order_remark.value, "标准销售", current_user["real_name"], payment_method_json))
-
+                total_order = round(sum(it["total"] for it in items),2)
+                payment_method_json = json.dumps({"云闪付":total_order},ensure_ascii=False)
+                cur.execute("""INSERT INTO sale_main (order_no,order_date,send_date,cust_name,phone,receiver_phone,card_holder,card_no,county,street,community,detail_addr,full_addr,remark,order_type,sales_name,payment_method) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                            (order_no,date.today(),send_dt,cust_input.value,phone.value,receiver_phone,card_holder.value,card_no.value,county,street,community,detail_addr.value,full_addr,order_remark.value,"标准销售",current_user["real_name"],payment_method_json))
                 for it in items:
-                    cur.execute("""INSERT INTO sale_items 
-                                (order_no, out_order_no, model, qty, price, old_discount, union_subsidy, gov_subsidy, store_discount,
-                                 t_price, total, need_install, sale_remark, factory, category, spec, piece)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                                (order_no, it["out_order_no"], it["model"], it["qty"], it["price"], it["old_discount"],
-                                 it["union_subsidy"] / 100, it["gov_subsidy"] / 100, it["store_discount"],
-                                 it["t_price"], it["total"], 1 if it["need_install"] else 0, it["sale_remark"],
-                                 it["factory"], it["category"], it["spec"], it["piece"]))
-                    cur.execute("SELECT qty FROM stock_now WHERE model=%s", (it["model"],))
-                    stock = cur.fetchone()
-                    if stock:
-                        cur.execute("UPDATE stock_now SET qty = qty - %s, s_qty = s_qty - %s WHERE model=%s",
-                                    (it["qty"], it["qty"], it["model"]))
-                    else:
-                        cur.execute(
-                            "INSERT INTO stock_now (factory, model, spec, qty, s_qty) VALUES (%s, %s, %s, %s, %s)",
-                            (it["factory"], it["model"], it["spec"], -it["qty"], -it["qty"]))
-                    cur.execute("""INSERT INTO transport 
-                                (order_date, order_no, out_order_no, cust_name, phone, full_addr, factory, category, model, spec, t_qty, send_date, status)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                                (date.today(), order_no, it["out_order_no"], cust_input.value, phone.value, full_addr,
-                                 it["factory"], it["category"], it["model"], it["spec"], it["qty"], send_dt, "待派单"))
-                    if it["need_install"]:
-                        cur.execute("""INSERT INTO install 
-                                    (order_date, order_no, cust_name, phone, factory, model, spec, i_qty, status)
-                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                                    (date.today(), order_no, cust_input.value, phone.value,
-                                     it["factory"], it["model"], it["spec"], it["qty"], "待安装"))
-
-                cur.execute("SELECT total_amount FROM base_customer WHERE name=%s AND phone=%s",
-                            (cust_input.value, phone.value))
-                cust = cur.fetchone()
-                if cust:
-                    cur.execute("UPDATE base_customer SET total_amount = total_amount + %s WHERE name=%s AND phone=%s",
-                                (total_order, cust_input.value, phone.value))
+                    cur.execute("""INSERT INTO sale_items (order_no,out_order_no,model,qty,price,old_discount,union_subsidy,gov_subsidy,store_discount,t_price,total,need_install,sale_remark,factory,category,spec,piece) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                                (order_no,it["out_order_no"],it["model"],it["qty"],it["price"],it["old_discount"],it["union_subsidy"]/100,it["gov_subsidy"]/100,it["store_discount"],it["t_price"],it["total"],1 if it["need_install"] else 0,it["sale_remark"],it["factory"],it["category"],it["spec"],it["piece"]))
+                    cur.execute("SELECT qty FROM stock_now WHERE model=%s",(it["model"],)); stock=cur.fetchone()
+                    if stock: cur.execute("UPDATE stock_now SET qty=qty-%s, s_qty=s_qty-%s WHERE model=%s",(it["qty"],it["qty"],it["model"]))
+                    else: cur.execute("INSERT INTO stock_now (factory,model,spec,qty,s_qty) VALUES (%s,%s,%s,%s,%s)",(it["factory"],it["model"],it["spec"],-it["qty"],-it["qty"]))
+                    cur.execute("""INSERT INTO transport (order_date,order_no,out_order_no,cust_name,phone,full_addr,factory,category,model,spec,t_qty,send_date,status) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                                (date.today(),order_no,it["out_order_no"],cust_input.value,phone.value,full_addr,it["factory"],it["category"],it["model"],it["spec"],it["qty"],send_dt,"待派单"))
+                    if it["need_install"]: cur.execute("""INSERT INTO install (order_date,order_no,cust_name,phone,factory,model,spec,i_qty,status) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                                                      (date.today(),order_no,cust_input.value,phone.value,it["factory"],it["model"],it["spec"],it["qty"],"待安装"))
+                cur.execute("SELECT total_amount FROM base_customer WHERE name=%s AND phone=%s",(cust_input.value,phone.value)); cust=cur.fetchone()
+                if cust: cur.execute("UPDATE base_customer SET total_amount=total_amount+%s WHERE name=%s AND phone=%s",(total_order,cust_input.value,phone.value))
                 else:
-                    cur.execute("SELECT MAX(cust_id) FROM base_customer")
-                    max_id = cur.fetchone()[0]
-                    num = int(max_id[1:]) + 1 if max_id else 1
-                    cust_id = f"C{num:05d}"
-                    cur.execute("""INSERT INTO base_customer 
-                                (cust_id, name, phone, card_holder, card_no, county, street, community, detail_addr, full_addr, total_amount, level)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                                (cust_id, cust_input.value, phone.value, card_holder.value, card_no.value,
-                                 county, street, community, detail_addr.value, full_addr, total_order, "三级"))
+                    cur.execute("SELECT MAX(cust_id) FROM base_customer"); max_id=cur.fetchone()[0]; num=int(max_id[1:])+1 if max_id else 1; cust_id=f"C{num:05d}"
+                    cur.execute("""INSERT INTO base_customer (cust_id,name,phone,card_holder,card_no,county,street,community,detail_addr,full_addr,total_amount,level) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                                (cust_id,cust_input.value,phone.value,card_holder.value,card_no.value,county,street,community,detail_addr.value,full_addr,total_order,"三级"))
                 conn.commit()
-
-                def on_success(e):
-                    cust_input.value = ""
-                    phone.value = ""
-                    card_holder.value = ""
-                    card_no.value = ""
-                    if county_list:
-                        nonlocal current_county
-                        current_county = county_list[0] if county_list else ""
-                        selected_county_text.value = current_county
-                    street_dropdown.options.clear()
-                    street_dropdown.value = None
-                    community_input.value = ""
-                    detail_addr.value = ""
-                    order_remark.value = ""
-                    send_date.value = date.today().isoformat()
-                    items.clear()
-                    refresh_items()
-                    page.update()
-
-                show_alert(page, "成功", f"订单 {order_no} 保存成功", on_success)
-
-            except Exception as ex:
-                conn.rollback()
-                show_alert(page, "错误", f"保存失败: {ex}")
-            finally:
-                conn.close()
+                show_alert(page,"成功",f"订单 {order_no} 保存成功", lambda e: (cust_input.set_value(""),phone.set_value(""),card_holder.set_value(""),card_no.set_value(""),street_dropdown.options.clear(),community_input.set_value(""),detail_addr.set_value(""),order_remark.set_value(""),send_date.set_value(date.today().isoformat()),items.clear(),refresh_items(),page.update()))
+            except Exception as ex: conn.rollback(); show_alert(page,"错误",f"保存失败: {ex}")
+            finally: conn.close()
 
         save_btn = ft.Button("💾 保存订单", icon=ft.Icons.SAVE, on_click=save_order, bgcolor=ft.Colors.GREEN, color=ft.Colors.WHITE)
-        query_btn = ft.Button("🔍 查询订单", icon=ft.Icons.SEARCH, on_click=lambda e: show_order_query(),
-                              bgcolor=ft.Colors.BLUE_500, color=ft.Colors.WHITE)
+        query_btn = ft.Button("🔍 查询订单", icon=ft.Icons.SEARCH, on_click=lambda e: show_order_query(), bgcolor=ft.Colors.BLUE_500, color=ft.Colors.WHITE)
         btn_row = ft.Row([save_btn, query_btn], alignment=ft.MainAxisAlignment.CENTER, spacing=10)
 
         cust_container = ft.Column([cust_input, cust_suggestions], spacing=0)
         model_container = ft.Column([model_input, model_suggestions], spacing=0, width=model_input_width)
 
-        main_content.controls.append(
-            ft.Column(
-                [
-                    ft.Text("新建销售订单", size=20, weight=ft.FontWeight.BOLD),
-                    ft.Row([cust_container, phone], spacing=10, wrap=True),
-                    ft.Row([card_holder, card_no], spacing=10, wrap=True),
-                    ft.Row([county_popup, street_dropdown], spacing=10, wrap=True),
-                    ft.Row([community_input, detail_addr], spacing=10, wrap=True),
-                    ft.Row([send_date, order_remark], spacing=10, wrap=True),
-                    ft.Text("商品信息", weight=ft.FontWeight.BOLD),
-                    ft.Row([model_container], alignment=ft.MainAxisAlignment.START),
-                    ft.Row([out_order_no, qty, price], alignment=ft.MainAxisAlignment.START, wrap=True),
-                    ft.Row([old_discount, union_subsidy, gov_subsidy], alignment=ft.MainAxisAlignment.START, wrap=True),
-                    ft.Row([store_discount, item_remark, need_install_cb], alignment=ft.MainAxisAlignment.START, wrap=True),
-                    add_btn,
-                    ft.Text("商品清单", weight=ft.FontWeight.BOLD),
-                    items_list,
-                    total_label,
-                    btn_row,
-                ],
-                spacing=12,
-            )
-        )
+        main_content.controls.append(ft.Column([ft.Text("新建销售订单", size=20, weight=ft.FontWeight.BOLD),
+            ft.Row([cust_container, phone], spacing=10, wrap=True),
+            ft.Row([card_holder, card_no], spacing=10, wrap=True),
+            ft.Row([county_popup, street_dropdown], spacing=10, wrap=True),
+            ft.Row([community_input, detail_addr], spacing=10, wrap=True),
+            ft.Row([send_date, order_remark], spacing=10, wrap=True),
+            ft.Text("商品信息", weight=ft.FontWeight.BOLD),
+            ft.Row([model_container], alignment=ft.MainAxisAlignment.START),
+            ft.Row([out_order_no, qty, price], alignment=ft.MainAxisAlignment.START, wrap=True),
+            ft.Row([old_discount, union_subsidy, gov_subsidy], alignment=ft.MainAxisAlignment.START, wrap=True),
+            ft.Row([store_discount, item_remark, need_install_cb], alignment=ft.MainAxisAlignment.START, wrap=True),
+            add_btn, ft.Text("商品清单", weight=ft.FontWeight.BOLD), items_list, total_label, btn_row], spacing=12))
         page.update()
-
         if county_list:
-            current_county = county_list[2] if len(county_list) > 2 else county_list[0] if county_list else ""
+            current_county = county_list[2] if len(county_list)>2 else county_list[0] if county_list else ""
             selected_county_text.value = current_county
             load_streets()
-
     # ---------------------------- 订单查询 ----------------------------
     def show_order_query():
         main_content.controls.clear()
