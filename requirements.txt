@@ -1,5 +1,4 @@
 flet>=0.85.3,<0.87.0
-flet-camera
 mysql-connector-python
 Pillow
 numpy
