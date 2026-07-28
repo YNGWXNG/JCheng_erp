@@ -62,8 +62,8 @@ jobs:
 
           SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           
-          # 接受所有许可证（显式指定 sdk_root）
-          yes | "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" --licenses > /dev/null
+          # 接受所有许可证（子shell关闭pipefail，规避管道破裂）
+          (set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" --licenses > /dev/null)
           
           # 安装构建所需组件（升级到 API 34 适配新版 Flet）
           "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" \
