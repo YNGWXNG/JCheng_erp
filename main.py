@@ -17,15 +17,12 @@ import sys
 import math
 import tempfile
 import asyncio
-import flet_camera as fc
 
-# 私有解码端点（可环境变量配置）
 SERVER_DECODE_URL = os.getenv("SERVER_DECODE_URL", "https://api.qrserver.com/v1/read-qr-code/")
 
 MAX_IMAGE_LONG_EDGE = 1280
 DEFAULT_WIDTH = 360
 
-# 数据库默认配置
 DB_HOST = os.getenv("DB_HOST", "240e:338:4a26:f3b1::84")
 DB_PORT = int(os.getenv("DB_PORT", 13306))
 DB_USER = os.getenv("DB_USER", "ipv6user")
@@ -43,7 +40,6 @@ PERMISSION_ICONS = {
     "更多": ft.Icons.SETTINGS,
 }
 
-# ---------- 辅助函数 ----------
 def get_window_width(page):
     try:
         if hasattr(page, 'width') and page.width:
@@ -72,7 +68,7 @@ def get_config_dir():
 
 CONFIG_DIR = get_config_dir()
 CONFIG_FILE = os.path.join(CONFIG_DIR, 'server_config.json')
-CREDENTIALS_FILE = os.path.join(CONFIG_DIR, 'saved_login.json')  # 自动登录凭据文件
+CREDENTIALS_FILE = os.path.join(CONFIG_DIR, 'saved_login.json')
 
 DEFAULT_HOST = os.getenv("DB_HOST", DB_HOST)
 DEFAULT_PORT = int(os.getenv("DB_PORT", DB_PORT))
@@ -113,26 +109,6 @@ def save_server_config(host, port, user, pwd, db):
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
-
-def load_saved_credentials():
-    """返回保存的用户名和密码，若不存在则返回空字符串"""
-    if os.path.exists(CREDENTIALS_FILE):
-        try:
-            with open(CREDENTIALS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data.get("username", ""), data.get("password", "")
-        except:
-            pass
-    return "", ""
-
-def save_credentials(username, password):
-    """保存用户名和密码到 JSON 文件"""
-    with open(CREDENTIALS_FILE, "w", encoding="utf-8") as f:
-        json.dump({"username": username, "password": password}, f)
-
-def clear_credentials():
-    if os.path.exists(CREDENTIALS_FILE):
-        os.remove(CREDENTIALS_FILE)
 
 load_server_config()
 
@@ -205,7 +181,6 @@ def show_alert(page: ft.Page, title, content, on_ok=None):
     dlg.open = True
     page.update()
 
-# ---------- 权限指引（使用 page 属性记录，避免 global） ----------
 def show_grant_permission_instructions(page: ft.Page, permission_name: str):
     if not hasattr(page, '_shown_instructions'):
         page._shown_instructions = set()
@@ -228,7 +203,6 @@ def show_grant_permission_instructions(page: ft.Page, permission_name: str):
     except Exception as ex:
         print("[Permission] 无法显示权限指引:", ex)
 
-# ---------- 一次性文件选择器 ----------
 async def pick_image_async(page: ft.Page) -> Optional[str]:
     path_result = None
     picker = ft.FilePicker()
@@ -240,8 +214,6 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
         try:
             if e.files:
                 path_result = resolve_picker_file(page, e.files[0])
-                if not path_result:
-                    print("[Picker] resolve_picker_file 返回空")
         except Exception as ex:
             print(f"[Picker] on_result error: {ex}")
         finally:
@@ -256,23 +228,35 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
                 dialog_title="选择图片"
             )
         else:
-            await picker.pick_files(...)
+            await picker.pick_files(
+                allow_multiple=False,
+                file_type=ft.FilePickerFileType.IMAGE,
+                allowed_extensions=["jpg", "jpeg", "png", "bmp"],
+                dialog_title="选择图片"
+            )
         await asyncio.wait_for(event.wait(), timeout=120)
+    except asyncio.TimeoutError:
+        print("[Picker] 超时")
+    except asyncio.CancelledError:
+        print("[Picker] 任务取消")
     except Exception as ex:
         print(f"[Picker] 异常: {ex}")
     finally:
+        # 只移除 picker，绝不调用 page.update()
         try:
             if picker in page.overlay:
                 page.overlay.remove(picker)
-        except:
+        except Exception:
             pass
-        page.update()
     return path_result
 
 def resolve_picker_file(page: ft.Page, file: ft.FilePickerFile) -> Optional[str]:
     if not file:
         return None
-    # 优先使用 data 字段（某些 FilePicker 返回二进制）
+    # 桌面端文件路径通常直接可用
+    if file.path and os.path.exists(file.path):
+        return file.path
+    # 如果存在二进制数据，保存为临时文件
     if hasattr(file, "data") and file.data:
         try:
             ext = os.path.splitext(file.name or "")[1] or ".jpg"
@@ -282,24 +266,21 @@ def resolve_picker_file(page: ft.Page, file: ft.FilePickerFile) -> Optional[str]
             tmp.close()
             return tmp.name
         except Exception as e:
-            print(f"[FileResolver] 读取 data 失败: {e}")
-
+            print(f"[FileResolver] data read error: {e}")
+    # 处理 content URI（安卓）
     uri = file.path
-    if uri:
-        if uri.startswith("content://"):
-            try:
-                data = page.get_file_content(uri)
-                if data:
-                    ext = os.path.splitext(file.name or "")[1] or ".jpg"
-                    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-                    tmp.write(data)
-                    tmp.flush()
-                    tmp.close()
-                    return tmp.name
-            except Exception as e:
-                print(f"[FileResolver] get_file_content 异常: {e}")
-        elif os.path.exists(uri):
-            return uri
+    if uri and uri.startswith("content://"):
+        try:
+            data = page.get_file_content(uri)
+            if data:
+                ext = os.path.splitext(file.name or "")[1] or ".jpg"
+                tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+                tmp.write(data)
+                tmp.flush()
+                tmp.close()
+                return tmp.name
+        except Exception as e:
+            print(f"[FileResolver] get_file_content failed: {e}")
     return None
 
 def compress_image_to_bytes(file_path: str, max_long_edge: int = MAX_IMAGE_LONG_EDGE) -> bytes:
@@ -314,101 +295,48 @@ def compress_image_to_bytes(file_path: str, max_long_edge: int = MAX_IMAGE_LONG_
         img.convert("RGB").save(buf, format="JPEG", quality=80, optimize=True)
         return buf.getvalue()
 
-# ---------- 相机视图 ----------
-def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
-    # 桌面端直接打开文件选择
-    if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS):
-        async def _pick():
-            path = await pick_image_async(page)
-            if path: on_picture_taken(path)
-        page.run_task(_pick)
-        return
-
-    camera_ref = ft.Ref[fc.Camera]()
-    camera_view = None
-
-    def close_camera():
-        nonlocal camera_view
-        if camera_view and camera_view in page.overlay:
-            try:
-                page.overlay.remove(camera_view)
-            except:
-                pass
-            page.update()
-
-    async def take_picture():
-        try:
-            path = await camera_ref.current.take_picture()
-            if path and os.path.exists(path):
-                close_camera()
-                on_picture_taken(path)
-            else:
-                raise Exception("拍照路径无效")
-        except Exception as ex:
-            print(f"[Camera] 拍照失败: {ex}")
-            close_camera()
-            # 自动回退到图库，并提示
-            page.snack_bar = ft.SnackBar(ft.Text("拍照失败，已为您打开相册"))
-            page.snack_bar.open = True
-            page.update()
-            async def fallback():
-                path = await pick_image_async(page)
-                if path: on_picture_taken(path)
-            page.run_task(fallback)
-
-    camera_view = ft.Container(
-        expand=True,
-        bgcolor=ft.Colors.BLACK,
-        content=ft.Stack([
-            fc.Camera(ref=camera_ref, expand=True),
-            ft.Row([
-                ft.IconButton(ft.Icons.CAMERA_ALT, icon_size=48,
-                              on_click=lambda e: page.run_task(take_picture),
-                              style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=15)),
-                ft.IconButton(ft.Icons.CLOSE, icon_size=32,
-                              on_click=lambda e: close_camera(),
-                              style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=10)),
-            ], alignment=ft.MainAxisAlignment.CENTER, spacing=30, bottom=40)
-        ])
-    )
-    page.overlay.append(camera_view)
-    page.update()
-
-# ---------- 图片来源选择对话框 ----------
 def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], None], title: str = "选择图片"):
     if not hasattr(page, '_permission_hints'):
         page._permission_hints = {'camera': False, 'storage': False}
+    if hasattr(page, '_picker_running') and page._picker_running:
+        return
 
     is_desktop = page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS)
+
+    async def pick_and_callback():
+        if hasattr(page, '_picker_running') and page._picker_running:
+            return
+        page._picker_running = True
+        try:
+            path = await pick_image_async(page)
+            if path:
+                try:
+                    on_image_selected(path)
+                except Exception as ex:
+                    print(f"[Picker] callback error: {ex}")
+        except Exception as ex:
+            print(f"[Picker] unexpected error: {ex}")
+        finally:
+            page._picker_running = False
 
     def on_gallery(e):
         dlg.open = False
         page.update()
         async def pick():
-            path = await pick_image_async(page)
-            if path:
-                on_image_selected(path)
-            else:
-                if not page._permission_hints['storage']:
-                    page._permission_hints['storage'] = True
-                    show_grant_permission_instructions(page, "存储空间")
-                else:
-                    show_alert(page, "提示", "无法读取图片，请确认已授予存储权限")
+            if not page._permission_hints.get('storage', False):
+                page._permission_hints['storage'] = True
+                show_grant_permission_instructions(page, "存储空间")
+            await pick_and_callback()
         page.run_task(pick)
 
     def on_camera(e):
         dlg.open = False
         page.update()
         async def start_camera():
-            try:
-                show_camera_view(page, on_image_selected)
-            except Exception as err:
-                print("[Camera] open error:", err)
-                if not page._permission_hints['camera']:
-                    page._permission_hints['camera'] = True
-                    show_grant_permission_instructions(page, "相机")
-                else:
-                    show_alert(page, "相机启动失败", "请确认已授予相机权限")
+            if not page._permission_hints.get('camera', False):
+                page._permission_hints['camera'] = True
+                show_grant_permission_instructions(page, "相机")
+            await pick_and_callback()
         page.run_task(start_camera)
 
     def on_cancel(e):
@@ -439,7 +367,6 @@ def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], N
     dlg.open = True
     page.update()
 
-# ---------- 条码解码 ----------
 def _server_decode_image_bytes(img_bytes: bytes) -> List[str]:
     codes: List[str] = []
     if not SERVER_DECODE_URL:
@@ -448,21 +375,11 @@ def _server_decode_image_bytes(img_bytes: bytes) -> List[str]:
         files = {"file": ("img.jpg", img_bytes, "image/jpeg")}
         resp = requests.post(SERVER_DECODE_URL, files=files, timeout=20)
         if resp.status_code != 200:
-            print(f"[ServerDecode] status {resp.status_code}: {resp.text[:200]}")
+            print(f"[ServerDecode] status {resp.status_code}")
             return codes
-        j = None
-        try:
-            j = resp.json()
-        except Exception as ex:
-            txt = resp.text.strip()
-            if txt:
-                codes.append(txt)
-            return codes
-
+        j = resp.json()
         if isinstance(j, list):
             for item in j:
-                if not item:
-                    continue
                 syms = item.get("symbol") or item.get("symbols") or []
                 for s in syms:
                     data = s.get("data")
@@ -475,8 +392,8 @@ def _server_decode_image_bytes(img_bytes: bytes) -> List[str]:
                                     codes.append(str(d).strip())
         elif isinstance(j, dict):
             for k in ("codes", "results", "data", "decoded"):
-                if k in j:
-                    v = j[k]
+                v = j.get(k)
+                if v:
                     if isinstance(v, list):
                         for it in v:
                             if isinstance(it, str):
@@ -486,10 +403,6 @@ def _server_decode_image_bytes(img_bytes: bytes) -> List[str]:
                                 if text:
                                     codes.append(str(text).strip())
                     elif isinstance(v, str):
-                        codes.append(v.strip())
-            if not codes:
-                for _, v in j.items():
-                    if isinstance(v, str) and len(v) > 0:
                         codes.append(v.strip())
         unique = []
         for c in codes:
@@ -501,37 +414,58 @@ def _server_decode_image_bytes(img_bytes: bytes) -> List[str]:
         return []
 
 def barcode_image_decode(file_path: str, prefer_online_if_android: bool = True) -> List[str]:
-    # 直接使用在线解码
-    try:
-        img_bytes = compress_image_to_bytes(file_path)
-        codes = _server_decode_image_bytes(img_bytes)
-        if codes:
-            return codes
-    except Exception as ex:
-        print(f"[Barcode] 在线解码失败: {ex}")
+    result_codes: List[str] = []
 
-    # 最终兜底：本地 pyzbar（可能性低）
+    if prefer_online_if_android and (os.getenv("FLET_LOCAL_PLATFORM", "").lower() == "android" or "ANDROID_ARGUMENT" in os.environ):
+        try:
+            img_bytes = compress_image_to_bytes(file_path)
+            codes = _server_decode_image_bytes(img_bytes)
+            if codes:
+                return codes
+        except Exception as ex:
+            print(f"[barcode] online-first error: {ex}")
+
     try:
         from pyzbar.pyzbar import decode as pyzbar_decode
-        from PIL import Image as PILImageLocal
-        img = PILImageLocal.open(file_path).convert("RGB")
+        img = PILImage.open(file_path).convert("RGB")
         decoded = pyzbar_decode(img)
         for d in decoded:
             s = d.data.decode("utf-8", errors="ignore").strip()
-            if s:
-                return [s]
+            if s and s not in result_codes:
+                result_codes.append(s)
     except Exception as e:
-        print(f"[Barcode] pyzbar 失败: {e}")
-    return []
+        print(f"[barcode] pyzbar error: {e}")
+
+    if not result_codes:
+        try:
+            import cv2
+            img_cv = cv2.imread(file_path)
+            qr_det = cv2.QRCodeDetector()
+            qr_data, _, _ = qr_det.detectAndDecode(img_cv)
+            if qr_data and qr_data.strip():
+                result_codes.append(qr_data.strip())
+        except Exception as e:
+            print(f"[barcode] opencv error: {e}")
+
+    if not result_codes:
+        try:
+            img_bytes = compress_image_to_bytes(file_path)
+            server_codes = _server_decode_image_bytes(img_bytes)
+            for c in server_codes:
+                cs = c.strip()
+                if cs and cs not in result_codes:
+                    result_codes.append(cs)
+        except Exception as ex:
+            print(f"[barcode] server fallback error: {ex}")
+
+    return result_codes
 
 def unified_barcode_scan(page: ft.Page, result_callback: Callable[[str], None], title: str = "扫码识别"):
     print(f"[Barcode] unified_barcode_scan called, title='{title}'")
     def on_image_selected(path):
-        print(f"[Barcode] Image selected: {path}")
         def decode_thread():
             prefer_online = page.platform == ft.PagePlatform.ANDROID
             code_list = barcode_image_decode(path, prefer_online_if_android=prefer_online)
-            print(f"[Barcode] Decoded codes: {code_list}")
             if code_list:
                 result_callback(code_list[0])
             else:
@@ -719,7 +653,31 @@ def get_file_from_db(file_type, biz_no):
     conn.close()
     return row[0] if row else None
 
-# ---------- 主应用 ----------
+def load_saved_credentials():
+    if os.path.exists(CREDENTIALS_FILE):
+        try:
+            with open(CREDENTIALS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("username", ""), data.get("password", "")
+        except:
+            pass
+    return "", ""
+
+def save_credentials(username, password):
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(CREDENTIALS_FILE, "w", encoding="utf-8") as f:
+            json.dump({"username": username, "password": password}, f)
+    except Exception as e:
+        print(f"保存凭据失败: {e}")
+
+def clear_credentials():
+    if os.path.exists(CREDENTIALS_FILE):
+        try:
+            os.remove(CREDENTIALS_FILE)
+        except Exception as e:
+            print(f"清除凭据失败: {e}")
+
 def main(page: ft.Page):
     print("=== APP START ===")
     print(f"Platform: {page.platform}")
@@ -735,16 +693,16 @@ def main(page: ft.Page):
     page.spacing = 0
     page.window_resizable = True
 
-    # 初始化权限提示状态
     if not hasattr(page, '_permission_hints'):
         page._permission_hints = {'camera': False, 'storage': False}
     if not hasattr(page, '_shown_instructions'):
         page._shown_instructions = set()
+    page._picker_running = False
 
     current_user = None
     main_content = ft.Column(expand=True, spacing=0, scroll=ft.ScrollMode.AUTO)
 
-    # ---------- 配置覆盖层 ----------
+    # ---------- 全屏配置覆盖层 ----------
     config_overlay = ft.Container(
         content=ft.Column(
             [
@@ -950,7 +908,7 @@ def main(page: ft.Page):
         config_overlay.visible = False
         page.update()
 
-    # ---------- 登录界面（自动登录功能） ----------
+    # ---------- 登录界面（含自动登录） ----------
     saved_username, saved_password = load_saved_credentials()
 
     username_input = ft.TextField(label="用户名", width=300, autofocus=True, value=saved_username)
@@ -965,7 +923,6 @@ def main(page: ft.Page):
             show_alert(page, "提示", "请输入用户名和密码")
             return
 
-        # 保存或清除凭据
         if remember_cb.value:
             save_credentials(uname, pwd)
         else:
@@ -1139,7 +1096,7 @@ def main(page: ft.Page):
             info += f"\n有效期至：{expire}"
         show_alert(page, "个人资料", info)
 
-    # ==================== 首页 ====================
+    # ---------------------------- 首页 ----------------------------
     def show_home():
         main_content.controls.clear()
         conn = get_db_conn()
@@ -1219,7 +1176,7 @@ def main(page: ft.Page):
         )
         page.update()
 
-    # ==================== 销售订单 ====================
+    # ---------------------------- 销售订单 ----------------------------
     def show_sale():
         main_content.controls.clear()
         order_no = gen_order_no()
@@ -1735,14 +1692,360 @@ def main(page: ft.Page):
             selected_county_text.value = current_county
             load_streets()
 
-    # ==================== 订单查询（因篇幅省略，实际项目中应保留） ====================
+    # ---------------------------- 订单查询 ----------------------------
     def show_order_query():
-        # 此处保留你原有的订单查询代码，内部如果有调用相机/相册，应使用 unified_barcode_scan 或 show_image_source_dialog
         main_content.controls.clear()
-        main_content.controls.append(ft.Text("订单查询功能（保留原代码）"))
+
+        field_width = get_field_width(page, ratio=2, subtract=60)
+        btn_width = field_width / 2
+        order_no_input = ft.TextField(label="订单号", width=field_width)
+        out_order_no_input = ft.TextField(label="外部订单号", width=field_width)
+        cust_name_input = ft.TextField(label="客户姓名", width=field_width)
+        phone_input = ft.TextField(label="联系方式", width=field_width)
+        address_input = ft.TextField(label="地址", width=field_width)
+        brand_input = ft.TextField(label="品牌", width=field_width)
+        category_input = ft.TextField(label="品类", width=field_width)
+        model_input = ft.TextField(label="型号", width=field_width)
+
+        selected_date_str = None
+        date_display = ft.Text("选择日期", size=14, color=ft.Colors.GREY_700)
+
+        def on_date_picked(e):
+            nonlocal selected_date_str
+            if date_picker.value:
+                dt = date_picker.value + timedelta(days=1)
+                selected_date_str = f"{dt.year:04d}-{dt.month:02d}-{dt.day:02d}"
+                date_display.value = selected_date_str
+                date_display.color = ft.Colors.BLACK
+            else:
+                selected_date_str = None
+                date_display.value = "选择日期"
+                date_display.color = ft.Colors.GREY_700
+            date_display.update()
+            date_picker.open = False
+            page.update()
+
+        date_picker = ft.DatePicker(on_change=on_date_picked, first_date=datetime(2020, 1, 1), last_date=datetime(2030, 12, 31))
+        page.overlay.append(date_picker)
+
+        def pick_date(e):
+            date_picker.open = True
+            page.update()
+
+        date_picker_btn = ft.Container(
+            content=ft.Row([ft.Icon(ft.Icons.CALENDAR_TODAY, size=20, color=ft.Colors.BLUE), date_display],
+                           alignment=ft.MainAxisAlignment.START, spacing=5),
+            padding=ft.Padding(left=10, top=8, right=10, bottom=8),
+            border=ft.Border.all(1, ft.Colors.OUTLINE),
+            border_radius=8,
+            width=field_width,
+            on_click=pick_date,
+            ink=True,
+        )
+
+        result_list = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO)
+
+        def load_orders(is_default=False):
+            result_list.controls.clear()
+            order_no = order_no_input.value.strip() if order_no_input.value else None
+            out_order_no = out_order_no_input.value.strip() if out_order_no_input.value else None
+            cust_name = cust_name_input.value.strip() if cust_name_input.value else None
+            phone = phone_input.value.strip() if phone_input.value else None
+            address = address_input.value.strip() if address_input.value else None
+            brand = brand_input.value.strip() if brand_input.value else None
+            category = category_input.value.strip() if category_input.value else None
+            model = model_input.value.strip() if model_input.value else None
+
+            if is_default:
+                date_val = datetime.now().strftime("%Y-%m-%d")
+            else:
+                date_val = selected_date_str
+
+            conn = get_db_conn()
+            if not conn:
+                result_list.controls.append(ft.Text("数据库连接失败"))
+                page.update()
+                return
+            cur = conn.cursor()
+            sql = """
+                SELECT DISTINCT 
+                    m.order_no, m.order_date, m.cust_name, m.phone, m.full_addr,
+                    GROUP_CONCAT(DISTINCT i.model SEPARATOR ', ') AS models,
+                    IFNULL(SUM(i.total), 0) AS total_amount
+                FROM sale_main m
+                JOIN sale_items i ON m.order_no = i.order_no
+                WHERE 1=1
+            """
+            params = []
+            if order_no:
+                sql += " AND m.order_no LIKE %s"
+                params.append(f"%{order_no}%")
+            if out_order_no:
+                sql += " AND i.out_order_no LIKE %s"
+                params.append(f"%{out_order_no}%")
+            if cust_name:
+                sql += " AND m.cust_name LIKE %s"
+                params.append(f"%{cust_name}%")
+            if phone:
+                sql += " AND m.phone LIKE %s"
+                params.append(f"%{phone}%")
+            if address:
+                sql += " AND m.full_addr LIKE %s"
+                params.append(f"%{address}%")
+            if brand:
+                sql += " AND i.factory LIKE %s"
+                params.append(f"%{brand}%")
+            if category:
+                sql += " AND i.category LIKE %s"
+                params.append(f"%{category}%")
+            if model:
+                sql += " AND i.model LIKE %s"
+                params.append(f"%{model}%")
+            if date_val:
+                sql += " AND DATE(m.order_date) = %s"
+                params.append(date_val)
+            sql += " GROUP BY m.order_no, m.order_date, m.cust_name, m.phone, m.full_addr ORDER BY m.order_date DESC"
+
+            try:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+                conn.close()
+            except Exception as ex:
+                conn.close()
+                result_list.controls.append(ft.Text(f"查询失败: {ex}"))
+                page.update()
+                return
+
+            if not rows:
+                result_list.controls.append(ft.Text("未找到订单，请调整查询条件", size=16))
+                page.update()
+                return
+
+            for row in rows:
+                order_no, order_date, cust_name, phone, full_addr, models, total = row
+                total = float(total) if total else 0.0
+                card = ft.Card(
+                    content=ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Text(f"订单号: {order_no}", weight=ft.FontWeight.BOLD),
+                                ft.Text(f"日期: {order_date}  客户: {cust_name}  电话: {phone}"),
+                                ft.Text(f"地址: {full_addr}"),
+                                ft.Text(f"商品: {models or '无商品'}"),
+                                ft.Text(f"总金额: ¥{total:.2f}", color=ft.Colors.GREEN, weight=ft.FontWeight.BOLD),
+                            ],
+                            spacing=5,
+                        ),
+                        padding=15,
+                        on_click=lambda e, o=order_no: show_order_detail(o),
+                    ),
+                    elevation=2,
+                )
+                result_list.controls.append(card)
+            page.update()
+
+        def reset_search():
+            nonlocal selected_date_str
+            order_no_input.value = ""
+            out_order_no_input.value = ""
+            cust_name_input.value = ""
+            phone_input.value = ""
+            address_input.value = ""
+            brand_input.value = ""
+            category_input.value = ""
+            model_input.value = ""
+            selected_date_str = None
+            date_display.value = "选择日期"
+            date_display.color = ft.Colors.GREY_700
+            date_display.update()
+            load_orders(is_default=True)
+
+        # 订单详情弹窗
+        def show_order_detail(order_no):
+            detail_win = ft.AlertDialog(
+                title=ft.Text(f"订单详情 - {order_no}"),
+                content=ft.Column(
+                    [
+                        ft.Text("商品明细:", weight=ft.FontWeight.BOLD),
+                        ft.Column(spacing=5),
+                    ],
+                    spacing=10,
+                    scroll=ft.ScrollMode.AUTO,
+                    width=min(get_window_width(page) * 0.9 if get_window_width(page) else 400, 500),
+                    height=min(get_window_width(page) * 0.9 if get_window_width(page) else 500, 600),
+                ),
+                actions=[
+                    ft.TextButton("关闭", on_click=lambda e: setattr(detail_win, 'open', False))
+                ],
+            )
+            page.overlay.append(detail_win)
+            detail_win.open = True
+            page.update()
+
+            def load_items():
+                container = detail_win.content.controls[1]
+                container.controls.clear()
+                conn = get_db_conn()
+                if not conn:
+                    container.controls.append(ft.Text("数据库连接失败"))
+                    page.update()
+                    return
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT out_order_no, model, qty, total, full_out_no, id 
+                    FROM sale_items 
+                    WHERE order_no = %s
+                """, (order_no,))
+                rows = cur.fetchall()
+                conn.close()
+                if not rows:
+                    container.controls.append(ft.Text("无商品明细"))
+                    page.update()
+                    return
+                for row in rows:
+                    out_no, model, qty, total, full_out_no, item_id = row
+                    total = float(total) if total else 0.0
+                    item_card = ft.Card(
+                        content=ft.Container(
+                            content=ft.Column(
+                                [
+                                    ft.Row(
+                                        [
+                                            ft.Text(f"{model} x {qty}", weight=ft.FontWeight.BOLD),
+                                            ft.Text(f"¥{total:.2f}", color=ft.Colors.GREEN),
+                                        ],
+                                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                    ),
+                                    ft.Text(f"外部单号: {out_no}", size=12),
+                                    ft.Text(f"完整外部单号: {full_out_no or '未录入'}", size=12,
+                                            color=ft.Colors.BLUE if full_out_no else ft.Colors.GREY),
+                                    ft.Row(
+                                        [
+                                            ft.IconButton(
+                                                ft.Icons.CAMERA_ALT,
+                                                icon_size=20,
+                                                tooltip="拍摄支付凭证并识别二维码",
+                                                on_click=lambda e, o=order_no, out=out_no, item=item_id:
+                                                capture_payment_voucher(o, out, item)
+                                            ),
+                                            ft.Text("拍摄凭证", size=12),
+                                        ],
+                                        alignment=ft.MainAxisAlignment.END,
+                                    ),
+                                ],
+                                spacing=5,
+                            ),
+                            padding=10,
+                        ),
+                        elevation=1,
+                    )
+                    container.controls.append(item_card)
+                page.update()
+
+            # 拍摄支付凭证
+            def capture_payment_voucher(order_no, out_order_no, item_id):
+                detail_win.open = False
+                page.update()
+
+                async def start():
+                    path = await pick_image_async(page)
+                    if not path:
+                        return
+                    print(f"[Voucher] Image selected: {path}")
+                    code_list = barcode_image_decode(path)
+                    scan_code = code_list[0].strip() if code_list else ""
+                    print(f"[Voucher] Decoded code: {scan_code}")
+
+                    preview_img = ft.Image(src=path, width=300, fit=ft.ImageFit.CONTAIN)
+                    scan_tip_text = ft.Text(f"识别凭证号：{scan_code if scan_code else '未识别到二维码'}", size=14)
+
+                    def btn_confirm_upload(ev):
+                        print("[Voucher] Confirm upload")
+                        upload_result = upload_image_to_db(
+                            page=page,
+                            file_path=path,
+                            file_type="pay_voucher",
+                            biz_no=order_no,
+                            delete_old=True
+                        )
+                        if upload_result:
+                            if scan_code:
+                                conn = get_db_conn()
+                                if conn:
+                                    cur = conn.cursor()
+                                    cur.execute("UPDATE sale_items SET full_out_no = %s WHERE id = %s",
+                                                (scan_code, item_id))
+                                    conn.commit()
+                                    conn.close()
+                                    print(f"[Voucher] Updated full_out_no for item {item_id}")
+                            preview_dlg.open = False
+                            page.update()
+                            def clean():
+                                if preview_dlg in page.overlay:
+                                    page.overlay.remove(preview_dlg)
+                                    page.update()
+                            threading.Timer(0.1, clean).start()
+                            load_items()
+                            show_alert(page, "操作成功", "支付凭证已上传，单号已自动录入")
+                        else:
+                            show_alert(page, "上传失败", "图片存入数据库异常，请重试")
+                        page.update()
+
+                    def btn_retake(ev):
+                        preview_dlg.open = False
+                        page.update()
+                        def re_open():
+                            capture_payment_voucher(order_no, out_order_no, item_id)
+                        threading.Timer(0.1, re_open).start()
+
+                    preview_dlg = ft.AlertDialog(
+                        title=ft.Text("预览支付凭证", weight=ft.FontWeight.BOLD),
+                        content=ft.Column([preview_img, scan_tip_text], tight=True),
+                        modal=True,
+                        actions=[
+                            ft.TextButton("重新拍摄", on_click=btn_retake),
+                            ft.Button("确认上传", bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE,
+                                      on_click=btn_confirm_upload)
+                        ]
+                    )
+                    page.overlay.append(preview_dlg)
+                    preview_dlg.open = True
+                    page.update()
+
+                page.run_task(start)
+
+            load_items()
+
+        def on_query_click(e):
+            load_orders(is_default=False)
+
+        action_row = ft.Row(
+            [
+                date_picker_btn,
+                ft.Button("查询", icon=ft.Icons.SEARCH, on_click=on_query_click, width=btn_width),
+                ft.Button("重置", on_click=lambda e: reset_search(), width=btn_width),
+            ],
+            spacing=10,
+        )
+
+        query_panel = ft.Column(
+            [
+                ft.Text("订单查询", size=20, weight=ft.FontWeight.BOLD),
+                ft.Row([order_no_input, out_order_no_input], spacing=10),
+                ft.Row([cust_name_input, phone_input], spacing=10),
+                ft.Row([address_input, brand_input], spacing=10),
+                ft.Row([category_input, model_input], spacing=10),
+                action_row,
+                ft.Divider(height=10),
+                result_list,
+            ],
+            spacing=10,
+        )
+        main_content.controls.append(query_panel)
+        load_orders(is_default=True)
         page.update()
 
-    # ==================== 入库管理 ====================
+    # ---------------------------- 入库管理 ----------------------------
     def show_inbound():
         nonlocal current_user
         main_content.controls.clear()
@@ -1976,6 +2279,7 @@ def main(page: ft.Page):
         )
         page.update()
 
+    # 注：运输管理、安装管理、库存管理、更多菜单等函数将在第三部分继续
     # ---------------------------- 运输管理 ----------------------------
     def show_transport():
         main_content.controls.clear()
@@ -2449,7 +2753,6 @@ def main(page: ft.Page):
                     ]
                 )
 
-                # 直接显示对话框，不再检查权限（系统会自动弹出授权）
                 page.overlay.append(sn_dialog)
                 sn_dialog.open = True
                 page.update()
@@ -3518,7 +3821,6 @@ def main(page: ft.Page):
         )
 
         load_stock()
-
     def show_more_menu():
         main_content.controls.clear()
         menu_items = ft.Column([
