@@ -223,17 +223,30 @@ def compress_image_to_bytes(file_path: str, max_long_edge: int = MAX_IMAGE_LONG_
         img.convert("RGB").save(buf, format="JPEG", quality=80, optimize=True)
         return buf.getvalue()
 
+# ========== Android 持久化 FilePicker + 桌面动态创建 ==========
 async def pick_image_async(page: ft.Page) -> Optional[str]:
+    # 防止重入
     if hasattr(page, '_picker_lock') and page._picker_lock:
         return None
     page._picker_lock = True
     path_result = None
-    picker = ft.FilePicker()
-    page.overlay.append(picker)
-    page.update()
-    await asyncio.sleep(0.15)
-
     event = asyncio.Event()
+
+    # Android 平台使用持久化的 FilePicker
+    if page.platform == ft.PagePlatform.ANDROID:
+        if not hasattr(page, '_persistent_picker'):
+            picker = ft.FilePicker()
+            page._persistent_picker = picker
+            page.overlay.append(picker)
+        else:
+            picker = page._persistent_picker
+        # 确保未从 overlay 移除（极少情况）
+        if picker not in page.overlay:
+            page.overlay.append(picker)
+    else:
+        # 桌面端每次动态创建
+        picker = ft.FilePicker()
+        page.overlay.append(picker)
 
     def on_result(e: ft.FilePickerResultEvent):
         nonlocal path_result
@@ -268,16 +281,19 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
     except Exception as ex:
         print(f"[Picker] 异常: {ex}")
     finally:
-        try:
-            if picker in page.overlay:
-                page.overlay.remove(picker)
-        except Exception:
-            pass
+        picker.on_result = None
+        # 桌面端用完即移除
+        if page.platform != ft.PagePlatform.ANDROID:
+            try:
+                if picker in page.overlay:
+                    page.overlay.remove(picker)
+            except Exception:
+                pass
         page._picker_lock = False
     return path_result
 
 def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
-    """显示摄像头预览界面，拍照后回调"""
+    """显示摄像头预览界面，拍照后回调；桌面端则打开文件选择器"""
     if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS):
         async def desktop_fallback():
             path = await pick_image_async(page)
@@ -357,13 +373,11 @@ def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], N
         dlg.open = False
         page.update()
         async def do_pick():
-            await asyncio.sleep(0.2)
             if not page._permission_hints.get('storage', False):
                 page._permission_hints['storage'] = True
                 page.snack_bar = ft.SnackBar(ft.Text("请确保已授予存储权限"))
                 page.snack_bar.open = True
                 page.update()
-                await asyncio.sleep(0.1)
             await pick_and_callback()
         page.run_task(do_pick)
 
@@ -371,18 +385,15 @@ def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], N
         dlg.open = False
         page.update()
         async def do_camera():
-            await asyncio.sleep(0.2)
             if not page._permission_hints.get('camera', False):
                 page._permission_hints['camera'] = True
                 page.snack_bar = ft.SnackBar(ft.Text("请确保已授予相机权限"))
                 page.snack_bar.open = True
                 page.update()
-                await asyncio.sleep(0.1)
             try:
                 show_camera_view(page, on_image_selected)
             except Exception as ex:
                 print(f"[Camera] 启动失败: {ex}")
-                # 回退到相册
                 await pick_and_callback()
         page.run_task(do_camera)
 
@@ -444,6 +455,7 @@ def unified_barcode_scan(page: ft.Page, result_callback: Callable[[str], None], 
                 show_alert(page, "识别失败", "未识别到条码，请更换清晰图片重试")
         threading.Thread(target=decode_thread, daemon=True).start()
     show_image_source_dialog(page, on_image_selected, title)
+
 
 def get_product_by_model(model):
     conn = get_db_conn()
@@ -650,17 +662,11 @@ def clear_credentials():
         except Exception as e:
             print(f"清除凭据失败: {e}")
 
-# ======================== 主函数 ========================
 def main(page: ft.Page):
     print("=== APP START ===")
     print(f"Platform: {page.platform}")
 
     page.title = "玖诚电器ERP"
-    try:
-        page.window_icon = resource_path("logo.ico")
-        page.icon = resource_path("login_bg.png")
-    except:
-        pass
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 0
     page.spacing = 0
@@ -669,10 +675,16 @@ def main(page: ft.Page):
     page._picker_lock = False
     page._permission_hints = {'camera': False, 'storage': False}
 
+    # Android 平台预创建持久 FilePicker，确保通道就绪
+    if page.platform == ft.PagePlatform.ANDROID:
+        page._persistent_picker = ft.FilePicker()
+        page.overlay.append(page._persistent_picker)
+
     current_user = None
     main_content = ft.Column(expand=True, spacing=0, scroll=ft.ScrollMode.AUTO)
 
-    # 配置界面
+
+    # ---------- 配置界面 ----------
     config_overlay = ft.Container(
         content=ft.Column(
             [
@@ -738,6 +750,7 @@ def main(page: ft.Page):
                     decoded = base64.b64decode(raw_text).decode("utf-8")
                 except Exception:
                     decoded = raw_text
+
                 if resp.status_code != 200:
                     error_tip.value = f"读取失败：HTTP {resp.status_code}"
                     error_tip.color = ft.Colors.RED
@@ -748,6 +761,7 @@ def main(page: ft.Page):
                     error_tip.color = ft.Colors.RED
                     page.update()
                     return
+
                 if ":" in decoded:
                     fields = get_fields()
                     fields["host"].value = decoded
@@ -786,8 +800,12 @@ def main(page: ft.Page):
             threading.Timer(0.1, clean).start()
 
         dialog_content = ft.Container(
-            content=ft.Stack([input_tf, ft.Row([error_tip], alignment=ft.MainAxisAlignment.CENTER, top=78)]),
-            width=280, height=95
+            content=ft.Stack([
+                input_tf,
+                ft.Row([error_tip], alignment=ft.MainAxisAlignment.CENTER, top=78)
+            ]),
+            width=280,
+            height=95
         )
 
         input_dlg = ft.AlertDialog(
@@ -795,7 +813,10 @@ def main(page: ft.Page):
             content=dialog_content,
             modal=True,
             content_padding=ft.Padding(16, 10, 16, 8),
-            actions=[ft.TextButton("确定", on_click=on_submit), ft.TextButton("取消", on_click=on_cancel)]
+            actions=[
+                ft.TextButton("确定", on_click=on_submit),
+                ft.TextButton("取消", on_click=on_cancel),
+            ]
         )
         page.overlay.append(input_dlg)
         input_dlg.open = True
@@ -808,9 +829,11 @@ def main(page: ft.Page):
         user = fields["user"].value.strip()
         pwd = fields["pwd"].value.strip()
         db = fields["db"].value.strip()
+
         if not host or not port_str or not user or not db:
             show_alert(page,"提示", "请填写完整的连接信息")
             return
+
         try:
             port = int(port_str)
             conn = mysql.connector.connect(
@@ -834,10 +857,15 @@ def main(page: ft.Page):
 
         save_server_config(host, port, user, pwd, db)
         global DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_DATABASE
-        DB_HOST = host; DB_PORT = port; DB_USER = user; DB_PASSWORD = pwd; DB_DATABASE = db
+        DB_HOST = host
+        DB_PORT = port
+        DB_USER = user
+        DB_PASSWORD = pwd
+        DB_DATABASE = db
 
         config_overlay.visible = False
         page.update()
+
         def on_ok(e):
             page.dialog.open = False
             page.update()
@@ -862,8 +890,9 @@ def main(page: ft.Page):
         config_overlay.visible = False
         page.update()
 
-    # 登录
+    # ---------- 登录 ----------
     saved_username, saved_password = load_saved_credentials()
+
     username_input = ft.TextField(label="用户名", width=300, autofocus=True, value=saved_username)
     password_input = ft.TextField(label="密码", password=True, can_reveal_password=True, width=300, value=saved_password)
     remember_cb = ft.Checkbox(label="自动登录", value=bool(saved_username and saved_password))
@@ -875,10 +904,12 @@ def main(page: ft.Page):
         if not uname or not pwd:
             show_alert(page, "提示", "请输入用户名和密码")
             return
+
         if remember_cb.value:
             save_credentials(uname, pwd)
         else:
             clear_credentials()
+
         conn = get_db_conn()
         if not conn:
             show_alert(page, "提示", "数据库连接失败，请检查服务器配置")
@@ -907,20 +938,34 @@ def main(page: ft.Page):
             ft.Container(height=20),
             ft.Text("玖诚电器ERP", size=32, weight=ft.FontWeight.BOLD),
             ft.Image(src=get_asset_path("login_bg.png"), width=100, height=100),
-            username_input, password_input, remember_cb, login_btn,
+            username_input,
+            password_input,
+            remember_cb,
+            login_btn,
         ],
-        horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=15,
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        spacing=15,
     )
 
     login_container = ft.Container(
-        content=login_column, alignment=ft.Alignment(0, 0), expand=True,
+        content=login_column,
+        alignment=ft.Alignment(0, 0),
+        expand=True,
         padding=ft.Padding(top=30, left=0, right=0, bottom=0),
     )
 
-    page.add(ft.Stack([login_container, config_overlay], expand=True))
+    page.add(
+        ft.Stack(
+            [
+                login_container,
+                config_overlay,
+            ],
+            expand=True,
+        )
+    )
     page.update()
 
-    # 自动获取IPv6
+    # 后台自动获取IPv6
     def auto_fetch_ipv6():
         key = "songtaotianmaoyoupin"
         try:
@@ -946,9 +991,10 @@ def main(page: ft.Page):
                 print("[Auto IPv6] 获取失败，HTTP状态码:", resp.status_code)
         except Exception as e:
             print(f"[Auto IPv6] 异常: {e}")
+
     threading.Thread(target=auto_fetch_ipv6, daemon=True).start()
 
-    # 主界面框架
+    # ---------- 主界面框架 ----------
     def build_main_ui():
         page.controls.clear()
         page.scroll = None
@@ -973,14 +1019,32 @@ def main(page: ft.Page):
         destinations = []
         for p in PERMISSIONS:
             if p in perm_list:
-                destinations.append(ft.NavigationBarDestination(icon=PERMISSION_ICONS.get(p, ft.Icons.HELP), label=p))
+                destinations.append(
+                    ft.NavigationBarDestination(
+                        icon=PERMISSION_ICONS.get(p, ft.Icons.HELP),
+                        label=p
+                    )
+                )
 
-        nav_bar = ft.NavigationBar(destinations=destinations, on_change=on_nav_change, elevation=8)
+        nav_bar = ft.NavigationBar(
+            destinations=destinations,
+            on_change=on_nav_change,
+            elevation=8
+        )
+
         main_content.controls.clear()
         main_content.expand = True
         main_content.scroll = ft.ScrollMode.AUTO
 
-        main_layout = ft.Column([appbar, main_content, nav_bar], spacing=0, expand=True)
+        main_layout = ft.Column(
+            [
+                appbar,
+                main_content,
+                nav_bar,
+            ],
+            spacing=0,
+            expand=True,
+        )
         page.add(main_layout)
         show_home()
 
@@ -988,21 +1052,30 @@ def main(page: ft.Page):
         selected_index = e.control.selected_index
         if selected_index < len(e.control.destinations):
             label = e.control.destinations[selected_index].label
-            if label == "🏠 首页": show_home()
-            elif label == "🧾 销售": show_sale()
-            elif label == "📥 入库": show_inbound()
-            elif label == "🚚 运输": show_transport()
-            elif label == "🔧 安装": show_install()
-            elif label == "📦 库存": show_stock()
-            elif label == "更多": show_more_menu()
+            if label == "🏠 首页":
+                show_home()
+            elif label == "🧾 销售":
+                show_sale()
+            elif label == "📥 入库":
+                show_inbound()
+            elif label == "🚚 运输":
+                show_transport()
+            elif label == "🔧 安装":
+                show_install()
+            elif label == "📦 库存":
+                show_stock()
+            elif label == "更多":
+                show_more_menu()
 
     def show_profile():
-        if not current_user: return
+        if not current_user:
+            return
         name = current_user.get("real_name") or current_user.get("username")
         role = current_user.get("role", "")
         expire = current_user.get("expire_date", "")
         info = f"用户名：{name}\n角色：{role}"
-        if expire: info += f"\n有效期至：{expire}"
+        if expire:
+            info += f"\n有效期至：{expire}"
         show_alert(page, "个人资料", info)
 
     # 首页
