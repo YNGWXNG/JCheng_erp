@@ -30,7 +30,16 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      # 新增：缓存 Android SDK，大幅加速后续构建
+      - name: Install system dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            unzip wget \
+            libzbar0 \
+            libjpeg-dev zlib1g-dev libfreetype6-dev
+        shell: bash
+
       - name: Cache Android SDK
         uses: actions/cache@v4
         id: android-sdk-cache
@@ -42,37 +51,29 @@ jobs:
         if: steps.android-sdk-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          sudo apt-get update && sudo apt-get install -y unzip wget
 
           ANDROID_SDK_ROOT="$RUNNER_TEMP/android-sdk"
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
 
-          # 下载并解压命令行工具
           TOOL_URL="https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip"
           wget -q -O cmdline-tools.zip "$TOOL_URL"
           unzip -q cmdline-tools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
           rm cmdline-tools.zip
 
-          # 修正目录结构为官方标准格式 cmdline-tools/latest/bin
           mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
-
-          # 授权并配置环境变量
           chmod -R +x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin"
 
           SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           
-          # 接受所有许可证（子shell关闭pipefail，规避管道破裂）
           (set +o pipefail; yes | "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" --licenses > /dev/null)
           
-          # 安装构建所需组件（升级到 API 34 适配新版 Flet）
           "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0"
         shell: bash
 
-      # 全局注入 SDK 环境变量（缓存命中时也会执行）
       - name: Set Android SDK environment
         run: |
           ANDROID_SDK_ROOT="$RUNNER_TEMP/android-sdk"
@@ -81,7 +82,21 @@ jobs:
           echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
         shell: bash
 
-      # 新增：缓存 Gradle 依赖
+      - name: Set up Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.7'
+          channel: 'stable'
+          cache: true
+
+      - name: Configure Flutter for Android build
+        run: |
+          set -euo pipefail
+          flutter config --android-sdk "$ANDROID_SDK_ROOT"
+          (set +o pipefail; yes | flutter doctor --android-licenses)
+          flutter doctor -v || true
+        shell: bash
+
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -98,7 +113,8 @@ jobs:
           java -version
           python --version
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          sdkmanager --version || true
+          sdkmanager --version
+          flutter --version
           flet --version || true
         shell: bash
 
