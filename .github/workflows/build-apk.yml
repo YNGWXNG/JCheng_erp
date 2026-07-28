@@ -30,7 +30,16 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
+      # 新增：缓存 Android SDK，大幅加速后续构建
+      - name: Cache Android SDK
+        uses: actions/cache@v4
+        id: android-sdk-cache
+        with:
+          path: ${{ runner.temp }}/android-sdk
+          key: android-sdk-34-34.0.0-8512546
+
       - name: Install Android SDK command-line tools
+        if: steps.android-sdk-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           sudo apt-get update && sudo apt-get install -y unzip wget
@@ -39,43 +48,59 @@ jobs:
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
 
-          cd "$ANDROID_SDK_ROOT"
+          # 下载并解压命令行工具
           TOOL_URL="https://dl.google.com/android/repository/commandlinetools-linux-8512546_latest.zip"
           wget -q -O cmdline-tools.zip "$TOOL_URL"
-          unzip -q cmdline-tools.zip -d cmdline-tools
+          unzip -q cmdline-tools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
           rm cmdline-tools.zip
 
-          if [ -d cmdline-tools/cmdline-tools ]; then
-            mv cmdline-tools/cmdline-tools cmdline-tools/latest || true
-          else
-            for d in cmdline-tools/*; do
-              if [ -d "$d/bin" ]; then
-                mkdir -p cmdline-tools/latest
-                mv "$d"/* cmdline-tools/latest/ 2>/dev/null || true
-                break
-              fi
-            done
-          fi
+          # 修正目录结构为官方标准格式 cmdline-tools/latest/bin
+          mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
 
-          chmod -R +x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" || true
-          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
-          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+          # 授权并配置环境变量
+          chmod -R +x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin"
 
           SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          (set +o pipefail; yes 2>/dev/null | "$SDKMANAGER" --licenses)
-          "$SDKMANAGER" "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+          
+          # 接受所有许可证（显式指定 sdk_root）
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" --licenses > /dev/null
+          
+          # 安装构建所需组件（升级到 API 34 适配新版 Flet）
+          "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
         shell: bash
+
+      # 全局注入 SDK 环境变量（缓存命中时也会执行）
+      - name: Set Android SDK environment
+        run: |
+          ANDROID_SDK_ROOT="$RUNNER_TEMP/android-sdk"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+        shell: bash
+
+      # 新增：缓存 Gradle 依赖
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
 
       - name: Show environment
         run: |
           echo "JAVA_HOME=$JAVA_HOME"
-          java -version || true
-          python --version || true
+          java -version
+          python --version
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          ls -la "$ANDROID_SDK_ROOT" || true
-        env:
-          ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
+          sdkmanager --version || true
+          flet --version || true
+        shell: bash
 
       - name: Install Python dependencies
         run: |
@@ -86,12 +111,12 @@ jobs:
       - name: Build APK
         run: |
           set -euo pipefail
-          (set +o pipefail; yes 2>/dev/null | flet build apk --verbose \
+          flet build apk --verbose \
             --android-permissions android.permission.INTERNET=true \
             --android-permissions android.permission.CAMERA=true \
             --android-permissions android.permission.READ_EXTERNAL_STORAGE=true \
             --android-permissions android.permission.WRITE_EXTERNAL_STORAGE=true \
-            --android-permissions android.permission.READ_MEDIA_IMAGES=true)
+            --android-permissions android.permission.READ_MEDIA_IMAGES=true
         shell: bash
 
       - name: Upload APK artifact
