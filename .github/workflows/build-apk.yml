@@ -98,6 +98,8 @@ jobs:
             --android-permissions android.permission.READ_MEDIA_IMAGES=true \
             --android-permissions android.permission.WRITE_MEDIA_IMAGES=true \
             --android-permissions android.permission.READ_EXTERNAL_STORAGE=true \
+            --android-permissions android.permission.RECORD_AUDIO=true \
+            --android-permissions android.hardware.camera.autofocus=true \
             --android-permissions android.permission.WRITE_EXTERNAL_STORAGE=true
         shell: bash
 
