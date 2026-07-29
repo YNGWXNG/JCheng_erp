@@ -95,7 +95,10 @@ jobs:
           flet build apk --verbose \
             --android-permissions android.permission.INTERNET=true \
             --android-permissions android.permission.CAMERA=true \
-            --android-permissions android.permission.READ_MEDIA_IMAGES=true
+            --android-permissions android.permission.READ_MEDIA_IMAGES=true \
+            --android-permissions android.permission.WRITE_MEDIA_IMAGES=true \
+            --android-permissions android.permission.READ_EXTERNAL_STORAGE=true \
+            --android-permissions android.permission.WRITE_EXTERNAL_STORAGE=true
         shell: bash
 
       - name: Upload APK artifact
