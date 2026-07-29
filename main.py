@@ -247,204 +247,104 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
         return None
     page._picker_lock = True
     path_result = None
+    picker = None
 
     try:
-        # 如果是桌面端，优先尝试 FilePicker
-        if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS):
-            print("[Picker] 桌面端尝试 FilePicker")
-            try:
-                picker = ft.FilePicker()
-                page.overlay.append(picker)
-                page.update()
-                await asyncio.sleep(0.2)
-
-                event = asyncio.Event()
-
-                def on_result(e: ft.FilePickerResultEvent):
-                    nonlocal path_result
-                    print("[Picker] FilePicker on_result called")
-                    if e.files and len(e.files) > 0:
-                        path_result = resolve_picker_file(page, e.files[0])
-                        print(f"[Picker] resolved path: {path_result}")
-                    event.set()
-
-                picker.on_result = on_result
-                await picker.pick_files(
-                    allow_multiple=False,
-                    file_type=ft.FilePickerFileType.IMAGE,
-                    allowed_extensions=["jpg", "jpeg", "png", "bmp"],
-                    dialog_title="选择图片"
-                )
-                # 等待用户选择（最长60秒）
-                await asyncio.wait_for(event.wait(), timeout=60)
-                print("[Picker] FilePicker 成功返回")
-                # 清理
-                if picker in page.overlay:
-                    page.overlay.remove(picker)
-                    page.update()
-                return path_result
-            except asyncio.TimeoutError:
-                print("[Picker] FilePicker 超时，回退到 tkinter")
-            except Exception as ex:
-                print(f"[Picker] FilePicker 异常: {ex}，回退到 tkinter")
-            finally:
-                if picker and picker in page.overlay:
-                    page.overlay.remove(picker)
-                    page.update()
-
-        # 桌面端回退：使用 tkinter（如果平台是桌面）
-        if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS):
-            print("[Picker] 使用 tkinter 选择文件")
-            try:
-                import tkinter.filedialog
-                # tkinter 需要在主线程运行，使用 asyncio.to_thread 避免阻塞
-                def tkinter_pick():
-                    root = tkinter.Tk()
-                    root.withdraw()  # 隐藏主窗口
-                    file_path = tkinter.filedialog.askopenfilename(
-                        title="选择图片",
-                        filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.gif")]
-                    )
-                    root.destroy()
-                    return file_path if file_path else None
-                path_result = await asyncio.to_thread(tkinter_pick)
-                if path_result:
-                    print(f"[Picker] tkinter 选择: {path_result}")
-                else:
-                    print("[Picker] tkinter 未选择文件")
-                return path_result
-            except Exception as e:
-                print(f"[Picker] tkinter 回退失败: {e}")
-                return None
-
-        # 安卓端使用 FilePicker（持久化）
+        # 跳过权限申请，直接使用 FilePicker
+        # 统一使用持久化 FilePicker（Android + 桌面均采用）
         if not hasattr(page, '_persistent_picker') or page._persistent_picker is None:
             picker = ft.FilePicker()
             page._persistent_picker = picker
             page.overlay.append(picker)
+            print("[Picker] 创建持久化 FilePicker")
         else:
             picker = page._persistent_picker
             if picker not in page.overlay:
                 page.overlay.append(picker)
+            print("[Picker] 复用持久化 FilePicker")
+
+        # 强制刷新确保控件渲染
         page.update()
+        await asyncio.sleep(0.2)
 
         event = asyncio.Event()
         def on_result(e: ft.FilePickerResultEvent):
             nonlocal path_result
-            print("[Picker] Android on_result called")
+            print("[Picker] on_result called")
             if e.files and len(e.files) > 0:
                 path_result = resolve_picker_file(page, e.files[0])
                 print(f"[Picker] resolved path: {path_result}")
+            else:
+                print("[Picker] 用户取消选择")
             event.set()
 
         picker.on_result = on_result
+        print("[Picker] 调用 pick_files...")
         await picker.pick_files(
             allow_multiple=False,
             file_type=ft.FilePickerFileType.IMAGE,
             dialog_title="选择图片"
         )
-        await asyncio.wait_for(event.wait(), timeout=60)
-        return path_result
+        print("[Picker] pick_files 返回，等待用户操作...")
+        try:
+            await asyncio.wait_for(event.wait(), timeout=60)
+            print("[Picker] 事件已触发")
+        except asyncio.TimeoutError:
+            print("[Picker] 等待用户选择超时（可能用户取消或系统未响应）")
 
     except Exception as ex:
         print(f"[Picker] 整体异常: {ex}")
-        return None
     finally:
+        if picker:
+            picker.on_result = None
         page._picker_lock = False
         print(f"[Picker] 退出, path_result={path_result}")
+        return path_result
 
 def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
-    """
-    相机拍照（全修复版 + 详细日志）
-    修复：新版权限API、协程规范、资源释放、异常降级
-    """
     print("[Camera] show_camera_view 被调用")
     print(f"[Camera] 当前平台: {page.platform}")
 
-    # 桌面端直接走相册降级
     if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS):
-        print("[Camera] 检测到桌面端，降级到相册选择")
         async def desktop_fallback():
-            print("[Camera] 调用 pick_image_async (桌面降级)")
             path = await pick_image_async(page)
             if path:
-                print(f"[Camera] 相册选择了图片: {path}")
                 on_picture_taken(path)
-            else:
-                print("[Camera] 相册未选择图片")
         page.run_task(desktop_fallback)
         return
 
     async def request_and_start():
         print("[Camera] 进入 request_and_start 协程")
-        # 1. 申请相机权限
-        try:
-            print("[Camera] 开始申请相机权限...")
-            status = await page.permissions.request(ft.Permission.CAMERA)
-            print(f"[Camera] 权限申请返回状态: {status}")
-            if status == ft.PermissionStatus.GRANTED:
-                print("[Camera] 相机权限已授予")
-            else:
-                print("[Camera] 相机权限被拒绝，切换至相册")
-                show_snack(page, "相机权限被拒绝，切换至相册", ft.Colors.RED)
-                path = await pick_image_async(page)
-                if path:
-                    print(f"[Camera] 相册选择了图片: {path}")
-                    on_picture_taken(path)
-                else:
-                    print("[Camera] 相册未选择图片")
-                return
-        except Exception as e:
-            print(f"[Camera] 权限申请异常: {e}")
-            show_snack(page, f"权限申请失败: {str(e)[:30]}", ft.Colors.RED)
-            path = await pick_image_async(page)
-            if path:
-                print(f"[Camera] 相册选择了图片: {path}")
-                on_picture_taken(path)
-            else:
-                print("[Camera] 相册未选择图片")
-            return
-
+        # 跳过权限申请，直接启动相机
+        print("[Camera] 跳过权限申请，直接启动相机（假设已手动授权）")
         # 2. 启动相机
         print("[Camera] 开始创建相机控件...")
         camera_ref = ft.Ref[fc.Camera]()
         camera_container = None
 
         def close_camera():
-            print("[Camera] close_camera 被调用")
             nonlocal camera_container
             try:
                 if camera_ref.current:
-                    print("[Camera] 正在释放相机资源...")
                     try:
                         camera_ref.current.dispose()
-                        print("[Camera] 相机资源已释放")
-                    except Exception as e:
-                        print(f"[Camera] 释放相机时异常: {e}")
+                    except:
+                        pass
                 if camera_container and camera_container in page.overlay:
-                    print("[Camera] 从 overlay 移除相机容器")
                     page.overlay.remove(camera_container)
                     page.update()
-                    print("[Camera] 相机容器已移除")
-            except Exception as e:
-                print(f"[Camera] close_camera 异常: {e}")
+            except:
+                pass
 
         async def take_picture():
-            print("[Camera] take_picture 被调用")
             try:
                 if not camera_ref.current:
-                    print("[Camera] 错误: camera_ref.current 为空")
                     raise Exception("相机未就绪")
-                print("[Camera] 正在拍照...")
                 path = await camera_ref.current.take_picture()
-                print(f"[Camera] 拍照返回路径: {path}")
                 if path and os.path.exists(path):
-                    print(f"[Camera] 照片文件存在: {path}")
                     close_camera()
-                    print("[Camera] 调用 on_picture_taken 回调")
                     on_picture_taken(path)
                 else:
-                    print("[Camera] 拍照路径无效或文件不存在")
                     raise Exception("拍照路径无效")
             except Exception as ex:
                 print(f"[Camera] 拍照失败: {ex}")
@@ -452,42 +352,27 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                 show_snack(page, "拍照失败，切换至相册", ft.Colors.RED)
                 path = await pick_image_async(page)
                 if path:
-                    print(f"[Camera] 相册选择了图片: {path}")
                     on_picture_taken(path)
-                else:
-                    print("[Camera] 相册未选择图片")
 
-        # 构建相机 UI
-        print("[Camera] 构建相机 UI 容器...")
         camera_container = ft.Container(
             expand=True,
             bgcolor=ft.Colors.BLACK,
             content=ft.Stack([
                 fc.Camera(ref=camera_ref, expand=True),
                 ft.Row([
-                    ft.IconButton(
-                        ft.Icons.CAMERA_ALT,
-                        icon_size=48,
-                        on_click=lambda e: page.run_task(take_picture),
-                        style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=15)
-                    ),
-                    ft.IconButton(
-                        ft.Icons.CLOSE,
-                        icon_size=32,
-                        on_click=lambda e: close_camera(),
-                        style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=10)
-                    ),
+                    ft.IconButton(ft.Icons.CAMERA_ALT, icon_size=48,
+                                  on_click=lambda e: page.run_task(take_picture),
+                                  style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=15)),
+                    ft.IconButton(ft.Icons.CLOSE, icon_size=32,
+                                  on_click=lambda e: close_camera(),
+                                  style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=10)),
                 ], alignment=ft.MainAxisAlignment.CENTER, spacing=30, bottom=40)
             ])
         )
-        print("[Camera] 将相机容器添加到 overlay")
         page.overlay.append(camera_container)
         page.update()
-        print("[Camera] 相机 UI 已显示，等待用户操作")
 
-    print("[Camera] 启动 request_and_start 协程")
     page.run_task(request_and_start)
-    print("[Camera] request_and_start 已调度（异步执行）")
 
 def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], None], title: str = "选择图片"):
     close_all_dialogs(page)
