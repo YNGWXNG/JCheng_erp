@@ -250,8 +250,23 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
     picker = None
 
     try:
-        # 跳过权限申请，直接使用 FilePicker
-        # 统一使用持久化 FilePicker（Android + 桌面均采用）
+        # Android端检查存储权限（不主动申请，只提示）
+        if page.platform == ft.PagePlatform.ANDROID:
+            # 尝试检测存储权限（通过 has_permission 等，如果存在的话）
+            # 由于我们不申请权限，这里仅打印提示
+            print("[Picker] Android 平台，请确保已授予存储权限（READ_EXTERNAL_STORAGE / READ_MEDIA_IMAGES）")
+            # 可以尝试用 page.window.has_permission 检查（如果存在）
+            if hasattr(page, 'window') and hasattr(page.window, 'has_permission'):
+                try:
+                    has_perm = await page.window.has_permission(ft.Permission.PHOTOS)
+                    if not has_perm:
+                        print("[Picker] 存储权限未授予，用户需手动开启")
+                        show_snack(page, "存储权限未授予，请前往系统设置开启", ft.Colors.RED)
+                        # 仍然尝试执行，因为可能已经授权但检测失败
+                except:
+                    pass
+
+        # 统一使用持久化 FilePicker
         if not hasattr(page, '_persistent_picker') or page._persistent_picker is None:
             picker = ft.FilePicker()
             page._persistent_picker = picker
@@ -263,7 +278,6 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
                 page.overlay.append(picker)
             print("[Picker] 复用持久化 FilePicker")
 
-        # 强制刷新确保控件渲染
         page.update()
         await asyncio.sleep(0.2)
 
@@ -299,7 +313,7 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
             picker.on_result = None
         page._picker_lock = False
         print(f"[Picker] 退出, path_result={path_result}")
-        return path_result
+    return path_result
 
 def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
     print("[Camera] show_camera_view 被调用")
@@ -313,35 +327,80 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         page.run_task(desktop_fallback)
         return
 
-    async def request_and_start():
-        print("[Camera] 进入 request_and_start 协程")
-        # 跳过权限申请，直接启动相机
-        print("[Camera] 跳过权限申请，直接启动相机（假设已手动授权）")
-        # 2. 启动相机
-        print("[Camera] 开始创建相机控件...")
+    async def start_camera():
+        print("[Camera] 进入 start_camera 协程")
         camera_ref = ft.Ref[fc.Camera]()
         camera_container = None
 
         def close_camera():
             nonlocal camera_container
+            print("[Camera] close_camera 被调用")
             try:
                 if camera_ref.current:
+                    print("[Camera] 正在释放相机资源...")
                     try:
                         camera_ref.current.dispose()
-                    except:
-                        pass
+                        print("[Camera] 相机资源已释放")
+                    except Exception as e:
+                        print(f"[Camera] 释放相机时异常: {e}")
                 if camera_container and camera_container in page.overlay:
+                    print("[Camera] 从 overlay 移除相机容器")
                     page.overlay.remove(camera_container)
                     page.update()
-            except:
-                pass
+            except Exception as e:
+                print(f"[Camera] close_camera 异常: {e}")
+
+        try:
+            print("[Camera] 创建 Camera 控件...")
+            camera = fc.Camera(ref=camera_ref, expand=True)
+            print("[Camera] Camera 控件创建成功")
+
+            # 构建 UI
+            camera_container = ft.Container(
+                expand=True,
+                bgcolor=ft.Colors.BLACK,
+                content=ft.Stack([
+                    camera,
+                    ft.Row([
+                        ft.IconButton(
+                            ft.Icons.CAMERA_ALT,
+                            icon_size=48,
+                            on_click=lambda e: page.run_task(take_picture),
+                            style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=15)
+                        ),
+                        ft.IconButton(
+                            ft.Icons.CLOSE,
+                            icon_size=32,
+                            on_click=lambda e: close_camera(),
+                            style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=10)
+                        ),
+                    ], alignment=ft.MainAxisAlignment.CENTER, spacing=30, bottom=40)
+                ])
+            )
+            print("[Camera] 容器构建完成，添加到 overlay")
+            page.overlay.append(camera_container)
+            page.update()
+            print("[Camera] UI 更新完成，等待用户操作")
+
+        except Exception as e:
+            print(f"[Camera] 启动相机时发生异常: {e}")
+            # 降级到相册
+            show_snack(page, f"相机启动失败: {str(e)[:30]}，切换至相册", ft.Colors.RED)
+            path = await pick_image_async(page)
+            if path:
+                on_picture_taken(path)
 
         async def take_picture():
+            print("[Camera] take_picture 被调用")
             try:
                 if not camera_ref.current:
+                    print("[Camera] 错误: camera_ref.current 为空")
                     raise Exception("相机未就绪")
+                print("[Camera] 正在拍照...")
                 path = await camera_ref.current.take_picture()
+                print(f"[Camera] 拍照返回路径: {path}")
                 if path and os.path.exists(path):
+                    print("[Camera] 照片文件存在，关闭相机并回调")
                     close_camera()
                     on_picture_taken(path)
                 else:
@@ -354,25 +413,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                 if path:
                     on_picture_taken(path)
 
-        camera_container = ft.Container(
-            expand=True,
-            bgcolor=ft.Colors.BLACK,
-            content=ft.Stack([
-                fc.Camera(ref=camera_ref, expand=True),
-                ft.Row([
-                    ft.IconButton(ft.Icons.CAMERA_ALT, icon_size=48,
-                                  on_click=lambda e: page.run_task(take_picture),
-                                  style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=15)),
-                    ft.IconButton(ft.Icons.CLOSE, icon_size=32,
-                                  on_click=lambda e: close_camera(),
-                                  style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=10)),
-                ], alignment=ft.MainAxisAlignment.CENTER, spacing=30, bottom=40)
-            ])
-        )
-        page.overlay.append(camera_container)
-        page.update()
-
-    page.run_task(request_and_start)
+    page.run_task(start_camera)
 
 def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], None], title: str = "选择图片"):
     close_all_dialogs(page)
