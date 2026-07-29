@@ -147,9 +147,8 @@ def resource_path(relative_path):
     except:
         return os.path.join(os.path.abspath("."), relative_path)
 
-# ====================== 弹窗统一管理（核心修复：协程错误） ======================
+# ====================== 弹窗统一管理 ======================
 def close_all_dialogs(page: ft.Page):
-    """关闭并移除所有弹窗，解决堆叠、层级混乱问题"""
     to_remove = []
     for ctrl in list(page.overlay):
         if isinstance(ctrl, (ft.AlertDialog, ft.DatePicker, ft.BottomSheet)):
@@ -166,7 +165,6 @@ def close_all_dialogs(page: ft.Page):
             pass
 
 def safe_remove_dialog(page: ft.Page, dialog):
-    """安全延迟移除弹窗，避免动画中断"""
     def _remove():
         if dialog in page.overlay:
             try:
@@ -177,20 +175,13 @@ def safe_remove_dialog(page: ft.Page, dialog):
     threading.Timer(0.15, _remove).start()
 
 def show_alert(page: ft.Page, title, content, on_ok=None):
-    """
-    统一提示弹窗
-    修复：移除错误的run_task包裹同步函数，彻底解决 handler must be a coroutine function
-    """
     close_all_dialogs(page)
-
     async def handle_ok(e):
         dlg.open = False
         page.update()
         safe_remove_dialog(page, dlg)
         if on_ok:
-            # 直接执行回调，不滥用run_task；同步回调可正常执行
             on_ok(e)
-
     dlg = ft.AlertDialog(
         title=ft.Text(title, weight=ft.FontWeight.BOLD),
         content=ft.Text(content),
@@ -201,12 +192,15 @@ def show_alert(page: ft.Page, title, content, on_ok=None):
     dlg.open = True
     page.update()
 
-# ====================== 文件/相册/相机 核心修复（权限API + FilePicker渲染） ======================
+def show_snack(page: ft.Page, msg, bgcolor=ft.Colors.GREY_800):
+    page.snack_bar = ft.SnackBar(ft.Text(msg), bgcolor=bgcolor)
+    page.snack_bar.open = True
+    page.update()
+
+# ====================== 文件/相册/相机（全修复） ======================
 def resolve_picker_file(page: ft.Page, file: ft.FilePickerFile) -> Optional[str]:
-    """重构文件解析，修复安卓content:// URI读取失败"""
     if not file:
         return None
-    # 优先使用字节数据（安卓全版本通用）
     if hasattr(file, "data") and file.data:
         try:
             ext = os.path.splitext(file.name or "")[1] or ".jpg"
@@ -217,10 +211,8 @@ def resolve_picker_file(page: ft.Page, file: ft.FilePickerFile) -> Optional[str]
             return tmp.name
         except Exception as e:
             print(f"[FileResolver] data write error: {e}")
-    # 本地路径（桌面/安卓旧版）
     if file.path and os.path.exists(file.path):
         return file.path
-    # 安卓content URI兜底
     if file.path and file.path.startswith("content://"):
         try:
             file_obj = page.get_file(file.path)
@@ -248,34 +240,25 @@ def compress_image_to_bytes(file_path: str, max_long_edge: int = MAX_IMAGE_LONG_
         return buf.getvalue()
 
 async def pick_image_async(page: ft.Page) -> Optional[str]:
-    """
-    异步选择图片（全修复版）
-    修复：1. 新版权限API  2. FilePicker延迟初始化（消除启动红色占位）
-         3. 持久化复用通道  4. 锁机制防重入
-    """
     if hasattr(page, '_picker_lock') and page._picker_lock:
         print("[Picker] 已有选择器运行，跳过")
         return None
     page._picker_lock = True
-
     path_result = None
     event = asyncio.Event()
     picker = None
-
     try:
-        # 安卓端先申请相册权限（新版权限API）
+        # Android 申请相册权限
         if page.platform == ft.PagePlatform.ANDROID:
             try:
                 status = await page.permissions.request(ft.Permission.PHOTOS)
                 if status != ft.PermissionStatus.GRANTED:
-                    page.snack_bar = ft.SnackBar(ft.Text("存储权限被拒绝，无法选择图片"))
-                    page.snack_bar.open = True
-                    page.update()
+                    show_snack(page, "存储权限被拒绝，无法选择图片", ft.Colors.RED)
                     return None
             except Exception as e:
                 print(f"[Picker] 权限申请异常: {e}")
 
-            # 延迟初始化持久化Picker，避免启动时渲染红色占位
+            # 使用持久化Picker，延迟初始化
             if not hasattr(page, '_persistent_picker') or page._persistent_picker is None:
                 picker = ft.FilePicker()
                 page._persistent_picker = picker
@@ -314,7 +297,6 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
                 dialog_title="选择图片"
             )
         await asyncio.wait_for(event.wait(), timeout=120)
-
     except asyncio.TimeoutError:
         print("[Picker] 超时")
     except asyncio.CancelledError:
@@ -330,15 +312,11 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
                         page.overlay.remove(picker)
                 except Exception:
                     pass
-        page._picker_lock = False  # 确保锁一定释放
+        page._picker_lock = False
     return path_result
 
 def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
-    """
-    相机拍照（全修复版）
-    修复：新版权限API、协程规范、资源释放、异常降级
-    """
-    # 桌面端直接走相册降级
+    # 桌面端降级到相册
     if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS):
         async def desktop_fallback():
             path = await pick_image_async(page)
@@ -348,16 +326,11 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         return
 
     async def request_and_start():
-        # 1. 申请相机权限（新版权限API）
+        # 1. 申请相机权限
         try:
             status = await page.permissions.request(ft.Permission.CAMERA)
-            granted = (status == ft.PermissionStatus.GRANTED)
-
-            if not granted:
-                page.snack_bar = ft.SnackBar(ft.Text("相机权限被拒绝，已切换至相册"))
-                page.snack_bar.open = True
-                page.update()
-                # 降级到相册
+            if status != ft.PermissionStatus.GRANTED:
+                show_snack(page, "相机权限被拒绝，切换至相册", ft.Colors.RED)
                 path = await pick_image_async(page)
                 if path:
                     on_picture_taken(path)
@@ -378,7 +351,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
             try:
                 if camera_ref.current:
                     try:
-                        camera_ref.current.dispose()  # 释放相机资源
+                        camera_ref.current.dispose()
                     except:
                         pass
                 if camera_container and camera_container in page.overlay:
@@ -398,9 +371,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
             except Exception as ex:
                 print(f"[Camera] 拍照失败: {ex}")
                 close_camera()
-                page.snack_bar = ft.SnackBar(ft.Text("拍照失败，已切换至相册"))
-                page.snack_bar.open = True
-                page.update()
+                show_snack(page, "拍照失败，切换至相册", ft.Colors.RED)
                 path = await pick_image_async(page)
                 if path:
                     on_picture_taken(path)
@@ -427,9 +398,6 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
 
 def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], None], title: str = "选择图片"):
     close_all_dialogs(page)
-    if not hasattr(page, '_permission_hints'):
-        page._permission_hints = {'camera': False, 'storage': False}
-
     is_desktop = page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS)
 
     async def pick_and_callback():
@@ -489,7 +457,7 @@ def barcode_image_decode(file_path: str) -> List[str]:
     try:
         img_bytes = compress_image_to_bytes(file_path)
         files = {"file": ("img.jpg", img_bytes, "image/jpeg")}
-        resp = requests.post(SERVER_DECODE_URL, files=files, timeout=20)
+        resp = requests.post(SERVER_DECODE_URL, files=files, timeout=15)
         if resp.status_code == 200:
             j = resp.json()
             codes = []
@@ -506,17 +474,14 @@ def barcode_image_decode(file_path: str) -> List[str]:
 
 def unified_barcode_scan(page: ft.Page, result_callback: Callable[[str], None], title: str = "扫码识别"):
     print(f"[Barcode] unified_barcode_scan called, title='{title}'")
-
     def on_image_selected(path):
         def decode_thread():
             code_list = barcode_image_decode(path)
             if code_list:
-                # 后台线程直接调用，Flet 支持跨线程UI更新
                 result_callback(code_list[0])
             else:
                 show_alert(page, "识别失败", "未识别到条码，请更换清晰图片重试")
         threading.Thread(target=decode_thread, daemon=True).start()
-
     show_image_source_dialog(page, on_image_selected, title)
 
 # ====================== 业务工具函数 ======================
@@ -725,7 +690,7 @@ def clear_credentials():
         except Exception as e:
             print(f"清除凭据失败: {e}")
 
-# ====================== 主程序入口 ======================
+# ====================== 主程序 ======================
 def main(page: ft.Page):
     print("=== APP START ===")
     print(f"Platform: {page.platform}")
@@ -736,9 +701,7 @@ def main(page: ft.Page):
     page.window_resizable = True
 
     page._picker_lock = False
-    page._permission_hints = {'camera': False, 'storage': False}
-    page._persistent_picker = None  # 延迟初始化，消除启动时红色未知控件
-
+    page._persistent_picker = None
     current_user = None
     main_content = ft.Column(expand=True, spacing=0, scroll=ft.ScrollMode.AUTO)
 
@@ -751,7 +714,8 @@ def main(page: ft.Page):
                 ft.TextField(label="服务器地址（支持IPv6）", value=DB_HOST, width=300),
                 ft.TextField(label="端口", value=str(DB_PORT), width=300),
                 ft.TextField(label="数据库用户名", value=DB_USER, width=300),
-                ft.TextField(label="数据库密码", password=True, can_reveal_password=True, value=DB_PASSWORD, width=300),
+                ft.TextField(label="数据库密码", password=True, can_reveal_password=True, value=DB_PASSWORD, width=300,
+                             on_blur=lambda e: setattr(e.control, 'password', True) or e.control.update()),
                 ft.TextField(label="数据库名称", value=DB_DATABASE, width=300),
                 ft.Divider(height=10),
                 ft.Column(
@@ -920,7 +884,7 @@ def main(page: ft.Page):
             nonlocal current_user
             current_user = None
             page.controls.clear()
-            page.add(login_container)
+            page.add(ft.Stack([login_container, config_overlay], expand=True))
             page.update()
 
         show_alert(page, "配置保存成功", "数据库配置已更新，请重新登录", on_ok)
@@ -942,10 +906,20 @@ def main(page: ft.Page):
     # ---------- 登录 ----------
     saved_username, saved_password = load_saved_credentials()
     username_input = ft.TextField(label="用户名", width=300, autofocus=True, value=saved_username)
-    password_input = ft.TextField(label="密码", password=True, can_reveal_password=True, width=300, value=saved_password)
+
+    # 密码输入框：保留眼睛图标，但失去焦点自动隐藏明文
+    password_input = ft.TextField(
+        label="密码",
+        password=True,
+        can_reveal_password=True,
+        width=300,
+        value=saved_password,
+        on_blur=lambda e: setattr(e.control, 'password', True) or e.control.update()
+    )
+
     remember_cb = ft.Checkbox(label="自动登录", value=bool(saved_username and saved_password))
 
-    def do_login(e):
+    def login_action():
         nonlocal current_user
         uname = username_input.value.strip()
         pwd = password_input.value.strip()
@@ -976,6 +950,9 @@ def main(page: ft.Page):
             build_main_ui()
         else:
             show_alert(page, "提示", "用户名或密码错误")
+
+    def do_login(e):
+        login_action()
 
     login_btn = ft.Button("登录", on_click=do_login, width=300)
     settings_btn = ft.IconButton(ft.Icons.SETTINGS, on_click=show_config)
@@ -1012,7 +989,7 @@ def main(page: ft.Page):
     )
     page.update()
 
-    # 后台自动获取IPv6
+    # 自动获取IPv6（后台）
     def auto_fetch_ipv6():
         key = "songtaotianmaoyoupin"
         try:
@@ -1031,7 +1008,6 @@ def main(page: ft.Page):
                     global DB_HOST
                     DB_HOST = decoded
                     print(f"[Auto IPv6] 已自动获取并设置IPv6: {decoded}")
-                    # 后台线程直接调用page.update()，Flet支持跨线程，无需run_task
                     page.update()
                 else:
                     print("[Auto IPv6] 获取的内容不是有效IPv6，跳过")
@@ -1041,6 +1017,14 @@ def main(page: ft.Page):
             print(f"[Auto IPv6] 异常: {e}")
 
     threading.Thread(target=auto_fetch_ipv6, daemon=True).start()
+
+    # ---------- 自动登录（如果勾选了自动登录） ----------
+    if remember_cb.value and saved_username and saved_password:
+        def auto_login():
+            async def login_wrapper():
+                login_action()
+            page.run_task(login_wrapper)
+        threading.Timer(0.5, auto_login).start()
 
     # ---------- 主界面框架 ----------
     def build_main_ui():
@@ -3022,16 +3006,12 @@ def main(page: ft.Page):
                 fee = float(fee_field.value or 0) if fee_field.value else 0
                 remark = remark_field.value.strip()
                 if not installer:
-                    page.snack_bar = ft.SnackBar(ft.Text("请填写安装人"), bgcolor="#ef4444")
-                    page.snack_bar.open = True
-                    page.update()
+                    show_snack(page, "请填写安装人", ft.Colors.RED)
                     return
 
                 conn = get_db_conn()
                 if not conn:
-                    page.snack_bar = ft.SnackBar(ft.Text("数据库连接失败"), bgcolor="#ef4444")
-                    page.snack_bar.open = True
-                    page.update()
+                    show_snack(page, "数据库连接失败", ft.Colors.RED)
                     return
                 cur = conn.cursor()
                 try:
@@ -4378,11 +4358,13 @@ ID: {row[0]}
         load_users()
         page.update()
 
+    # ---------- 退出登录 ----------
     def logout_handler(e):
         nonlocal current_user
         current_user = None
         page.controls.clear()
-        page.add(login_container)
+        # 重新添加包含 login_container 和 config_overlay 的 Stack，确保齿轮按钮可用
+        page.add(ft.Stack([login_container, config_overlay], expand=True))
         page.update()
 
     # ---------------------------- 个人中心 ----------------------------
