@@ -112,7 +112,7 @@ jobs:
         run: |
           set -euo pipefail
           # 自动读取根目录 build.yaml 配置，无需重复传权限参数
-          flet build apk --verbose --release
+          flet build apk --verbose
         shell: bash
 
       - name: Upload APK artifact
