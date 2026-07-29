@@ -1,27 +1,32 @@
-app_name: 玖诚电器ERP
+app_name: JCheng
 
 android:
   package: com.flet.jcheng_erp
-  label: 玖诚电器ERP
+  label: JCheng_ERP
   build_type: release
 
-  # 所有权限统一在这里声明，构建时自动注入清单
   permissions:
-    - "android.permission.INTERNET"
-    - "android.permission.ACCESS_NETWORK_STATE"
-    - "android.permission.CAMERA"
-    - "android.permission.READ_MEDIA_IMAGES"
-    - "android.permission.READ_MEDIA_VIDEO"
-    - "android.permission.READ_EXTERNAL_STORAGE"
-    - "android.permission.WRITE_EXTERNAL_STORAGE"
+    # 通用普通权限（全版本生效）
+    - android.permission.INTERNET
+    - android.permission.ACCESS_NETWORK_STATE
+    - android.permission.CAMERA
+    # Android 13(API33+) 媒体读写
+    - android.permission.READ_MEDIA_IMAGES
+    - android.permission.READ_MEDIA_VIDEO
+    - android.permission.WRITE_MEDIA_IMAGES
+    # Android 12及以下专用存储，限制maxSdkVersion=32
+    - name: android.permission.READ_EXTERNAL_STORAGE
+      maxSdkVersion: 32
+    - name: android.permission.WRITE_EXTERNAL_STORAGE
+      maxSdkVersion: 32
 
-  # 相机非强制硬件，无相机设备也可安装
+  # 相机硬件非必需设备可安装
   features:
-    - name: "android.hardware.camera"
+    - name: android.hardware.camera
       required: false
-    - name: "android.hardware.camera.autofocus"
-      required: false
+    - name: android.hardware.camera.autofocus
+      required: true
 
   application:
-    # 兼容 Android 10 以下存储访问
+    # 仅 Android 10/11(API29、30) 启用传统存储模式
     requestLegacyExternalStorage: true
