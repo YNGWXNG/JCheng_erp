@@ -185,7 +185,7 @@ def show_alert(page: ft.Page, title, content, on_ok=None):
 
     async def handle_ok(e):
         dlg.open = False
-        await page.update_async()
+        page.update()
         safe_remove_dialog(page, dlg)
         if on_ok:
             # 直接执行回调，不滥用run_task；同步回调可正常执行
@@ -270,7 +270,7 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
                 if status != ft.PermissionStatus.GRANTED:
                     page.snack_bar = ft.SnackBar(ft.Text("存储权限被拒绝，无法选择图片"))
                     page.snack_bar.open = True
-                    await page.update_async()
+                    page.update()
                     return None
             except Exception as e:
                 print(f"[Picker] 权限申请异常: {e}")
@@ -356,7 +356,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
             if not granted:
                 page.snack_bar = ft.SnackBar(ft.Text("相机权限被拒绝，已切换至相册"))
                 page.snack_bar.open = True
-                await page.update_async()
+                page.update()
                 # 降级到相册
                 path = await pick_image_async(page)
                 if path:
@@ -400,7 +400,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                 close_camera()
                 page.snack_bar = ft.SnackBar(ft.Text("拍照失败，已切换至相册"))
                 page.snack_bar.open = True
-                await page.update_async()
+                page.update()
                 path = await pick_image_async(page)
                 if path:
                     on_picture_taken(path)
@@ -421,7 +421,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
             ])
         )
         page.overlay.append(camera_container)
-        await page.update_async()
+        page.update()
 
     page.run_task(request_and_start)
 
