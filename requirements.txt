@@ -7,3 +7,5 @@ reportlab==4.2.2
 pyzbar==0.1.8
 numpy==2.4.6
 plyer==2.1.0
+pyjnius==1.7.0          # 关键：plyer 在 Android 上依赖 jnius
+flet-permission-handler # 新增权限处理库
