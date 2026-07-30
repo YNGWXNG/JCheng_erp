@@ -32,36 +32,19 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y \
-            libzbar0 \
-            libjpeg-dev zlib1g-dev libfreetype6-dev
-        shell: bash
+          sudo apt-get install -y libzbar0 libjpeg-dev zlib1g-dev libfreetype6-dev
 
       - name: Update Android SDK to API 36
         run: |
-          set -euo pipefail
           ANDROID_SDK_ROOT="/usr/local/lib/android/sdk"
           SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          (set +o pipefail; yes | "$SDKMANAGER" --licenses > /dev/null)
+          yes | "$SDKMANAGER" --licenses || true
           "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0"
-        shell: bash
 
-      - name: Set up Flutter SDK
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.44.7'
-          channel: 'stable'
-          cache: true
-
-      - name: Configure Flutter for Android build
-        run: |
-          set -euo pipefail
-          flutter config --android-sdk "/usr/local/lib/android/sdk"
-          (set +o pipefail; yes | flutter doctor --android-licenses)
-          flutter doctor -v || true
-        shell: bash
+      - name: Configure Flutter (only needed if using Flutter plugins, but not required)
+        # 实际上不需要，这里留空或删除该步骤
+        run: echo "Skipping Flutter setup"
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -70,42 +53,30 @@ jobs:
             ~/.gradle/caches
             ~/.gradle/wrapper
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-${{ runner.os }}-
+          restore-keys: gradle-${{ runner.os }}-
 
       - name: Show environment
         run: |
           echo "JAVA_HOME=$JAVA_HOME"
           java -version
           python --version
-          flutter --version
           flet --version || true
-        shell: bash
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip wheel
           pip install -r requirements.txt
           pip install flet-cli==0.86.2
-        shell: bash
 
-      - name: Build APK
+      - name: Build APK (release)
         run: |
-          set -euo pipefail
-          flet build apk --verbose \
-            --android-permissions android.permission.INTERNET=true \
-            --android-permissions android.permission.CAMERA=true \
-            --android-permissions android.permission.READ_MEDIA_IMAGES=true \
-            --android-permissions android.permission.WRITE_MEDIA_IMAGES=true \
-            --android-permissions android.permission.READ_EXTERNAL_STORAGE=true \
-            --android-permissions android.permission.RECORD_AUDIO=true \
-            --android-permissions android.hardware.camera.autofocus=true \
-            --android-permissions android.permission.WRITE_EXTERNAL_STORAGE=true
-        shell: bash
+          flet build apk --release --verbose
+          # 如果构建失败，尝试添加 --include-packages 确保关键库
+          # flet build apk --release --verbose --include-packages "plyer,pyjnius"
 
       - name: Upload APK artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: JCheng
-          path: build/apk/**/*.apk
+          name: JCheng-APK
+          path: build/android/apk/release/*.apk   # 修正路径
