@@ -315,105 +315,50 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
         print(f"[Picker] 退出, path_result={path_result}")
     return path_result
 
+
 def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
-    print("[Camera] show_camera_view 被调用")
-    print(f"[Camera] 当前平台: {page.platform}")
+    """
+    使用 plyer 调用系统相机拍照，返回图片文件路径
+    """
+    print("[Camera] show_camera_view 被调用（使用 plyer）")
 
-    if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS):
-        async def desktop_fallback():
-            path = await pick_image_async(page)
-            if path:
-                on_picture_taken(path)
-        page.run_task(desktop_fallback)
-        return
+    def camera_callback(file_path):
+        if file_path and os.path.exists(file_path):
+            print(f"[Camera] 拍照成功，路径: {file_path}")
+            on_picture_taken(file_path)
+        else:
+            print("[Camera] 拍照失败或取消")
+            show_snack(page, "拍照失败，请重试或从相册选择", ft.Colors.RED)
 
-    async def start_camera():
-        print("[Camera] 进入 start_camera 协程")
-        camera_ref = ft.Ref[fc.Camera]()
-        camera_container = None
-
-        def close_camera():
-            nonlocal camera_container
-            print("[Camera] close_camera 被调用")
-            try:
-                if camera_ref.current:
-                    print("[Camera] 正在释放相机资源...")
-                    try:
-                        camera_ref.current.dispose()
-                        print("[Camera] 相机资源已释放")
-                    except Exception as e:
-                        print(f"[Camera] 释放相机时异常: {e}")
-                if camera_container and camera_container in page.overlay:
-                    print("[Camera] 从 overlay 移除相机容器")
-                    page.overlay.remove(camera_container)
-                    page.update()
-            except Exception as e:
-                print(f"[Camera] close_camera 异常: {e}")
-
-        try:
-            print("[Camera] 创建 Camera 控件...")
-            camera = fc.Camera(ref=camera_ref, expand=True)
-            print("[Camera] Camera 控件创建成功")
-
-            # 构建 UI
-            camera_container = ft.Container(
-                expand=True,
-                bgcolor=ft.Colors.BLACK,
-                content=ft.Stack([
-                    camera,
-                    ft.Row([
-                        ft.IconButton(
-                            ft.Icons.CAMERA_ALT,
-                            icon_size=48,
-                            on_click=lambda e: page.run_task(take_picture),
-                            style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=15)
-                        ),
-                        ft.IconButton(
-                            ft.Icons.CLOSE,
-                            icon_size=32,
-                            on_click=lambda e: close_camera(),
-                            style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=10)
-                        ),
-                    ], alignment=ft.MainAxisAlignment.CENTER, spacing=30, bottom=40)
-                ])
-            )
-            print("[Camera] 容器构建完成，添加到 overlay")
-            page.overlay.append(camera_container)
-            page.update()
-            print("[Camera] UI 更新完成，等待用户操作")
-
-        except Exception as e:
-            print(f"[Camera] 启动相机时发生异常: {e}")
-            # 降级到相册
-            show_snack(page, f"相机启动失败: {str(e)[:30]}，切换至相册", ft.Colors.RED)
-            path = await pick_image_async(page)
-            if path:
-                on_picture_taken(path)
-
-        async def take_picture():
-            print("[Camera] take_picture 被调用")
-            try:
-                if not camera_ref.current:
-                    print("[Camera] 错误: camera_ref.current 为空")
-                    raise Exception("相机未就绪")
-                print("[Camera] 正在拍照...")
-                path = await camera_ref.current.take_picture()
-                print(f"[Camera] 拍照返回路径: {path}")
-                if path and os.path.exists(path):
-                    print("[Camera] 照片文件存在，关闭相机并回调")
-                    close_camera()
-                    on_picture_taken(path)
-                else:
-                    raise Exception("拍照路径无效")
-            except Exception as ex:
-                print(f"[Camera] 拍照失败: {ex}")
-                close_camera()
-                show_snack(page, "拍照失败，切换至相册", ft.Colors.RED)
+            # 降级到相册选择
+            async def fallback():
                 path = await pick_image_async(page)
                 if path:
                     on_picture_taken(path)
 
-    page.run_task(start_camera)
+            page.run_task(fallback)
+
+    def take_photo():
+        try:
+            from plyer import camera
+            # plyer 的 camera.take_picture 会异步启动系统相机
+            camera.take_picture(
+                filename=None,  # 使用默认存储位置，返回路径
+                on_complete=camera_callback
+            )
+        except Exception as e:
+            print(f"[Camera] plyer 相机启动失败: {e}")
+            show_snack(page, f"相机启动失败: {str(e)[:30]}，切换至相册", ft.Colors.RED)
+
+            async def fallback():
+                path = await pick_image_async(page)
+                if path:
+                    on_picture_taken(path)
+
+            page.run_task(fallback)
+
+    # 在 Android 上需要确保相机权限已授予（用户手动授权）
+    take_photo()
 
 def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], None], title: str = "选择图片"):
     close_all_dialogs(page)
@@ -437,11 +382,8 @@ def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], N
         dlg.open = False
         page.update()
         safe_remove_dialog(page, dlg)
-        try:
-            show_camera_view(page, on_image_selected)
-        except Exception as ex:
-            print(f"[Camera] 启动失败: {ex}")
-            page.run_task(pick_and_callback)
+        # 调用新的相机函数
+        show_camera_view(page, on_image_selected)
 
     def on_cancel(e):
         dlg.open = False
