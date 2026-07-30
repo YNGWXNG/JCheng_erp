@@ -1,4 +1,5 @@
 import flet as ft
+import flet_permission_handler as fph
 import mysql.connector
 from datetime import datetime, date, timedelta
 import hashlib
@@ -250,30 +251,28 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
     event = asyncio.Event()
 
     try:
-        # Android 端请求存储权限
+        # Android 端使用 flet-permission-handler 请求存储权限
         if page.platform == ft.PagePlatform.ANDROID:
-            print("[Picker] Android 平台，检查存储权限...")
-            try:
-                from android.permissions import request_permissions, Permission, check_permission
-                print("[Picker] android.permissions 导入成功")
-                if not check_permission(Permission.READ_EXTERNAL_STORAGE):
-                    print("[Picker] 存储权限未授予，请求中...")
-                    request_permissions([Permission.READ_EXTERNAL_STORAGE])
-                    # 等待权限请求（短暂延时让系统处理）
-                    import time
-                    time.sleep(1)
-                    if check_permission(Permission.READ_EXTERNAL_STORAGE):
-                        print("[Picker] 存储权限已授予")
-                    else:
-                        print("[Picker] 存储权限被拒绝")
-                        show_snack(page, "存储权限被拒绝，无法选择图片", ft.Colors.RED)
-                        return None
+            ph = page._permission_handler
+            print("[Picker] 请求存储权限...")
+
+            # 根据 Android 版本选择正确的权限 token
+            if hasattr(fph.Permission, 'READ_MEDIA_IMAGES'):
+                perm = fph.Permission.READ_MEDIA_IMAGES
+            elif hasattr(fph.Permission, 'READ_EXTERNAL_STORAGE'):
+                perm = fph.Permission.READ_EXTERNAL_STORAGE
+            else:
+                perm = fph.Permission.PHOTOS  # 某些版本可能使用 PHOTOS
+
+            status = await ph.request(perm)
+            print(f"[Picker] 权限结果: {status}")
+            if status != fph.PermissionStatus.GRANTED:
+                if status == fph.PermissionStatus.PERMANENTLY_DENIED:
+                    show_snack(page, "存储权限被永久拒绝，请前往系统设置开启", ft.Colors.RED)
                 else:
-                    print("[Picker] 存储权限已授予")
-            except ImportError:
-                print("[Picker] android.permissions 不可用，假设已授权")
-            except Exception as e:
-                print(f"[Picker] 权限检查异常: {e}，继续尝试")
+                    show_snack(page, "存储权限被拒绝，无法选择图片", ft.Colors.RED)
+                return None
+            print("[Picker] 存储权限已授予")
 
         # 使用 plyer.filechooser
         from plyer import filechooser
@@ -289,7 +288,6 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
                 print("[Picker] 用户取消选择")
             event.set()
 
-        # 在后台线程运行（避免阻塞事件循环）
         import threading
         def run_chooser():
             print("[Picker] 线程中调用 filechooser.open_file")
@@ -309,7 +307,7 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
     finally:
         page._picker_lock = False
         print(f"[Picker] 退出, path_result={path_result}")
-        return path_result
+    return path_result
 
 
 def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
@@ -324,22 +322,30 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
 
     async def start_camera():
         print("[Camera] 启动相机 (plyer)")
+        # Android 权限请求
+        if page.platform == ft.PagePlatform.ANDROID:
+            ph = page._permission_handler
+            print("[Camera] 请求相机权限...")
+            status = await ph.request(fph.Permission.CAMERA)
+            print(f"[Camera] 权限结果: {status}")
+            if status != fph.PermissionStatus.GRANTED:
+                if status == fph.PermissionStatus.PERMANENTLY_DENIED:
+                    show_snack(page, "相机权限被永久拒绝，请前往系统设置开启", ft.Colors.RED)
+                else:
+                    show_snack(page, "相机权限被拒绝，请从相册选择", ft.Colors.RED)
+                # 降级到相册
+                path = await pick_image_async(page)
+                if path:
+                    on_picture_taken(path)
+                return
+            print("[Camera] 相机权限已授予")
+
+        # 使用 plyer.camera
         event = asyncio.Event()
         result_path = [None]
         import tempfile
         tmp_path = tempfile.gettempdir() + "/photo.jpg"
         print(f"[Camera] 临时文件路径: {tmp_path}")
-
-        # 尝试请求权限（如果可用）
-        try:
-            from plyer import permissions
-            print("[Camera] 请求相机和存储权限...")
-            permissions.request_permissions([permissions.PERMISSION_CAMERA, permissions.PERMISSION_STORAGE])
-            # 等待权限授予（简单延时）
-            import time
-            time.sleep(2)
-        except Exception as e:
-            print(f"[Camera] 权限请求失败: {e}")
 
         def on_complete(file_path):
             print(f"[Camera] plyer 回调: {file_path}")
@@ -737,6 +743,8 @@ def clear_credentials():
 def main(page: ft.Page):
     print("=== APP START ===")
     print(f"Platform: {page.platform}")
+    # 在 main 函数开头添加权限请求（Android 端）
+    page._permission_handler = fph.PermissionHandler()
     page.title = "玖诚电器ERP"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 0
