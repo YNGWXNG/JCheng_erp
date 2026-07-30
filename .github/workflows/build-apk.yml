@@ -42,10 +42,6 @@ jobs:
           yes | "$SDKMANAGER" --licenses || true
           "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0"
 
-      - name: Configure Flutter (only needed if using Flutter plugins, but not required)
-        # 实际上不需要，这里留空或删除该步骤
-        run: echo "Skipping Flutter setup"
-
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -66,17 +62,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip wheel
           pip install -r requirements.txt
-          pip install flet-cli==0.86.2
 
       - name: Build APK (release)
         run: |
-          flet build apk --release --verbose
-          # 如果构建失败，尝试添加 --include-packages 确保关键库
-          # flet build apk --release --verbose --include-packages "plyer,pyjnius"
+          flet build apk --release --verbose --include-packages "plyer,pyjnius"
 
       - name: Upload APK artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: JCheng-APK
-          path: build/android/apk/release/*.apk   # 修正路径
+          path: build/android/apk/release/*.apk
