@@ -30,12 +30,11 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
-      # 关键：安装 Flutter SDK
+      # 修改：不指定具体版本，自动获取最新稳定版
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.4'   # Flet 0.86.2 兼容的稳定版本
-          channel: 'stable'
+          channel: 'stable'   # 使用最新稳定版
           cache: true
 
       - name: Install system dependencies
@@ -73,10 +72,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Build APK
-        # 确保 Flutter 在 PATH 中，且 Flet 无需交互
-        run: |
-          export PATH="$PATH:/opt/hostedtoolcache/flutter/stable-3.22.4-x64/flutter/bin"
-          flet build apk --verbose
+        run: flet build apk --verbose
 
       - name: List build directory (debug)
         if: always()
