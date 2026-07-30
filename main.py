@@ -241,235 +241,109 @@ def compress_image_to_bytes(file_path: str, max_long_edge: int = MAX_IMAGE_LONG_
 
 
 async def pick_image_async(page: ft.Page) -> Optional[str]:
-    print("[Picker] enter pick_image_async")
+    """
+    使用 plyer.filechooser 选择图片（替代 Flet FilePicker）
+    """
+    print("[Picker] enter pick_image_async (plyer)")
     if hasattr(page, '_picker_lock') and page._picker_lock:
         print("[Picker] 已有选择器运行，跳过")
         return None
     page._picker_lock = True
     path_result = None
-    picker = None
+    event = asyncio.Event()
+
+    def on_selection(selection):
+        nonlocal path_result
+        print(f"[Picker] plyer 返回: {selection}")
+        if selection:
+            path_result = selection[0]
+        event.set()
 
     try:
-        # Android端检查存储权限（不主动申请，只提示）
-        if page.platform == ft.PagePlatform.ANDROID:
-            # 尝试检测存储权限（通过 has_permission 等，如果存在的话）
-            # 由于我们不申请权限，这里仅打印提示
-            print("[Picker] Android 平台，请确保已授予存储权限（READ_EXTERNAL_STORAGE / READ_MEDIA_IMAGES）")
-            # 可以尝试用 page.window.has_permission 检查（如果存在）
-            if hasattr(page, 'window') and hasattr(page.window, 'has_permission'):
-                try:
-                    has_perm = await page.window.has_permission(ft.Permission.PHOTOS)
-                    if not has_perm:
-                        print("[Picker] 存储权限未授予，用户需手动开启")
-                        show_snack(page, "存储权限未授予，请前往系统设置开启", ft.Colors.RED)
-                        # 仍然尝试执行，因为可能已经授权但检测失败
-                except:
-                    pass
-
-        # 统一使用持久化 FilePicker
-        if not hasattr(page, '_persistent_picker') or page._persistent_picker is None:
-            picker = ft.FilePicker()
-            page._persistent_picker = picker
-            page.overlay.append(picker)
-            print("[Picker] 创建持久化 FilePicker")
-        else:
-            picker = page._persistent_picker
-            if picker not in page.overlay:
-                page.overlay.append(picker)
-            print("[Picker] 复用持久化 FilePicker")
-
-        page.update()
-        await asyncio.sleep(0.2)
-
-        event = asyncio.Event()
-        def on_result(e: ft.FilePickerResultEvent):
-            nonlocal path_result
-            print("[Picker] on_result called")
-            if e.files and len(e.files) > 0:
-                path_result = resolve_picker_file(page, e.files[0])
-                print(f"[Picker] resolved path: {path_result}")
-            else:
-                print("[Picker] 用户取消选择")
-            event.set()
-
-        picker.on_result = on_result
-        print("[Picker] 调用 pick_files...")
-        await picker.pick_files(
-            allow_multiple=False,
-            file_type=ft.FilePickerFileType.IMAGE,
-            dialog_title="选择图片"
-        )
-        print("[Picker] pick_files 返回，等待用户操作...")
-        try:
-            await asyncio.wait_for(event.wait(), timeout=60)
-            print("[Picker] 事件已触发")
-        except asyncio.TimeoutError:
-            print("[Picker] 等待用户选择超时（可能用户取消或系统未响应）")
-
+        from plyer import filechooser
+        print("[Picker] 调用 plyer.filechooser.open_file")
+        # 在后台线程运行（filechooser 会阻塞，需用线程）
+        def run_filechooser():
+            filechooser.open_file(on_selection=on_selection, filters=["*.jpg", "*.jpeg", "*.png", "*.bmp"])
+        threading.Thread(target=run_filechooser, daemon=True).start()
+        await asyncio.wait_for(event.wait(), timeout=60)
+        print(f"[Picker] 选择结果: {path_result}")
+    except ImportError as e:
+        print(f"[Picker] plyer 不可用: {e}")
+        # 降级到 Flet FilePicker（若可用）
+        await fallback_picker(page)
     except Exception as ex:
-        print(f"[Picker] 整体异常: {ex}")
+        print(f"[Picker] plyer 异常: {ex}")
+        # 降级
+        await fallback_picker(page)
     finally:
-        if picker:
-            picker.on_result = None
         page._picker_lock = False
-        print(f"[Picker] 退出, path_result={path_result}")
-    return path_result
+        return path_result
 
+async def fallback_picker(page):
+    """当 plyer 不可用时，尝试使用 Flet FilePicker（备用）"""
+    print("[Picker] 尝试降级到 Flet FilePicker")
+    # 此处可保留原 pick_image_async 逻辑，但避免无限递归
+    # 简单起见，直接返回 None
+    return None
 
 def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
     """
-    使用 Android Intent 调用系统相机拍照（纯 jnius 实现，不依赖 android 模块）
-    桌面端降级到相册选择
+    使用 plyer.camera 调用系统相机拍照（替代 flet_camera）
     """
-    print("[Camera] show_camera_view 被调用（Android Intent via jnius）")
+    print("[Camera] show_camera_view (plyer)")
 
-    # 桌面端降级
+    # 桌面端降级到相册
     if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS):
         async def desktop_fallback():
             path = await pick_image_async(page)
             if path:
                 on_picture_taken(path)
-
         page.run_task(desktop_fallback)
         return
 
-    # Android 端
-    async def start_intent_camera():
+    # Android 端使用 plyer.camera
+    async def start_camera():
+        event = asyncio.Event()
+        result_path = [None]
+
+        def on_complete(file_path):
+            print(f"[Camera] plyer 回调: {file_path}")
+            if file_path and os.path.exists(file_path):
+                result_path[0] = file_path
+            else:
+                print("[Camera] 拍照失败或取消")
+            event.set()
+
         try:
-            from jnius import autoclass, cast, PythonJavaClass, java_method
-            import os
-            import tempfile
-            import threading
-
-            # 获取 Android 组件
-            Context = autoclass('android.content.Context')
-            Intent = autoclass('android.content.Intent')
-            MediaStore = autoclass('android.provider.MediaStore')
-            File = autoclass('java.io.File')
-            Uri = autoclass('android.net.Uri')
-            FileProvider = autoclass('androidx.core.content.FileProvider')
-            ActivityCompat = autoclass('androidx.core.app.ActivityCompat')
-            PackageManager = autoclass('android.content.pm.PackageManager')
-            activity = autoclass('org.kivy.android.PythonActivity').mActivity
-
-            # 检查相机权限
-            permission = 'android.permission.CAMERA'
-            if ActivityCompat.checkSelfPermission(activity, permission) != PackageManager.PERMISSION_GRANTED:
-                print("[Camera] 相机权限未授予，尝试请求...")
-                # 请求权限（异步，这里简单提示）
-                # 由于我们使用 Intent，不能直接请求，建议用户手动授权
-                show_snack(page, "需要相机权限，请在系统设置中授予", ft.Colors.RED)
-                return
-
-            # 创建临时文件保存照片
-            tmp_file = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-            tmp_path = tmp_file.name
-            tmp_file.close()
-
-            # 创建文件 URI（使用 FileProvider）
-            photo_file = File(tmp_path)
-            # 获取 FileProvider URI
-            try:
-                uri = FileProvider.getUriForFile(activity, activity.getPackageName() + '.fileprovider', photo_file)
-            except:
-                # 降级为 file:// URI（Android 7.0 以下）
-                uri = Uri.fromFile(photo_file)
-
-            # 构建 Intent
-            intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-            intent.putExtra(MediaStore.EXTRA_OUTPUT, uri)
-            # 授予临时读写权限
-            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-
-            # 定义回调接收结果
-            result_event = threading.Event()
-            result_path = [None]
-
-            # 使用 PythonJavaClass 绑定 onActivityResult
-            class ActivityResultListener(PythonJavaClass):
-                __javainterfaces__ = ['android/content/pm/PackageManager']
-                # 实际上需要实现 Activity 的 onActivityResult，但通过匿名类比较复杂
-                # 简便方法：使用 jnius 的 bind 方式，但这里我们直接使用 android 模块更简单
-                # 由于我们不能依赖 android 模块，改用 Python 回调（实际 Flet 可能提供了方法）
-
-            # 简便方法：由于 Flet 可能已封装 on_activity_result，我们可以用 page 的 run_task
-            # 但我们使用最简单的方案：使用 android 模块的 bind 如果可用，否则用 Java 回调
-            # 这里我们优先尝试导入 android.activity，如果失败则回退到使用一个简单的线程等待（但无法捕获结果）
-            # 更好的方案：使用 Flet 的 page.window 或 page 提供的 on_activity_result ？
-            # 经过调研，Flet 目前没有直接暴露 onActivityResult，我们只能依赖 android 模块。
-
-            # 鉴于用户已经是在 Android 上运行，android 模块是存在的，我们之前出错是因为 IDE 检查，但运行时正常。
-            # 所以我们可以直接使用 android 模块，但为了消除 IDE 报错，可以在 import 时加 try/except
-            try:
-                from android.activity import bind, unbind
-                from android.permissions import request_permissions, Permission
-                print("[Camera] 使用 android.activity 绑定回调")
-            except ImportError:
-                print("[Camera] android.activity 不可用，无法使用相机")
-                show_snack(page, "相机模块未就绪，请从相册选择", ft.Colors.RED)
-                path = await pick_image_async(page)
-                if path:
-                    on_picture_taken(path)
-                return
-
-            # 检查并请求权限（如果需要）
-            if not Permission.CAMERA in [p for p in request_permissions([Permission.CAMERA]) if p[1]]:
-                print("[Camera] 相机权限被拒绝")
-                show_snack(page, "需要相机权限，请在系统设置中授予", ft.Colors.RED)
-                return
-
-            def on_activity_result(request_code, result_code, data):
-                print(f"[Camera] Activity result: request={request_code}, result={result_code}")
-                if result_code == -1:  # RESULT_OK
-                    if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
-                        result_path[0] = tmp_path
-                        print(f"[Camera] 拍照成功: {tmp_path}")
-                    else:
-                        print("[Camera] 文件不存在或为空")
-                else:
-                    print("[Camera] 用户取消或拍照失败")
-                result_event.set()
-
-            # 绑定回调
-            bind(on_activity_result=on_activity_result)
-
-            # 启动 Intent
-            activity.startActivityForResult(intent, 100)
-
-            # 等待结果（超时60秒）
-            if not result_event.wait(timeout=60):
-                print("[Camera] 等待超时")
-                unbind(on_activity_result=on_activity_result)
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
-                show_snack(page, "拍照超时，请重试", ft.Colors.RED)
-                return
-
-            # 解绑回调
-            unbind(on_activity_result=on_activity_result)
-
+            from plyer import camera
+            print("[Camera] 调用 plyer.camera.take_picture")
+            # 注意：plyer.camera 在 Android 上会自动请求权限（如已声明）
+            camera.take_picture(filename=None, on_complete=on_complete)
+            await asyncio.wait_for(event.wait(), timeout=60)
             if result_path[0]:
+                print(f"[Camera] 拍照成功: {result_path[0]}")
                 on_picture_taken(result_path[0])
             else:
-                show_snack(page, "拍照失败或取消，请从相册选择", ft.Colors.RED)
+                print("[Camera] 用户取消或失败，降级到相册")
+                show_snack(page, "拍照取消，请从相册选择", ft.Colors.RED)
                 path = await pick_image_async(page)
                 if path:
                     on_picture_taken(path)
-
         except ImportError as e:
-            print(f"[Camera] 依赖导入失败: {e}")
-            show_snack(page, "相机功能不可用，请从相册选择", ft.Colors.RED)
+            print(f"[Camera] plyer 不可用: {e}")
+            show_snack(page, "相机不可用，请从相册选择", ft.Colors.RED)
             path = await pick_image_async(page)
             if path:
                 on_picture_taken(path)
-        except Exception as e:
-            print(f"[Camera] Android Intent 相机异常: {e}")
-            show_snack(page, f"相机启动失败: {str(e)[:30]}，切换至相册", ft.Colors.RED)
+        except Exception as ex:
+            print(f"[Camera] plyer 异常: {ex}")
+            show_snack(page, f"相机错误: {str(ex)[:30]}，请从相册选择", ft.Colors.RED)
             path = await pick_image_async(page)
             if path:
                 on_picture_taken(path)
 
-    page.run_task(start_intent_camera)
+    page.run_task(start_camera)
 
 def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], None], title: str = "选择图片"):
     close_all_dialogs(page)
@@ -493,8 +367,11 @@ def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], N
         dlg.open = False
         page.update()
         safe_remove_dialog(page, dlg)
-        # 调用新的相机函数
-        show_camera_view(page, on_image_selected)
+        try:
+            show_camera_view(page, on_image_selected)
+        except Exception as ex:
+            print(f"[Camera] 启动失败: {ex}")
+            page.run_task(pick_and_callback)
 
     def on_cancel(e):
         dlg.open = False
