@@ -1,4 +1,5 @@
 app_name: JCheng
+version: 1.1.1   # 添加版本号，格式 major.minor.patch
 
 android:
   package: com.flet.jcheng_erp
@@ -6,29 +7,25 @@ android:
   build_type: release
 
   permissions:
-    # 通用普通权限（全版本生效）
     - android.permission.INTERNET
     - android.permission.ACCESS_NETWORK_STATE
     - android.permission.CAMERA
-    # Android 13(API33+) 媒体读写
+    # Android 13+ 媒体权限
     - android.permission.READ_MEDIA_IMAGES
     - android.permission.READ_MEDIA_VIDEO
-    - android.permission.WRITE_MEDIA_IMAGES
-    - android.permission.RECORD_AUDIO
-    - android.hardware.camera.autofocus
-    # Android 12及以下专用存储，限制maxSdkVersion=32
+    # Android 12 及以下存储权限（限制 maxSdkVersion）
     - name: android.permission.READ_EXTERNAL_STORAGE
       maxSdkVersion: 32
     - name: android.permission.WRITE_EXTERNAL_STORAGE
       maxSdkVersion: 32
+    # 如需录音（非必需，可删除）
+    - android.permission.RECORD_AUDIO
 
-  # 相机硬件非必需设备可安装
   features:
     - name: android.hardware.camera
       required: false
     - name: android.hardware.camera.autofocus
-      required: true
+      required: false
 
   application:
-    # 仅 Android 10/11(API29、30) 启用传统存储模式
-    requestLegacyExternalStorage: true
+    requestLegacyExternalStorage: true  # Android 10/11 兼容
