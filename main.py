@@ -324,36 +324,22 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
 
     async def start_camera():
         print("[Camera] 启动相机 (plyer)")
-        # Android 权限请求
-        if page.platform == ft.PagePlatform.ANDROID:
-            print("[Camera] 检查相机权限...")
-            try:
-                from android.permissions import request_permissions, Permission, check_permission
-                print("[Camera] android.permissions 导入成功")
-                if not check_permission(Permission.CAMERA):
-                    print("[Camera] 相机权限未授予，请求中...")
-                    request_permissions([Permission.CAMERA])
-                    import time
-                    time.sleep(1)
-                    if check_permission(Permission.CAMERA):
-                        print("[Camera] 相机权限已授予")
-                    else:
-                        print("[Camera] 相机权限被拒绝")
-                        show_snack(page, "相机权限被拒绝，请从相册选择", ft.Colors.RED)
-                        path = await pick_image_async(page)
-                        if path:
-                            on_picture_taken(path)
-                        return
-                else:
-                    print("[Camera] 相机权限已授予")
-            except ImportError:
-                print("[Camera] android.permissions 不可用，假设已授权")
-            except Exception as e:
-                print(f"[Camera] 权限检查异常: {e}，继续尝试")
-
-        # 使用 plyer.camera
         event = asyncio.Event()
         result_path = [None]
+        import tempfile
+        tmp_path = tempfile.gettempdir() + "/photo.jpg"
+        print(f"[Camera] 临时文件路径: {tmp_path}")
+
+        # 尝试请求权限（如果可用）
+        try:
+            from plyer import permissions
+            print("[Camera] 请求相机和存储权限...")
+            permissions.request_permissions([permissions.PERMISSION_CAMERA, permissions.PERMISSION_STORAGE])
+            # 等待权限授予（简单延时）
+            import time
+            time.sleep(2)
+        except Exception as e:
+            print(f"[Camera] 权限请求失败: {e}")
 
         def on_complete(file_path):
             print(f"[Camera] plyer 回调: {file_path}")
@@ -361,13 +347,18 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                 result_path[0] = file_path
                 print(f"[Camera] 拍照成功: {file_path}")
             else:
-                print("[Camera] 拍照失败或取消")
+                # 如果返回None，检查临时文件是否存在
+                if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
+                    result_path[0] = tmp_path
+                    print(f"[Camera] 使用临时文件: {tmp_path}")
+                else:
+                    print("[Camera] 拍照失败或取消")
             event.set()
 
         try:
             from plyer import camera
             print("[Camera] plyer.camera 导入成功，调用 take_picture")
-            camera.take_picture(filename=None, on_complete=on_complete)
+            camera.take_picture(filename=tmp_path, on_complete=on_complete)
             print("[Camera] 等待拍照结果（60秒超时）...")
             await asyncio.wait_for(event.wait(), timeout=60)
             if result_path[0]:
@@ -379,21 +370,11 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                 path = await pick_image_async(page)
                 if path:
                     on_picture_taken(path)
-        except ImportError as e:
-            print(f"[Camera] plyer.camera 导入失败: {e}")
-            show_snack(page, "相机不可用，请从相册选择", ft.Colors.RED)
-            path = await pick_image_async(page)
-            if path:
-                on_picture_taken(path)
-        except asyncio.TimeoutError:
-            print("[Camera] 等待超时")
-            show_snack(page, "拍照超时，请从相册选择", ft.Colors.RED)
-            path = await pick_image_async(page)
-            if path:
-                on_picture_taken(path)
-        except Exception as ex:
-            print(f"[Camera] 异常: {ex}")
-            show_snack(page, f"相机错误: {str(ex)[:30]}，请从相册选择", ft.Colors.RED)
+        except Exception as e:
+            print(f"[Camera] plyer.camera 异常: {e}")
+            import traceback
+            traceback.print_exc()
+            show_snack(page, f"相机错误: {str(e)[:30]}，请从相册选择", ft.Colors.RED)
             path = await pick_image_async(page)
             if path:
                 on_picture_taken(path)
@@ -1726,7 +1707,7 @@ def main(page: ft.Page):
                     scan_code = code_list[0].strip() if code_list else ""
                     print(f"[Voucher] Decoded code: {scan_code}")
 
-                    preview_img = ft.Image(src=path, width=300, fit=ft.ImageFit.CONTAIN)
+                    preview_img = ft.Image(src=path, width=300, fit="contain")
                     scan_tip_text = ft.Text(f"识别凭证号：{scan_code if scan_code else '未识别到二维码'}", size=14)
 
                     def btn_confirm_upload(ev):
