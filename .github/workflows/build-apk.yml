@@ -63,9 +63,8 @@ jobs:
           python -m pip install --upgrade pip wheel
           pip install -r requirements.txt
 
-      - name: Build APK (release)
-        run: |
-          flet build apk --release --verbose --include-packages "plyer,pyjnius"
+      - name: Build APK
+        run: flet build apk --verbose
 
       - name: Upload APK artifact
         if: always()
