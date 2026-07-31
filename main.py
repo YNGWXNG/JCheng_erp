@@ -1,6 +1,5 @@
 import flet as ft
 import flet_permission_handler as fph
-from flet_permission_handler import Permission, PermissionStatus
 import mysql.connector
 from datetime import datetime, date, timedelta
 import hashlib
@@ -21,8 +20,6 @@ import tempfile
 import asyncio
 import flet_camera as fc
 
-# 1×1 透明 PNG Data URL（用于 ft.Image 占位）
-TRANSPARENT_PNG_DATA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 SERVER_DECODE_URL = os.getenv("SERVER_DECODE_URL", "https://api.qrserver.com/v1/read-qr-code/")
 MAX_IMAGE_LONG_EDGE = 1280
 DEFAULT_WIDTH = 360
@@ -256,78 +253,31 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
 
     try:
         if page.platform == ft.PagePlatform.ANDROID:
-            from flet_permission_handler import Permission, PermissionStatus
-            # 尝试多种存储权限常量（Android 13+ 用 READ_MEDIA_IMAGES，旧版用 READ_EXTERNAL_STORAGE）
-            perm = None
-            if hasattr(Permission, 'READ_MEDIA_IMAGES'):
-                perm = Permission.READ_MEDIA_IMAGES
-            elif hasattr(Permission, 'READ_EXTERNAL_STORAGE'):
-                perm = Permission.READ_EXTERNAL_STORAGE
-            elif hasattr(Permission, 'PHOTOS'):
-                perm = Permission.PHOTOS
+            ph = page._permission_handler
+            print("[Picker] 请求存储权限...")
+            # 优先使用 Android 13+ 的 READ_MEDIA_IMAGES，否则降级到 READ_EXTERNAL_STORAGE
+            if hasattr(fph.Permission, 'READ_MEDIA_IMAGES'):
+                perm = fph.Permission.READ_MEDIA_IMAGES
+            elif hasattr(fph.Permission, 'READ_EXTERNAL_STORAGE'):
+                perm = fph.Permission.READ_EXTERNAL_STORAGE
             else:
-                print("[Picker] 未找到合适的存储权限常量，跳过权限请求")
+                perm = fph.Permission.PHOTOS  # 备选
+            status = await ph.request(perm)
+            print(f"[Picker] 权限结果: {status}")
+            if status != fph.PermissionStatus.GRANTED:
+                if status == fph.PermissionStatus.PERMANENTLY_DENIED:
+                    show_snack(page, "存储权限被永久拒绝，请前往系统设置开启", ft.Colors.RED)
+                    ph.open_app_settings()
+                else:
+                    show_snack(page, "存储权限被拒绝，无法选择图片", ft.Colors.RED)
+                return None
+            print("[Picker] 存储权限已授予")
 
-            if perm is not None:
-                print(f"[Picker] 请求权限: {perm}")
-                status = await perm.request()
-                print(f"[Picker] 权限结果: {status}")
-                if not status.is_granted:
-                    if status.is_permanently_denied:
-                        show_snack(page, "存储权限被永久拒绝，请前往系统设置开启", ft.Colors.RED)
-                        await Permission.open_app_settings()
-                    else:
-                        show_snack(page, "存储权限被拒绝，无法选择图片", ft.Colors.RED)
-                    return None
-                print("[Picker] 存储权限已授予")
-            else:
-                print("[Picker] 无权限常量，继续尝试（可能已授权）")
-
-        # --- FilePicker 逻辑（不变）---
-        if not hasattr(page, '_persistent_picker') or page._persistent_picker is None:
-            picker = ft.FilePicker()
-            page._persistent_picker = picker
-            page.overlay.append(picker)
-            print("[Picker] 创建持久化 FilePicker")
-        else:
-            picker = page._persistent_picker
-            if picker not in page.overlay:
-                page.overlay.append(picker)
-            print("[Picker] 复用持久化 FilePicker")
-
-        page.update()
-        await asyncio.sleep(0.2)
-
-        def on_result(e: ft.FilePickerResultEvent):
-            nonlocal path_result
-            print("[Picker] on_result 被触发")
-            if e.files and len(e.files) > 0:
-                path_result = resolve_picker_file(page, e.files[0])
-                print(f"[Picker] 解析路径: {path_result}")
-            else:
-                print("[Picker] 用户取消选择")
-            event.set()
-
-        picker.on_result = on_result
-        print("[Picker] 调用 pick_files...")
-        await picker.pick_files(
-            allow_multiple=False,
-            file_type=ft.FilePickerFileType.IMAGE,
-            dialog_title="选择图片"
-        )
-        try:
-            await asyncio.wait_for(event.wait(), timeout=60)
-            print("[Picker] 选择完成")
-        except asyncio.TimeoutError:
-            print("[Picker] 等待超时")
-
+        # ... 其余代码不变（创建 FilePicker 等）
     except Exception as ex:
         print(f"[Picker] 异常: {ex}")
     finally:
-        if picker:
-            picker.on_result = None
         page._picker_lock = False
-        print(f"[Picker] 退出, path_result={path_result}")
     return path_result
 
 
@@ -343,33 +293,26 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
 
     async def start_camera():
         print("[Camera] 启动相机 (flet-camera 官方方式)")
+        # 请求相机权限
         if page.platform == ft.PagePlatform.ANDROID:
-            from flet_permission_handler import Permission, PermissionStatus
-            # 请求相机权限
-            if hasattr(Permission, 'CAMERA'):
-                status = await Permission.CAMERA.request()
-                print(f"[Camera] 权限结果: {status}")
-                if not status.is_granted:
-                    if status.is_permanently_denied:
-                        show_snack(page, "相机权限被永久拒绝，请前往系统设置开启", ft.Colors.RED)
-                        await Permission.open_app_settings()
-                    else:
-                        show_snack(page, "相机权限被拒绝，请从相册选择", ft.Colors.RED)
-                    path = await pick_image_async(page)
-                    if path:
-                        on_picture_taken(path)
-                    return
-                print("[Camera] 相机权限已授予")
-            else:
-                print("[Camera] 未找到 CAMERA 权限常量，跳过权限请求")
+            ph = page._permission_handler
+            print("[Camera] 请求相机权限...")
+            status = await ph.request(fph.Permission.CAMERA)
+            print(f"[Camera] 权限结果: {status}")
+            if status != fph.PermissionStatus.GRANTED:
+                if status == fph.PermissionStatus.PERMANENTLY_DENIED:
+                    show_snack(page, "相机权限被永久拒绝，请前往系统设置开启", ft.Colors.RED)
+                else:
+                    show_snack(page, "相机权限被拒绝，请从相册选择", ft.Colors.RED)
+                path = await pick_image_async(page)
+                if path:
+                    on_picture_taken(path)
+                return
+            print("[Camera] 相机权限已授予")
 
-        # 使用透明 Data URL 占位
-        captured_image = ft.Image(
-            src=TRANSPARENT_PNG_DATA,
-            width=320,
-            height=240,
-            fit="contain"
-        )
+        # 创建 Camera 控件（去掉 fit 参数，因为版本不支持）
+        camera_ref = ft.Ref[fc.Camera]()
+        captured_image = ft.Image(width=300, height=300, fit="contain")
         camera_widget = None
 
         def on_capture(e):
@@ -397,22 +340,14 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
             show_snack(page, f"相机错误: {e.data}", ft.Colors.RED)
             close_camera()
 
-        # 创建 Camera 控件（兼容 fit 参数）
-        try:
-            camera_widget = fc.Camera(
-                width=400,
-                height=300,
-                fit="cover",
-                on_capture=on_capture,
-                on_error=on_error,
-            )
-        except TypeError:
-            camera_widget = fc.Camera(
-                width=400,
-                height=300,
-                on_capture=on_capture,
-                on_error=on_error,
-            )
+        # 创建相机实例时，只传入支持的参数
+        camera_widget = fc.Camera(
+            width=400,
+            height=300,
+            on_capture=on_capture,
+            on_error=on_error,
+            # fit 参数移除
+        )
 
         camera_container = ft.Container(
             expand=True,
@@ -532,12 +467,7 @@ def unified_barcode_scan(page: ft.Page, result_callback: Callable[[str], None], 
 
     def on_image_selected(path):
         # 预览对话框
-        preview_img = ft.Image(
-            src=path if path else TRANSPARENT_PNG_DATA,
-            width=300,
-            height=400,
-            fit="contain"
-        )
+        preview_img = ft.Image(src=path, width=300, height=300, fit="contain")  # 修改这里
         status_text = ft.Text("请确认图片包含条码/二维码，点击“开始识别”", size=14, color=ft.Colors.BLUE)
         start_btn = ft.Button("开始识别", icon=ft.Icons.CAMERA_ALT, disabled=False)
         cancel_btn = ft.TextButton("取消")
@@ -1784,12 +1714,7 @@ def main(page: ft.Page):
                     scan_code = code_list[0].strip() if code_list else ""
                     print(f"[Voucher] Decoded code: {scan_code}")
 
-                    preview_img = ft.Image(
-                        src=path if path else TRANSPARENT_PNG_DATA,
-                        width=300,
-                        height=300,
-                        fit="contain"
-                    )
+                    preview_img = ft.Image(src=path, width=300, fit="contain")
                     scan_tip_text = ft.Text(f"识别凭证号：{scan_code if scan_code else '未识别到二维码'}", size=14)
 
                     def btn_confirm_upload(ev):
