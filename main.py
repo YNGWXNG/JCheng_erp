@@ -242,76 +242,75 @@ def compress_image_to_bytes(file_path: str, max_long_edge: int = MAX_IMAGE_LONG_
 
 
 async def pick_image_async(page: ft.Page) -> Optional[str]:
-    print("[Picker] enter pick_image_async (plyer)")
+    print("[Picker] enter pick_image_async (Flet FilePicker)")
     if hasattr(page, '_picker_lock') and page._picker_lock:
         print("[Picker] 已有选择器运行，跳过")
         return None
     page._picker_lock = True
     path_result = None
+    picker = None
     event = asyncio.Event()
 
     try:
-        # Android 端使用 flet-permission-handler 请求存储权限
+        # Android 端请求存储权限
         if page.platform == ft.PagePlatform.ANDROID:
             ph = page._permission_handler
             print("[Picker] 请求存储权限...")
-
-            # 根据 Android 版本选择正确的权限 token
+            # 使用 READ_MEDIA_IMAGES（Android 13+）或 READ_EXTERNAL_STORAGE
             if hasattr(fph.Permission, 'READ_MEDIA_IMAGES'):
                 perm = fph.Permission.READ_MEDIA_IMAGES
-            elif hasattr(fph.Permission, 'READ_EXTERNAL_STORAGE'):
-                perm = fph.Permission.READ_EXTERNAL_STORAGE
             else:
-                perm = fph.Permission.PHOTOS  # 某些版本可能使用 PHOTOS
-
+                perm = fph.Permission.READ_EXTERNAL_STORAGE
             status = await ph.request(perm)
             print(f"[Picker] 权限结果: {status}")
             if status != fph.PermissionStatus.GRANTED:
-                if status == fph.PermissionStatus.PERMANENTLY_DENIED:
-                    show_snack(page, "存储权限被永久拒绝，请前往系统设置开启", ft.Colors.RED)
-                else:
-                    show_snack(page, "存储权限被拒绝，无法选择图片", ft.Colors.RED)
+                show_snack(page, "存储权限被拒绝，无法选择图片", ft.Colors.RED)
                 return None
-            print("[Picker] 存储权限已授予")
 
-        # 使用 plyer.filechooser
-        from plyer import filechooser
-        print("[Picker] plyer.filechooser 导入成功")
+        # 创建/复用 FilePicker
+        if not hasattr(page, '_persistent_picker') or page._persistent_picker is None:
+            picker = ft.FilePicker()
+            page._persistent_picker = picker
+            page.overlay.append(picker)
+            print("[Picker] 创建并添加持久化 FilePicker")
+        else:
+            picker = page._persistent_picker
+            if picker not in page.overlay:
+                page.overlay.append(picker)
+            print("[Picker] 复用持久化 FilePicker")
 
-        def on_selection(selection):
+        page.update()
+        await asyncio.sleep(0.2)
+
+        def on_result(e: ft.FilePickerResultEvent):
             nonlocal path_result
-            print(f"[Picker] plyer 回调: {selection}")
-            if selection:
-                path_result = selection[0]
-                print(f"[Picker] 选择路径: {path_result}")
+            print("[Picker] on_result 被触发")
+            if e.files and len(e.files) > 0:
+                path_result = resolve_picker_file(page, e.files[0])
+                print(f"[Picker] 解析路径: {path_result}")
             else:
                 print("[Picker] 用户取消选择")
             event.set()
 
-        import threading
-        def run_chooser():
-            print("[Picker] 线程中调用 filechooser.open_file")
-            filechooser.open_file(on_selection=on_selection, filters=["*.jpg", "*.jpeg", "*.png", "*.bmp"])
-        threading.Thread(target=run_chooser, daemon=True).start()
-        print("[Picker] 等待用户选择（60秒超时）...")
+        picker.on_result = on_result
+        await picker.pick_files(
+            allow_multiple=False,
+            file_type=ft.FilePickerFileType.IMAGE,
+            dialog_title="选择图片"
+        )
         await asyncio.wait_for(event.wait(), timeout=60)
-        print("[Picker] 选择完成，返回")
 
-    except ImportError as e:
-        print(f"[Picker] plyer 导入失败: {e}")
-        show_snack(page, "文件选择不可用，请使用系统相册", ft.Colors.RED)
-    except asyncio.TimeoutError:
-        print("[Picker] 等待超时")
     except Exception as ex:
         print(f"[Picker] 异常: {ex}")
     finally:
+        if picker:
+            picker.on_result = None
         page._picker_lock = False
-        print(f"[Picker] 退出, path_result={path_result}")
     return path_result
 
 
 def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
-    print("[Camera] show_camera_view (plyer)")
+    print("[Camera] show_camera_view (flet-camera)")
     if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS):
         async def desktop_fallback():
             path = await pick_image_async(page)
@@ -321,69 +320,71 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         return
 
     async def start_camera():
-        print("[Camera] 启动相机 (plyer)")
-        # Android 权限请求
+        print("[Camera] 启动相机 (flet-camera)")
+        # 权限请求
         if page.platform == ft.PagePlatform.ANDROID:
             ph = page._permission_handler
             print("[Camera] 请求相机权限...")
             status = await ph.request(fph.Permission.CAMERA)
             print(f"[Camera] 权限结果: {status}")
             if status != fph.PermissionStatus.GRANTED:
-                if status == fph.PermissionStatus.PERMANENTLY_DENIED:
-                    show_snack(page, "相机权限被永久拒绝，请前往系统设置开启", ft.Colors.RED)
-                else:
-                    show_snack(page, "相机权限被拒绝，请从相册选择", ft.Colors.RED)
-                # 降级到相册
+                show_snack(page, "相机权限被拒绝，请从相册选择", ft.Colors.RED)
                 path = await pick_image_async(page)
                 if path:
                     on_picture_taken(path)
                 return
             print("[Camera] 相机权限已授予")
 
-        # 使用 plyer.camera
-        event = asyncio.Event()
-        result_path = [None]
-        import tempfile
-        tmp_path = tempfile.gettempdir() + "/photo.jpg"
-        print(f"[Camera] 临时文件路径: {tmp_path}")
+        # 创建相机控件
+        camera_ref = ft.Ref[fc.Camera]()
+        camera_container = None
 
-        def on_complete(file_path):
-            print(f"[Camera] plyer 回调: {file_path}")
-            if file_path and os.path.exists(file_path):
-                result_path[0] = file_path
-                print(f"[Camera] 拍照成功: {file_path}")
-            else:
-                # 如果返回None，检查临时文件是否存在
-                if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
-                    result_path[0] = tmp_path
-                    print(f"[Camera] 使用临时文件: {tmp_path}")
+        def close_camera():
+            nonlocal camera_container
+            try:
+                if camera_ref.current:
+                    camera_ref.current.dispose()
+                if camera_container and camera_container in page.overlay:
+                    page.overlay.remove(camera_container)
+                    page.update()
+            except:
+                pass
+
+        async def take_picture():
+            try:
+                if not camera_ref.current:
+                    raise Exception("相机未就绪")
+                path = await camera_ref.current.take_picture()
+                if path and os.path.exists(path):
+                    close_camera()
+                    on_picture_taken(path)
                 else:
-                    print("[Camera] 拍照失败或取消")
-            event.set()
-
-        try:
-            from plyer import camera
-            print("[Camera] plyer.camera 导入成功，调用 take_picture")
-            camera.take_picture(filename=tmp_path, on_complete=on_complete)
-            print("[Camera] 等待拍照结果（60秒超时）...")
-            await asyncio.wait_for(event.wait(), timeout=60)
-            if result_path[0]:
-                print("[Camera] 拍照成功，回调")
-                on_picture_taken(result_path[0])
-            else:
-                print("[Camera] 用户取消或失败，降级到相册")
-                show_snack(page, "拍照取消，请从相册选择", ft.Colors.RED)
+                    raise Exception("拍照路径无效")
+            except Exception as ex:
+                print(f"[Camera] 拍照失败: {ex}")
+                close_camera()
+                show_snack(page, "拍照失败，切换至相册", ft.Colors.RED)
                 path = await pick_image_async(page)
                 if path:
                     on_picture_taken(path)
-        except Exception as e:
-            print(f"[Camera] plyer.camera 异常: {e}")
-            import traceback
-            traceback.print_exc()
-            show_snack(page, f"相机错误: {str(e)[:30]}，请从相册选择", ft.Colors.RED)
-            path = await pick_image_async(page)
-            if path:
-                on_picture_taken(path)
+
+        camera_container = ft.Container(
+            expand=True,
+            bgcolor=ft.Colors.BLACK,
+            content=ft.Stack([
+                fc.Camera(ref=camera_ref, expand=True),
+                ft.Row([
+                    ft.IconButton(ft.Icons.CAMERA_ALT, icon_size=48,
+                                  on_click=lambda e: page.run_task(take_picture),
+                                  style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=15)),
+                    ft.IconButton(ft.Icons.CLOSE, icon_size=32,
+                                  on_click=lambda e: close_camera(),
+                                  style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=10)),
+                ], alignment=ft.MainAxisAlignment.CENTER, spacing=30, bottom=40)
+            ])
+        )
+        page.overlay.append(camera_container)
+        page.update()
 
     page.run_task(start_camera)
 
