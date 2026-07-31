@@ -1,32 +1,46 @@
 app_name: JCheng
-version: 1.1.1   # 添加版本号，格式 major.minor.patch
+version: 1.1.1
 version_code: 111
 
 android:
   package: com.flet.jcheng_erp
-  label: JCheng_ERP
+  label: JCheng
   build_type: release
 
   permissions:
     - android.permission.INTERNET
     - android.permission.ACCESS_NETWORK_STATE
     - android.permission.CAMERA
-    # Android 13+ 媒体权限
+    # 鸿蒙4.0/4.2（Android12）相册读取核心权限
     - android.permission.READ_MEDIA_IMAGES
     - android.permission.READ_MEDIA_VIDEO
-    # Android 12 及以下存储权限（限制 maxSdkVersion）
+    # 低版本安卓兜底存储，API32以上自动失效
     - name: android.permission.READ_EXTERNAL_STORAGE
       maxSdkVersion: 32
     - name: android.permission.WRITE_EXTERNAL_STORAGE
       maxSdkVersion: 32
-    # 如需录音（非必需，可删除）
-    - android.permission.RECORD_AUDIO
+    # ==========新增位置权限组==========
+    # 精准GPS定位
+    - android.permission.ACCESS_FINE_LOCATION
+    # 基站/WiFi粗略定位
+    - android.permission.ACCESS_COARSE_LOCATION
+    # Android12+ 后台持续定位必备（需要后台获取坐标再加）
+    - android.permission.ACCESS_BACKGROUND_LOCATION
 
   features:
     - name: android.hardware.camera
       required: false
     - name: android.hardware.camera.autofocus
       required: false
+    # 声明设备支持定位硬件
+    - name: android.hardware.location
+      required: false
+    - name: android.hardware.location.gps
+      required: false
+    - name: android.hardware.location.network
+      required: false
 
   application:
-    requestLegacyExternalStorage: true  # Android 10/11 兼容
+    requestLegacyExternalStorage: true
+    android:preserveLegacyExternalStorage: true
+    android:exported: true
