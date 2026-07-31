@@ -6,4 +6,4 @@ requests==2.32.3
 reportlab==4.2.2
 pyzbar==0.1.8
 numpy==2.4.6
-flet-permission-handler # 新增权限处理库
+flet-permission-handler>=0.3.0
