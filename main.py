@@ -1,5 +1,6 @@
 import flet as ft
 import flet_permission_handler as fph
+from flet_permission_handler import Permission, PermissionStatus
 import mysql.connector
 from datetime import datetime, date, timedelta
 import hashlib
@@ -20,6 +21,7 @@ import tempfile
 import asyncio
 import flet_camera as fc
 
+TRANSPARENT_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 SERVER_DECODE_URL = os.getenv("SERVER_DECODE_URL", "https://api.qrserver.com/v1/read-qr-code/")
 MAX_IMAGE_LONG_EDGE = 1280
 DEFAULT_WIDTH = 360
@@ -253,31 +255,88 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
 
     try:
         if page.platform == ft.PagePlatform.ANDROID:
-            ph = page._permission_handler
-            print("[Picker] 请求存储权限...")
-            # 优先使用 Android 13+ 的 READ_MEDIA_IMAGES，否则降级到 READ_EXTERNAL_STORAGE
-            if hasattr(fph.Permission, 'READ_MEDIA_IMAGES'):
-                perm = fph.Permission.READ_MEDIA_IMAGES
-            elif hasattr(fph.Permission, 'READ_EXTERNAL_STORAGE'):
-                perm = fph.Permission.READ_EXTERNAL_STORAGE
+            # 使用 page.get_android_version() 获取 SDK 版本
+            try:
+                android_version = await page.get_android_version()
+                print(f"[Picker] Android SDK 版本: {android_version}")
+            except Exception as e:
+                print(f"[Picker] 获取 Android 版本失败: {e}，默认请求 READ_EXTERNAL_STORAGE")
+                android_version = 0  # 回退到旧权限
+
+            # 根据版本选择权限类型
+            if android_version >= 33:
+                # Android 13+ 使用照片权限
+                try:
+                    print("[Picker] 请求 PHOTOS 权限...")
+                    status = await Permission.photos.request()
+                except AttributeError:
+                    # 如果不存在 photos，尝试 READ_MEDIA_IMAGES
+                    status = await Permission.READ_MEDIA_IMAGES.request()
             else:
-                perm = fph.Permission.PHOTOS  # 备选
-            status = await ph.request(perm)
+                # Android 12 及以下使用存储权限
+                try:
+                    print("[Picker] 请求 STORAGE 权限...")
+                    status = await Permission.storage.request()
+                except AttributeError:
+                    # 如果不存在 storage，尝试 READ_EXTERNAL_STORAGE
+                    status = await Permission.READ_EXTERNAL_STORAGE.request()
+
             print(f"[Picker] 权限结果: {status}")
-            if status != fph.PermissionStatus.GRANTED:
-                if status == fph.PermissionStatus.PERMANENTLY_DENIED:
+            if not status.is_granted:
+                if status.is_permanently_denied:
                     show_snack(page, "存储权限被永久拒绝，请前往系统设置开启", ft.Colors.RED)
-                    ph.open_app_settings()
+                    # 打开应用设置
+                    await Permission.open_app_settings()
                 else:
                     show_snack(page, "存储权限被拒绝，无法选择图片", ft.Colors.RED)
                 return None
             print("[Picker] 存储权限已授予")
 
-        # ... 其余代码不变（创建 FilePicker 等）
+        # --- 以下是 FilePicker 逻辑（不变）---
+        if not hasattr(page, '_persistent_picker') or page._persistent_picker is None:
+            picker = ft.FilePicker()
+            page._persistent_picker = picker
+            page.overlay.append(picker)
+            print("[Picker] 创建持久化 FilePicker")
+        else:
+            picker = page._persistent_picker
+            if picker not in page.overlay:
+                page.overlay.append(picker)
+            print("[Picker] 复用持久化 FilePicker")
+
+        page.update()
+        await asyncio.sleep(0.2)
+
+        def on_result(e: ft.FilePickerResultEvent):
+            nonlocal path_result
+            print("[Picker] on_result 被触发")
+            if e.files and len(e.files) > 0:
+                path_result = resolve_picker_file(page, e.files[0])
+                print(f"[Picker] 解析路径: {path_result}")
+            else:
+                print("[Picker] 用户取消选择")
+            event.set()
+
+        picker.on_result = on_result
+        print("[Picker] 调用 pick_files...")
+        await picker.pick_files(
+            allow_multiple=False,
+            file_type=ft.FilePickerFileType.IMAGE,
+            dialog_title="选择图片"
+        )
+        try:
+            await asyncio.wait_for(event.wait(), timeout=60)
+            print("[Picker] 选择完成")
+        except asyncio.TimeoutError:
+            print("[Picker] 等待超时")
+
     except Exception as ex:
         print(f"[Picker] 异常: {ex}")
     finally:
+        if picker:
+            picker.on_result = None
         page._picker_lock = False
+        print(f"[Picker] 退出, path_result={path_result}")
     return path_result
 
 
@@ -310,15 +369,22 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                 return
             print("[Camera] 相机权限已授予")
 
-        # 创建 Image 时提供 src="" 避免错误
-        captured_image = ft.Image(src="", width=300, height=300, fit="contain")
+        # 【修复】使用透明占位图初始化 Image
+        captured_image = ft.Image(
+            src_base64=TRANSPARENT_PNG,
+            width=320,
+            height=240,
+            fit="contain",   # 或 ft.ImageFit.CONTAIN（如果枚举可用）
+        )
         camera_widget = None
 
         def on_capture(e):
             print("[Camera] 拍照成功")
-            data_url = e.data
+            data_url = e.data  # data:image/png;base64,...
+            # 直接设置 src 为 data URL
             captured_image.src = data_url
             page.update()
+            # 保存为临时文件
             try:
                 header, encoded = data_url.split(",", 1)
                 ext = "png" if "png" in header else "jpg"
@@ -339,17 +405,16 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
             show_snack(page, f"相机错误: {e.data}", ft.Colors.RED)
             close_camera()
 
-        # 注意：Camera 的 fit 参数在某些版本中可能不支持，若报错可移除
+        # 创建 Camera 控件（兼容 fit 参数）
         try:
             camera_widget = fc.Camera(
                 width=400,
                 height=300,
-                fit="cover",  # 若报错可删除此参数
+                fit="cover",   # 如果报错，会进入 except
                 on_capture=on_capture,
                 on_error=on_error,
             )
         except TypeError:
-            # 如果不支持 fit，则去掉该参数
             camera_widget = fc.Camera(
                 width=400,
                 height=300,
