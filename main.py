@@ -265,27 +265,29 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
     try:
         if page.platform == ft.PagePlatform.ANDROID:
             ph = page._permission_handler
-            perm = None
-            # 鸿蒙4.0/4.2 优先图片媒体权限
-            try:
-                perm = fph.Permission.READ_MEDIA_IMAGES
-                print("[Picker] 尝试申请 READ_MEDIA_IMAGES 图片媒体权限（鸿蒙最优）")
-            except AttributeError:
-                # 库版本不支持该枚举时降级旧存储权限
-                perm = fph.Permission.READ_EXTERNAL_STORAGE
-                print("[Picker] 降级申请 READ_EXTERNAL_STORAGE 存储权限")
+            target_perm = None
+            # 安全判断枚举是否存在
+            if hasattr(fph.Permission, "READ_MEDIA_IMAGES"):
+                target_perm = fph.Permission.READ_MEDIA_IMAGES
+                print("[Picker] 使用 READ_MEDIA_IMAGES")
+            elif hasattr(fph.Permission, "READ_EXTERNAL_STORAGE"):
+                target_perm = fph.Permission.READ_EXTERNAL_STORAGE
+                print("[Picker] 使用 READ_EXTERNAL_STORAGE")
+            else:
+                # 当前权限库不支持这两个枚举，跳过代码层申请，交给系统弹窗
+                print("[Picker] 当前flet-permission-handler无对应媒体存储枚举，跳过代码申请权限")
+                target_perm = None
 
-            perm_status = await ph.request(perm)
-            print(f"[Picker] {perm.name} 授权结果：{perm_status}")
-
-            if perm_status != fph.PermissionStatus.GRANTED:
-                # 判断是永久拒绝，引导跳转系统设置手动开启
-                if perm_status == fph.PermissionStatus.PERMANENTLY_DENIED:
-                    show_snack(page, "权限已被永久禁用，请前往系统设置手动开启图片权限", ft.Colors.RED)
-                    await ph.open_app_settings()
-                else:
-                    show_snack(page, "未授予图片读取权限，无法打开相册", ft.Colors.RED)
-                return None
+            if target_perm is not None:
+                perm_status = await ph.request(target_perm)
+                print(f"[Picker] {target_perm.name} 授权结果：{perm_status}")
+                if perm_status != fph.PermissionStatus.GRANTED:
+                    if perm_status == fph.PermissionStatus.PERMANENTLY_DENIED:
+                        show_snack(page, "权限被永久禁用，请去系统设置开启图片权限", ft.Colors.RED)
+                        await ph.open_app_settings()
+                    else:
+                        show_snack(page, "未授予图片读取权限", ft.Colors.RED)
+                    return None
 
         def file_selected(e: ft.FilePickerResultEvent):
             nonlocal result_path
@@ -365,7 +367,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                 src="",
                 width=300,
                 height=300,
-                fit=ft.ImageFit.CONTAIN,
+                fit=ft.ImageFitMode.CONTAIN,
                 visible=False
             )
 
