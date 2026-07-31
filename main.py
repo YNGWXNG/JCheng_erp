@@ -242,9 +242,6 @@ def compress_image_to_bytes(file_path: str, max_long_edge: int = MAX_IMAGE_LONG_
 
 
 async def pick_image_async(page: ft.Page) -> Optional[str]:
-    """
-    选择图片：使用 flet-permission-handler 请求存储权限，再使用 Flet FilePicker。
-    """
     print("[Picker] enter pick_image_async (Flet FilePicker)")
     if hasattr(page, '_picker_lock') and page._picker_lock:
         print("[Picker] 已有选择器运行，跳过")
@@ -259,30 +256,33 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
         if page.platform == ft.PagePlatform.ANDROID:
             ph = page._permission_handler
             print("[Picker] 请求存储权限...")
-            # 根据 Android 版本选择正确的权限 token
-            # flet-permission-handler 的 Permission 枚举可能包含：
-            # READ_MEDIA_IMAGES (Android 13+), READ_EXTERNAL_STORAGE (旧版), PHOTOS (通用)
-            # 优先尝试 READ_MEDIA_IMAGES，如果不存在则 fallback
+            # 尝试多个权限名称
             perm = None
             for candidate in ['READ_MEDIA_IMAGES', 'READ_EXTERNAL_STORAGE', 'PHOTOS']:
                 if hasattr(fph.Permission, candidate):
                     perm = getattr(fph.Permission, candidate)
                     break
             if perm is None:
-                print("[Picker] 未找到存储权限常量，尝试使用 PHOTOS")
-                perm = fph.Permission.PHOTOS  # 有些版本有 PHOTOS
+                # 兜底：使用 PHOTOS（某些版本）
+                try:
+                    perm = fph.Permission.PHOTOS
+                except AttributeError:
+                    print("[Picker] 没有合适的存储权限常量，假设已授权")
+                    perm = None
+            if perm is not None:
+                status = await ph.request(perm)
+                print(f"[Picker] 权限结果: {status}")
+                if status != fph.PermissionStatus.GRANTED:
+                    if status == fph.PermissionStatus.PERMANENTLY_DENIED:
+                        show_snack(page, "存储权限被永久拒绝，请前往系统设置开启", ft.Colors.RED)
+                    else:
+                        show_snack(page, "存储权限被拒绝，无法选择图片", ft.Colors.RED)
+                    return None
+                print("[Picker] 存储权限已授予")
+            else:
+                print("[Picker] 未找到存储权限，跳过权限请求（可能已授权）")
 
-            status = await ph.request(perm)
-            print(f"[Picker] 权限结果: {status}")
-            if status != fph.PermissionStatus.GRANTED:
-                if status == fph.PermissionStatus.PERMANENTLY_DENIED:
-                    show_snack(page, "存储权限被永久拒绝，请前往系统设置开启", ft.Colors.RED)
-                else:
-                    show_snack(page, "存储权限被拒绝，无法选择图片", ft.Colors.RED)
-                return None
-            print("[Picker] 存储权限已授予")
-
-        # 创建/复用持久化 FilePicker
+        # 创建/复用 FilePicker
         if not hasattr(page, '_persistent_picker') or page._persistent_picker is None:
             picker = ft.FilePicker()
             page._persistent_picker = picker
@@ -295,7 +295,7 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
             print("[Picker] 复用持久化 FilePicker")
 
         page.update()
-        await asyncio.sleep(0.2)  # 确保 UI 渲染
+        await asyncio.sleep(0.2)
 
         def on_result(e: ft.FilePickerResultEvent):
             nonlocal path_result
@@ -331,12 +331,7 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
 
 
 def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
-    """
-    使用 flet_camera 的 Camera 控件拍照（官方 API 方式）
-    """
     print("[Camera] show_camera_view (flet-camera 官方方式)")
-
-    # 桌面端降级到相册
     if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS):
         async def desktop_fallback():
             path = await pick_image_async(page)
@@ -345,14 +340,11 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         page.run_task(desktop_fallback)
         return
 
-    # Android 端
     async def start_camera():
         print("[Camera] 启动相机 (flet-camera 官方方式)")
-
-        # 1. 请求相机权限（使用 flet-permission-handler）
-        try:
-            import flet_permission_handler as fph
-            ph = page._permission_handler  # 确保已在 main 中初始化
+        # 请求相机权限
+        if page.platform == ft.PagePlatform.ANDROID:
+            ph = page._permission_handler
             print("[Camera] 请求相机权限...")
             status = await ph.request(fph.Permission.CAMERA)
             print(f"[Camera] 权限结果: {status}")
@@ -361,126 +353,85 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                     show_snack(page, "相机权限被永久拒绝，请前往系统设置开启", ft.Colors.RED)
                 else:
                     show_snack(page, "相机权限被拒绝，请从相册选择", ft.Colors.RED)
-                # 降级到相册
                 path = await pick_image_async(page)
                 if path:
                     on_picture_taken(path)
                 return
             print("[Camera] 相机权限已授予")
-        except Exception as e:
-            print(f"[Camera] 权限请求异常: {e}")
-            show_snack(page, f"权限错误: {str(e)[:30]}，降级到相册", ft.Colors.RED)
-            path = await pick_image_async(page)
-            if path:
-                on_picture_taken(path)
-            return
 
-        # 2. 创建相机控件（官方示例方式）
-        from flet_camera import Camera
-        import base64
-        import tempfile
-
-        camera = None
-        camera_container = ft.Container(expand=True)
+        # 创建 Camera 控件（去掉 fit 参数，因为版本不支持）
+        camera_ref = ft.Ref[fc.Camera]()
+        captured_image = ft.Image(width=300, height=300, fit="contain")
+        camera_widget = None
 
         def on_capture(e):
-            # e.data 是 Data URL: data:image/png;base64,...
-            print("[Camera] on_capture 触发，处理照片...")
+            print("[Camera] 拍照成功")
             data_url = e.data
+            captured_image.src = data_url
+            page.update()
             try:
                 header, encoded = data_url.split(",", 1)
                 ext = "png" if "png" in header else "jpg"
-                # 保存到临时文件
-                tmp = tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False)
-                tmp.write(base64.b64decode(encoded))
-                tmp.close()
-                path = tmp.name
-                print(f"[Camera] 照片已保存: {path}")
-                # 关闭相机并回调
+                import tempfile
+                tmp_file = tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False)
+                tmp_file.write(base64.b64decode(encoded))
+                tmp_file.close()
+                tmp_path = tmp_file.name
+                print(f"[Camera] 图片保存到: {tmp_path}")
                 close_camera()
-                on_picture_taken(path)
+                on_picture_taken(tmp_path)
             except Exception as err:
-                print(f"[Camera] 保存照片失败: {err}")
-                show_snack(page, f"保存失败: {str(err)[:30]}", ft.Colors.RED)
-                # 保持相机打开，或降级
-                # 这里简单关闭并降级到相册
-                close_camera()
-                show_snack(page, "拍照处理失败，请从相册选择", ft.Colors.RED)
-                async def fallback():
-                    path = await pick_image_async(page)
-                    if path:
-                        on_picture_taken(path)
-                page.run_task(fallback)
+                print(f"[Camera] 保存图片失败: {err}")
+                show_snack(page, f"保存失败: {err}", ft.Colors.RED)
 
         def on_error(e):
             print(f"[Camera] 相机错误: {e.data}")
             show_snack(page, f"相机错误: {e.data}", ft.Colors.RED)
             close_camera()
-            # 降级到相册
-            async def fallback():
-                path = await pick_image_async(page)
-                if path:
-                    on_picture_taken(path)
-            page.run_task(fallback)
+
+        # 创建相机实例时，只传入支持的参数
+        camera_widget = fc.Camera(
+            width=400,
+            height=300,
+            on_capture=on_capture,
+            on_error=on_error,
+            # fit 参数移除
+        )
+
+        camera_container = ft.Container(
+            expand=True,
+            bgcolor=ft.Colors.BLACK,
+            content=ft.Stack([
+                ft.Column([
+                    camera_widget,
+                    captured_image,
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                ft.Row([
+                    ft.IconButton(
+                        ft.Icons.CAMERA_ALT,
+                        icon_size=48,
+                        on_click=lambda e: camera_widget.capture(),
+                        style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=15),
+                    ),
+                    ft.IconButton(
+                        ft.Icons.CLOSE,
+                        icon_size=32,
+                        on_click=lambda e: close_camera(),
+                        style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=10),
+                    ),
+                ], alignment=ft.MainAxisAlignment.CENTER, spacing=30, bottom=40)
+            ])
+        )
 
         def close_camera():
-            nonlocal camera
-            if camera and camera in camera_container.content.controls:
-                # 从容器中移除相机控件
-                if hasattr(camera_container.content, 'controls'):
-                    try:
-                        camera_container.content.controls.remove(camera)
-                    except:
-                        pass
             if camera_container in page.overlay:
                 page.overlay.remove(camera_container)
                 page.update()
-            print("[Camera] 相机已关闭")
+                print("[Camera] 已关闭相机")
 
-        # 构建相机 UI（类似官方示例，但放在 Overlay 中以全屏显示）
-        camera = Camera(
-            width=page.width or 640,
-            height=page.height or 480,
-            fit="cover",
-            on_capture=on_capture,
-            on_error=on_error
-        )
-
-        # 添加关闭和拍照按钮
-        close_btn = ft.IconButton(
-            icon=ft.Icons.CLOSE,
-            icon_size=32,
-            style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=10),
-            on_click=lambda e: close_camera()
-        )
-        capture_btn = ft.IconButton(
-            icon=ft.Icons.CAMERA_ALT,
-            icon_size=48,
-            style=ft.ButtonStyle(bgcolor=ft.Colors.WHITE, shape=ft.CircleBorder(), padding=15),
-            on_click=lambda e: camera.capture()  # 调用 capture() 触发 on_capture
-        )
-
-        # 将相机和按钮放在一个 Stack 中
-        camera_stack = ft.Stack(
-            [
-                camera,
-                ft.Row(
-                    [capture_btn, close_btn],
-                    alignment=ft.MainAxisAlignment.CENTER,
-                    spacing=30,
-                    bottom=40,
-                )
-            ],
-            expand=True,
-        )
-
-        camera_container.content = camera_stack
-        camera_container.bgcolor = ft.Colors.BLACK
-
-        # 添加到 Overlay
         page.overlay.append(camera_container)
         page.update()
-        print("[Camera] 相机 UI 已显示")
+        print("[Camera] 相机已打开")
 
     page.run_task(start_camera)
 
