@@ -76,8 +76,7 @@ jobs:
       - name: Clean old build cache
         run: |
           rm -rf build/
-          rm -rf .flet/
-          flutter clean
+          rm -rf .flet
         shell: bash
 
       - name: Show environment
