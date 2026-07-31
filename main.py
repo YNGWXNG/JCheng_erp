@@ -265,29 +265,16 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
     try:
         if page.platform == ft.PagePlatform.ANDROID:
             ph = page._permission_handler
-            target_perm = None
-            # 安全判断枚举是否存在
-            if hasattr(fph.Permission, "READ_MEDIA_IMAGES"):
-                target_perm = fph.Permission.READ_MEDIA_IMAGES
-                print("[Picker] 使用 READ_MEDIA_IMAGES")
-            elif hasattr(fph.Permission, "READ_EXTERNAL_STORAGE"):
-                target_perm = fph.Permission.READ_EXTERNAL_STORAGE
-                print("[Picker] 使用 READ_EXTERNAL_STORAGE")
-            else:
-                # 当前权限库不支持这两个枚举，跳过代码层申请，交给系统弹窗
-                print("[Picker] 当前flet-permission-handler无对应媒体存储枚举，跳过代码申请权限")
-                target_perm = None
-
-            if target_perm is not None:
-                perm_status = await ph.request(target_perm)
-                print(f"[Picker] {target_perm.name} 授权结果：{perm_status}")
-                if perm_status != fph.PermissionStatus.GRANTED:
-                    if perm_status == fph.PermissionStatus.PERMANENTLY_DENIED:
-                        show_snack(page, "权限被永久禁用，请去系统设置开启图片权限", ft.Colors.RED)
-                        await ph.open_app_settings()
-                    else:
-                        show_snack(page, "未授予图片读取权限", ft.Colors.RED)
-                    return None
+            # 使用库内置相册枚举，内部自动适配安卓新旧媒体权限
+            perm_status = await ph.request(fph.Permission.PHOTO_LIBRARY)
+            print(f"[Picker] PHOTO_LIBRARY 授权状态：{perm_status}")
+            if perm_status != fph.PermissionStatus.GRANTED:
+                if perm_status == fph.PermissionStatus.PERMANENTLY_DENIED:
+                    show_snack(page, "相册权限被永久禁用，请前往系统设置手动开启", ft.Colors.RED)
+                    await ph.open_app_settings()
+                else:
+                    show_snack(page, "未授予相册访问权限", ft.Colors.ORANGE)
+                return None
 
         def file_selected(e: ft.FilePickerResultEvent):
             nonlocal result_path
@@ -299,20 +286,18 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
         page.overlay.append(file_picker)
         page.update()
 
-        file_picker.pick_files(
-            allow_multiple=False,
-            file_type=ft.FilePickerFileType.IMAGE
-        )
+        # 加上await，根治协程 never awaited 警告
+        await file_picker.pick_files(allow_multiple=False, file_type=ft.FilePickerFileType.IMAGE)
         await pick_event.wait()
 
     except Exception as err:
         print(f"[Picker] 相册运行异常：{err}")
-        show_snack(page, f"打开相册失败：{str(err)}", ft.Colors.RED)
+        show_snack(page, f"相册异常：{str(err)}", ft.Colors.RED)
     finally:
         page._picker_lock = False
         if file_picker in page.overlay:
             page.overlay.remove(file_picker)
-        page.update()
+            page.update()
     return result_path
 
 
@@ -367,7 +352,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                 src="",
                 width=300,
                 height=300,
-                fit=ft.ImageFitMode.CONTAIN,
+                fit=ft.BoxFit.CONTAIN,
                 visible=False
             )
 
