@@ -1,5 +1,6 @@
 app_name: JCheng
 version: 1.1.1   # 添加版本号，格式 major.minor.patch
+version_code: 111
 
 android:
   package: com.flet.jcheng_erp
