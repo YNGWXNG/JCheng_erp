@@ -73,20 +73,28 @@ jobs:
           restore-keys: |
             gradle-${{ runner.os }}-
 
+      - name: Clean old build cache
+        run: |
+          rm -rf build/
+          rm -rf .flet/
+          flutter clean
+        shell: bash
+
       - name: Show environment
         run: |
           echo "JAVA_HOME=$JAVA_HOME"
           java -version
           python --version
           flutter --version
-          flet --version || true
         shell: bash
 
-      - name: Install Python dependencies
+      - name: Install Python dependencies & lock flet-cli
         run: |
           python -m pip install --upgrade pip wheel
           pip install -r requirements.txt
+          # 强制锁定cli版本与项目flet完全一致0.86.2，避免版本错位打包异常
           pip install flet-cli==0.86.2
+          pip show flet flet-camera flet-permission-handler
         shell: bash
 
       - name: Build APK
