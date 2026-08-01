@@ -195,8 +195,15 @@ def show_alert(page: ft.Page, title, content, on_ok=None):
     page.update()
 
 def show_snack(page: ft.Page, msg, bgcolor=ft.Colors.GREY_800):
-    page.snack_bar = ft.SnackBar(ft.Text(msg), bgcolor=bgcolor)
-    page.snack_bar.open = True
+    # 创建 SnackBar 对象（可增加浮动行为避免被遮挡）
+    snack = ft.SnackBar(
+        ft.Text(msg),
+        bgcolor=bgcolor,
+        behavior=ft.SnackBarBehavior.FLOATING   # 可选，让 SnackBar 浮在底部之上
+    )
+    # 兼容旧版 Flet：用 overlay 方式显示
+    page.overlay.append(snack)
+    snack.open = True
     page.update()
 
 # ====================== 文件/相册/相机（全修复） ======================
@@ -274,9 +281,9 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
                 if perm_status == fph.PermissionStatus.PERMANENTLY_DENIED:
                     # 永久拒绝，跳转系统设置
                     await ph.open_app_settings()
-                    page.show_snack_bar(ft.SnackBar(ft.Text("相册权限已永久禁用，请前往系统设置手动开启")))
+                    show_snack(page,"相册权限已永久禁用，请前往系统设置手动开启")
                 else:
-                    page.show_snack_bar(ft.SnackBar(ft.Text("未授予相册读取权限")))
+                    show_snack(page,"未授予相册读取权限")
                 return None
 
         def file_selected(e: ft.FilePickerResultEvent):
@@ -298,7 +305,7 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
 
     except Exception as err:
         print(f"[Picker] 相册运行异常：{err}")
-        page.show_snack_bar(ft.SnackBar(ft.Text(f"打开相册失败：{str(err)}")))
+        show_snack(page,f"打开相册失败：{str(err)}")
     finally:
         page._picker_lock = False
         if file_picker in page.overlay:
