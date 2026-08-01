@@ -251,6 +251,7 @@ async def request_location_permission(page: ft.Page) -> bool:
     status_coarse = await ph.request(fph.Permission.ACCESS_COARSE_LOCATION)
     return status_coarse == fph.PermissionStatus.GRANTED
 
+
 async def pick_image_async(page: ft.Page) -> Optional[str]:
     print("[Picker] 鸿蒙4.x 相册权限适配启动")
     if hasattr(page, '_picker_lock') and page._picker_lock:
@@ -265,15 +266,17 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
     try:
         if page.platform == ft.PagePlatform.ANDROID:
             ph = page._permission_handler
-            # 使用库内置相册枚举，内部自动适配安卓新旧媒体权限
-            perm_status = await ph.request(fph.Permission.PHOTO_LIBRARY)
-            print(f"[Picker] PHOTO_LIBRARY 授权状态：{perm_status}")
+            # 使用当前环境真实存在的 PHOTOS 权限
+            perm_status = await ph.request(fph.Permission.PHOTOS)
+            print(f"[Picker] PHOTOS 授权结果：{perm_status}")
+
             if perm_status != fph.PermissionStatus.GRANTED:
                 if perm_status == fph.PermissionStatus.PERMANENTLY_DENIED:
-                    show_snack(page, "相册权限被永久禁用，请前往系统设置手动开启", ft.Colors.RED)
+                    # 永久拒绝，跳转系统设置
                     await ph.open_app_settings()
+                    page.show_snack_bar(ft.SnackBar(ft.Text("相册权限已永久禁用，请前往系统设置手动开启")))
                 else:
-                    show_snack(page, "未授予相册访问权限", ft.Colors.ORANGE)
+                    page.show_snack_bar(ft.SnackBar(ft.Text("未授予相册读取权限")))
                 return None
 
         def file_selected(e: ft.FilePickerResultEvent):
@@ -286,13 +289,16 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
         page.overlay.append(file_picker)
         page.update()
 
-        # 加上await，根治协程 never awaited 警告
-        await file_picker.pick_files(allow_multiple=False, file_type=ft.FilePickerFileType.IMAGE)
+        # 补全 await，解决协程 never awaited 警告
+        await file_picker.pick_files(
+            allow_multiple=False,
+            file_type=ft.FilePickerFileType.IMAGE
+        )
         await pick_event.wait()
 
     except Exception as err:
         print(f"[Picker] 相册运行异常：{err}")
-        show_snack(page, f"相册异常：{str(err)}", ft.Colors.RED)
+        page.show_snack_bar(ft.SnackBar(ft.Text(f"打开相册失败：{str(err)}")))
     finally:
         page._picker_lock = False
         if file_picker in page.overlay:
@@ -320,7 +326,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
             nonlocal camera_widget
             if camera_widget is not None:
                 try:
-                    await camera_widget.stop()
+                    camera_widget.dispose()
                     print("[Camera] 相机预览流已停止")
                 except Exception as e:
                     print(f"[Camera] 停止相机异常: {e}")
@@ -407,16 +413,20 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                                     ft.Icons.CAMERA_ALT,
                                     icon_size=48,
                                     bgcolor=ft.Colors.WHITE,
-                                    shape=ft.CircleBorder(),
                                     padding=15,
+                                    style=ft.ButtonStyle(
+                                        shape=ft.CircleBorder()
+                                    ),
                                     on_click=lambda _: camera_widget.capture()
                                 ),
                                 ft.IconButton(
                                     ft.Icons.CLOSE,
                                     icon_size=32,
                                     bgcolor=ft.Colors.WHITE,
-                                    shape=ft.CircleBorder(),
                                     padding=10,
+                                    style=ft.ButtonStyle(
+                                        shape=ft.CircleBorder()
+                                    ),
                                     on_click=lambda _: page.run_task(close_camera())
                                 )
                             ],
