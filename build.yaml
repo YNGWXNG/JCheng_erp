@@ -2,6 +2,13 @@ app_name: JCheng
 version: 1.1.1
 version_code: 111
 
+flutter:
+  dependencies:
+    flutter:
+      sdk: flutter
+    # 新增主流稳定版扫码插件，底层ZXing，Dart原生解码
+    mobile_scanner: ^4.0.1
+
 android:
   package: com.flet.jcheng_erp
   label: JCheng
@@ -22,8 +29,6 @@ android:
     # 前台定位权限
     - android.permission.ACCESS_FINE_LOCATION
     - android.permission.ACCESS_COARSE_LOCATION
-    # 暂时注释后台定位，无需求则不启用
-    # - android.permission.ACCESS_BACKGROUND_LOCATION
 
   features:
     - name: android.hardware.camera
@@ -41,3 +46,7 @@ android:
     requestLegacyExternalStorage: true
     android:preserveLegacyExternalStorage: true
     android:exported: true
+    # mobile_scanner 需要开启相机硬件特性必选
+    meta_data:
+      - name: android.hardware.camera.autofocus
+        value: true
