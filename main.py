@@ -273,13 +273,11 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
     try:
         if page.platform == ft.PagePlatform.ANDROID:
             ph = page._permission_handler
-            # 使用当前环境真实存在的 PHOTOS 权限
             perm_status = await ph.request(fph.Permission.STORAGE)
-            print(f"[Picker] PHOTOS 授权结果：{perm_status}")
+            print(f"[Picker] STORAGE 授权结果：{perm_status}")
 
             if perm_status != fph.PermissionStatus.GRANTED:
                 if perm_status == fph.PermissionStatus.PERMANENTLY_DENIED:
-                    # 永久拒绝，跳转系统设置
                     await ph.open_app_settings()
                     show_snack(page,"相册权限已永久禁用，请前往系统设置手动开启")
                 else:
@@ -296,12 +294,16 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
         page.overlay.append(file_picker)
         page.update()
 
-        # 补全 await，解决协程 never awaited 警告
         await file_picker.pick_files(
             allow_multiple=False,
             file_type=ft.FilePickerFileType.IMAGE
         )
-        await pick_event.wait()
+        # 增加10s超时，超时自动放行，避免一直阻塞
+        try:
+            await asyncio.wait_for(pick_event.wait(), timeout=10.0)
+        except asyncio.TimeoutError:
+            print("[Picker] 文件选择器等待超时，用户长时间未操作")
+            show_snack(page, "选择超时，已取消选取")
 
     except Exception as err:
         print(f"[Picker] 相册运行异常：{err}")
@@ -445,7 +447,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
 
             # 启动预览
             print("[Camera] 开始启动相机预览")
-            await camera_widget.start()
+            # await camera_widget.session.start()
             print("[Camera] 相机预览启动成功")
 
         except Exception as global_err:
