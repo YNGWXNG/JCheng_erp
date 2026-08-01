@@ -279,13 +279,11 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
             if perm_status != fph.PermissionStatus.GRANTED:
                 if perm_status == fph.PermissionStatus.PERMANENTLY_DENIED:
                     await ph.open_app_settings()
-                    show_snack(page, "相册权限已永久禁用，请前往系统设置手动开启")
+                    show_snack(page,"相册权限已永久禁用，请前往系统设置手动开启")
                 else:
-                    show_snack(page, "未授予相册读取权限")
-                # 权限拒绝直接退出，沿用你原有return逻辑
+                    show_snack(page,"未授予相册读取权限")
                 return None
 
-        # 选中回调保持原样
         def file_selected(e: ft.FilePickerResultEvent):
             nonlocal result_path
             if e.files:
@@ -294,16 +292,14 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
 
         file_picker.on_result = file_selected
         page.overlay.append(file_picker)
-        # 官方规范：优先使用异步update_async，安卓主线程更稳定
-        await page.update_async()
+        # 删掉 update_async，改用原版 page.update()
+        page.update()
 
-        # 官方标准参数补齐，其余参数完全沿用你的配置
         await file_picker.pick_files(
             allow_multiple=False,
             file_type=ft.FilePickerFileType.IMAGE,
-            dialog_title="选择相册图片"  # 官方建议补充弹窗标题，原生相册体验更友好
+            dialog_title="选择相册图片"
         )
-        # 10s超时逻辑完全保留
         try:
             await asyncio.wait_for(pick_event.wait(), timeout=10.0)
         except asyncio.TimeoutError:
@@ -312,13 +308,13 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
 
     except Exception as err:
         print(f"[Picker] 相册运行异常：{err}")
-        show_snack(page, f"打开相册失败：{str(err)}")
+        show_snack(page,f"打开相册失败：{str(err)}")
     finally:
         page._picker_lock = False
-        # 安全移除Picker实例，避免overlay残留，官方标准清理方式
         if file_picker in page.overlay:
             page.overlay.remove(file_picker)
-            await page.update_async()
+            # 此处同样替换为同步update
+            page.update()
     return result_path
 
 
@@ -338,6 +334,11 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         camera_container: Optional[ft.Container] = None
         selected_cam: Optional[fc.CameraDescription] = None
 
+        async def do_take_photo(e):
+            await take_photo_action()
+
+        async def do_close_camera(e):
+            await close_camera()
         async def close_camera():
             nonlocal camera_container
             if camera_container and camera_container in page.overlay:
@@ -400,7 +401,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                                 bgcolor=ft.Colors.WHITE,
                                 padding=15,
                                 style=ft.ButtonStyle(shape=ft.CircleBorder()),
-                                on_click=lambda e: page.run_task(take_photo_action())
+                                on_click=do_take_photo
                             ),
                             ft.IconButton(
                                 ft.Icons.CLOSE,
@@ -408,7 +409,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                                 bgcolor=ft.Colors.WHITE,
                                 padding=10,
                                 style=ft.ButtonStyle(shape=ft.CircleBorder()),
-                                on_click=lambda _: page.run_task(close_camera())
+                                on_click=do_close_camera
                             )
                         ],
                         alignment=ft.MainAxisAlignment.CENTER,
