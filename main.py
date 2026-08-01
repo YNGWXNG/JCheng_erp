@@ -267,7 +267,7 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
         if page.platform == ft.PagePlatform.ANDROID:
             ph = page._permission_handler
             # 使用当前环境真实存在的 PHOTOS 权限
-            perm_status = await ph.request(fph.Permission.PHOTOS)
+            perm_status = await ph.request(fph.Permission.STORAGE)
             print(f"[Picker] PHOTOS 授权结果：{perm_status}")
 
             if perm_status != fph.PermissionStatus.GRANTED:
@@ -323,17 +323,10 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         camera_container: Optional[ft.Container] = None
 
         async def close_camera():
-            nonlocal camera_widget
-            if camera_widget is not None:
-                try:
-                    camera_widget.dispose()
-                    print("[Camera] 相机预览流已停止")
-                except Exception as e:
-                    print(f"[Camera] 停止相机异常: {e}")
+            nonlocal camera_container
             if camera_container and camera_container in page.overlay:
                 page.overlay.remove(camera_container)
                 page.update()
-            print("[Camera] 相机弹窗已关闭")
 
         try:
             # Android相机权限校验
