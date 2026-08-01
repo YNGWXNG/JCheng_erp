@@ -261,16 +261,20 @@ async def request_location_permission(page: ft.Page) -> bool:
 
 async def pick_image_async(page: ft.Page) -> Optional[str]:
     print("[Picker] 鸿蒙4.x 相册权限适配启动")
-    if hasattr(page, '_picker_lock') and page._picker_lock:
+
+    # 确保 page.data 是字典（防止 None 报错）
+    if page.data is None:
+        page.data = {}
+
+    if page.data.get("picker_lock", False):
         print("[Picker] 文件选择器正在运行，禁止重复唤起")
         return None
-    page._picker_lock = True
+    page.data["picker_lock"] = True
 
     result_path: Optional[str] = None
-    pick_event = asyncio.Event()
-    file_picker = ft.FilePicker()
 
     try:
+        # 保留你原来的权限逻辑（未修改）
         if page.platform == ft.PagePlatform.ANDROID:
             ph = page._permission_handler
             perm_status = await ph.request(fph.Permission.STORAGE)
@@ -279,42 +283,34 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
             if perm_status != fph.PermissionStatus.GRANTED:
                 if perm_status == fph.PermissionStatus.PERMANENTLY_DENIED:
                     await ph.open_app_settings()
-                    show_snack(page,"相册权限已永久禁用，请前往系统设置手动开启")
+                    page.show_snack_bar(
+                        ft.SnackBar(content=ft.Text("相册权限已永久禁用，请前往系统设置手动开启"))
+                    )
                 else:
-                    show_snack(page,"未授予相册读取权限")
+                    page.show_snack_bar(
+                        ft.SnackBar(content=ft.Text("未授予相册读取权限"))
+                    )
                 return None
 
-        def file_selected(e: ft.FilePickerResultEvent):
-            nonlocal result_path
-            if e.files:
-                result_path = e.files[0].path
-            pick_event.set()
-
-        file_picker.on_result = file_selected
-        page.overlay.append(file_picker)
-        # 删掉 update_async，改用原版 page.update()
-        page.update()
-
-        await file_picker.pick_files(
+        # ===== 关键修正：完全对标官方示例，不操作 overlay，返回值直接按列表处理 =====
+        file_picker = ft.FilePicker()
+        files = await file_picker.pick_files(
             allow_multiple=False,
-            file_type=ft.FilePickerFileType.IMAGE,
-            dialog_title="选择相册图片"
+            file_type=ft.FilePickerFileType.IMAGE
         )
-        try:
-            await asyncio.wait_for(pick_event.wait(), timeout=10.0)
-        except asyncio.TimeoutError:
-            print("[Picker] 文件选择器等待超时，用户长时间未操作")
-            show_snack(page, "选择超时，已取消选取")
+
+        # 官方例子用法：files 是列表或 None
+        if files and len(files) > 0:
+            result_path = files[0].path
+        # 如果取消选择，files 为 None 或空列表，result_path 保持 None
 
     except Exception as err:
         print(f"[Picker] 相册运行异常：{err}")
-        show_snack(page,f"打开相册失败：{str(err)}")
+        page.show_snack_bar(ft.SnackBar(content=ft.Text(f"打开相册失败：{str(err)}")))
     finally:
-        page._picker_lock = False
-        if file_picker in page.overlay:
-            page.overlay.remove(file_picker)
-            # 此处同样替换为同步update
-            page.update()
+        page.data["picker_lock"] = False
+        # 不需要 remove，FilePicker 内部自动清理
+
     return result_path
 
 
@@ -453,22 +449,25 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         # 拍照异步逻辑
         async def take_photo_action():
             try:
-                # 标准异步拍照接口
                 img_data = await camera_widget.take_picture()
-                captured_image.src = img_data
-                captured_image.visible = True
-                page.update()
+                # 分支兼容两种返回格式：带前缀base64字符串 / 原生bytes
+                if isinstance(img_data, str):
+                    if "," in img_data:
+                        _, b64_body = img_data.split(",", 1)
+                        img_bytes = base64.b64decode(b64_body)
+                    else:
+                        img_bytes = base64.b64decode(img_data)
+                elif isinstance(img_data, bytes):
+                    img_bytes = img_data
+                else:
+                    raise Exception("未获取到有效图片数据")
 
-                # base64解码保存临时文件
-                header_b64, b64_data = img_data.split(",", 1)
-                ext = "png" if "png" in header_b64 else "jpg"
-                tmp_file = tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False)
-                tmp_file.write(base64.b64decode(b64_data))
+                # 写入临时文件
+                tmp_file = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+                tmp_file.write(img_bytes)
                 tmp_file.close()
                 tmp_path = tmp_file.name
-                print(f"[Camera] 图片临时路径：{tmp_path}")
 
-                # 关闭相机并回调外部业务
                 await close_camera()
                 on_picture_taken(tmp_path)
             except Exception as pic_err:
@@ -531,7 +530,26 @@ def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], N
     dlg.open = True
     page.update()
 
+
 def barcode_image_decode(file_path: str) -> List[str]:
+    """
+    优先使用 Android 原生 ZXing 本地解码，失败后回退到在线解码。
+    文件接收方式与原函数完全相同，仅通过 file_path 传入。
+    """
+    # 1. 优先尝试本地 ZXing 解码（高速，毫秒级）
+    try:
+        import zxing
+        reader = zxing.BarCodeReader()
+        barcode = reader.decode(file_path)  # 直接使用文件路径，无需压缩
+        if barcode and barcode.parsed:
+            return [barcode.parsed]
+    except ImportError:
+        # zxing 未安装时自动忽略，继续使用在线解码
+        pass
+    except Exception as e:
+        print(f"[Barcode] 本地 ZXing 解码异常: {e}")
+
+    # 2. 本地解码失败或不可用，回退到原有的在线解码（完全保留原逻辑）
     try:
         img_bytes = compress_image_to_bytes(file_path)
         files = {"file": ("img.jpg", img_bytes, "image/jpeg")}
