@@ -11,28 +11,25 @@ android:
     - android.permission.INTERNET
     - android.permission.ACCESS_NETWORK_STATE
     - android.permission.CAMERA
-    # 鸿蒙4.0/4.2（Android12）相册读取核心权限
+    # Android13+ 图片、视频媒体权限
     - android.permission.READ_MEDIA_IMAGES
     - android.permission.READ_MEDIA_VIDEO
-    # 低版本安卓兜底存储，API32以上自动失效
+    # Android12及以下兼容存储权限
     - name: android.permission.READ_EXTERNAL_STORAGE
       maxSdkVersion: 32
     - name: android.permission.WRITE_EXTERNAL_STORAGE
       maxSdkVersion: 32
-    # ==========新增位置权限组==========
-    # 精准GPS定位
+    # 前台定位权限
     - android.permission.ACCESS_FINE_LOCATION
-    # 基站/WiFi粗略定位
     - android.permission.ACCESS_COARSE_LOCATION
-    # Android12+ 后台持续定位必备（需要后台获取坐标再加）
-    - android.permission.ACCESS_BACKGROUND_LOCATION
+    # 暂时注释后台定位，无需求则不启用
+    # - android.permission.ACCESS_BACKGROUND_LOCATION
 
   features:
     - name: android.hardware.camera
       required: false
     - name: android.hardware.camera.autofocus
       required: false
-    # 声明设备支持定位硬件
     - name: android.hardware.location
       required: false
     - name: android.hardware.location.gps
