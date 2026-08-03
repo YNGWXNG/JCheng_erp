@@ -23,6 +23,7 @@ from typing import Callable, Optional
 from pyzbar.pyzbar import decode as pyzbar_decode
 import concurrent.futures
 import time
+import shutil
 
 SERVER_DECODE_URL = os.getenv("SERVER_DECODE_URL", "https://api.qrserver.com/v1/read-qr-code/")
 MAX_IMAGE_LONG_EDGE = 1280
@@ -660,7 +661,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                     # 我们约定回调函数接收图片路径和识别到的条码（作为扩展）
                     # 为兼容原有回调，我们在这里调用 on_picture_taken(tmp_path)，
                     # 并额外存储识别结果到 page.data 供后续使用
-                    page.data["last_scan_code"] = recognizer_text  # 存储识别码
+                    page.data["last_scan_code"] = recognized_text  # 存储识别码
                     page.pop_dialog()
                     # 调用原始回调，传递图片路径
                     on_picture_taken(tmp_path)
