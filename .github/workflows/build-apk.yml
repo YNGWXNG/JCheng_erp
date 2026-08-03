@@ -13,8 +13,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    env:
-      PIP_EXTRA_INDEX_URL: https://pypi.flet.dev/simple/   # 👈 加这一行
 
     steps:
       - name: Checkout code
