@@ -99,7 +99,16 @@ jobs:
       - name: Build APK
         run: |
           set -euo pipefail
-          flet build apk --verbose
+          (set +o pipefail; yes 2>/dev/null | flet build apk --verbose \
+            --android-permissions android.permission.INTERNET=true \
+            --android-permissions android.permission.ACCESS_NETWORK_STATE=true \
+            --android-permissions android.permission.CAMERA=true \
+            --android-permissions android.permission.READ_MEDIA_IMAGES=true \
+            --android-permissions android.permission.READ_MEDIA_VIDEO=true \
+            --android-permissions android.permission.READ_EXTERNAL_STORAGE=true \
+            --android-permissions android.permission.WRITE_EXTERNAL_STORAGE=true \
+            --android-permissions android.permission.ACCESS_FINE_LOCATION=true \
+            --android-permissions android.permission.ACCESS_COARSE_LOCATION=true)
         shell: bash
 
       - name: Upload APK artifact
