@@ -7,4 +7,4 @@ reportlab==4.2.2
 numpy==2.4.6
 flet-permission-handler>=0.3.0
 pyzbar==0.1.9
-flet-libzbar==0.23.93
+flet-libzbar
