@@ -4,7 +4,7 @@ mysql-connector-python==8.3.0
 Pillow==12.2.0
 requests==2.32.3
 reportlab==4.2.2
-pyzbar==0.1.8
 numpy==2.4.6
 flet-permission-handler>=0.3.0
-zxing==1.0.1
+pyzbar==0.1.9
+flet-libzbar==0.23.93
