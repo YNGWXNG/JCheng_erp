@@ -387,10 +387,11 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
 
 def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
     """
-    修复版全屏相机：适配Flet 0.86.2 API，修复focus报错、初始化失败、层级、键盘四大问题
-    回调接口与原函数完全一致，上层业务无需修改
+    官方规范版全屏相机：保留原有闪光灯功能，对齐官方初始化写法
+    修复：参数报错、层级靠底、拍照偶发无反应问题
+    上层业务回调接口完全不变
     """
-    print("[Camera] 修复版相机启动")
+    print("[Camera] 带闪光灯官方规范版相机启动")
 
     # 桌面端降级逻辑保留不变
     if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS):
@@ -401,37 +402,66 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         page.run_task(desktop_fallback)
         return
 
-    # ========== 移动端相机实现 ==========
-    camera_widget: Optional[fc.Camera] = None
-    camera_dialog: Optional[ft.AlertDialog] = None
-    camera_ready = False  # 相机就绪状态锁，修复拍照无反应
+    # ========== 状态管理（对齐官方设计 + 保留原有闪光灯状态） ==========
+    is_initialized = False
+    flash_on = False  # 闪光灯状态，复用原有逻辑
+    camera_widget = fc.Camera(
+        expand=True,
+        preview_enabled=True,
+    )
 
+    # ========== 关闭相机 ==========
     async def close_camera():
-        """安全关闭相机：先释放资源，再关闭弹窗"""
-        nonlocal camera_ready
-        camera_ready = False
-        try:
-            if camera_widget is not None:
-                # 停止相机预览，释放系统相机资源
+        nonlocal is_initialized, flash_on
+        if is_initialized and camera_widget is not None:
+            try:
+                # 关闭前先关掉闪光灯，避免后台常亮
+                if flash_on:
+                    await camera_widget.set_flash_mode(fc.FlashMode.OFF)
+                    flash_on = False
                 await camera_widget.stop()
-        except Exception as e:
-            print(f"[Camera] 停止相机异常：{e}")
-        # 关闭弹窗
+            except Exception as e:
+                print(f"[Camera] 停止相机异常：{e}")
+        is_initialized = False
         page.pop_dialog()
         page.update()
 
-    async def take_photo(_):
-        """拍照逻辑：就绪校验 + 兼容base64返回格式"""
-        nonlocal camera_ready
-        if not camera_ready or camera_widget is None:
+    # ========== 闪光灯开关（完全复用原有正常逻辑） ==========
+    async def toggle_flash(e):
+        nonlocal flash_on
+        if not is_initialized:
+            show_snack(page, "相机正在初始化，请稍候...", ft.Colors.ORANGE)
+            return
+        flash_on = not flash_on
+        try:
+            if flash_on:
+                await camera_widget.set_flash_mode(fc.FlashMode.TORCH)
+                flash_btn.icon = ft.Icons.FLASH_ON
+            else:
+                await camera_widget.set_flash_mode(fc.FlashMode.OFF)
+                flash_btn.icon = ft.Icons.FLASH_OFF
+            flash_btn.update()
+        except AttributeError:
+            show_snack(page, "闪光灯控制不可用", ft.Colors.ORANGE)
+            flash_on = not flash_on
+        except Exception as ex:
+            print(f"[Camera] 闪光灯异常: {ex}")
+            show_snack(page, "闪光灯控制失败", ft.Colors.ORANGE)
+            flash_on = not flash_on
+
+    # ========== 拍照逻辑（对齐官方无参异步写法） ==========
+    async def take_photo():
+        nonlocal is_initialized
+        if not is_initialized:
             show_snack(page, "相机正在初始化，请稍候...", ft.Colors.ORANGE)
             return
 
         try:
-            # 兼容flet_camera返回格式：支持base64字符串和bytes两种
+            # 完全对齐官方：直接调用take_picture，返回base64字符串
             img_data = await camera_widget.take_picture()
+
+            # 兼容base64和bytes两种返回格式
             if isinstance(img_data, str):
-                # base64格式解码
                 if "," in img_data:
                     _, b64_body = img_data.split(",", 1)
                     img_bytes = base64.b64decode(b64_body)
@@ -446,21 +476,21 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                 show_snack(page, "拍照失败，请重试", ft.Colors.RED)
                 return
 
-            # 保存为临时文件
+            # 保存为临时文件，回调业务层
             tmp_path = tempfile.mktemp(suffix=".jpg")
             with open(tmp_path, "wb") as f:
                 f.write(img_bytes)
 
-            # 保存到相册的后台线程（保留原有逻辑）
+            # 后台保存到系统相册（保留原有逻辑）
             def save_to_gallery():
                 try:
-                    base_pics = "/storage/DCIM"
+                    base_pics = "/storage/emulated/0/Pictures"
                     target_dir = os.path.join(base_pics, "com.JCheng")
                     os.makedirs(target_dir, exist_ok=True)
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     dest_path = os.path.join(target_dir, f"photo_{timestamp}.jpg")
                     shutil.copy2(tmp_path, dest_path)
-                    # 通知系统扫描
+                    # 通知系统媒体扫描
                     try:
                         import subprocess
                         subprocess.run(
@@ -475,7 +505,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                     print(f"[Camera] 保存相册失败：{e}")
             threading.Thread(target=save_to_gallery, daemon=True).start()
 
-            # 先关闭相机，再回调业务层
+            # 先关闭相机，再回调业务
             await close_camera()
             on_picture_taken(tmp_path)
 
@@ -483,40 +513,92 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
             print(f"[Camera] 拍照异常：{e}")
             show_snack(page, f"拍照失败：{str(e)[:30]}", ft.Colors.RED)
 
+    # ========== 相机状态回调（对齐官方on_state_change） ==========
+    def on_camera_state(e: fc.CameraStateEvent):
+        nonlocal is_initialized
+        if e.has_error:
+            print(f"[Camera] 相机错误：{e.error_description}")
+            show_snack(page, f"相机错误：{e.error_description[:30]}", ft.Colors.RED)
+            is_initialized = False
+        elif e.is_preview_paused:
+            is_initialized = False
+        else:
+            # 预览正常渲染，标记为已初始化
+            is_initialized = True
+        page.update()
+
+    camera_widget.on_state_change = on_camera_state
+
+    # ========== 初始化相机（完全对齐官方参数） ==========
     async def init_camera():
-        """异步初始化相机：获取摄像头列表→选择后置→初始化，完成后解锁拍照"""
-        nonlocal camera_ready
+        nonlocal is_initialized
         try:
-            # 获取可用摄像头，优先选后置
+            # 1. 获取可用摄像头列表
             cam_list = await camera_widget.get_available_cameras()
             if not cam_list:
                 raise Exception("未检测到可用摄像头")
-            selected_cam = cam_list[0]  # 默认后置摄像头
+
+            # 2. 优先选择后置摄像头
+            selected_cam = cam_list[0]
+            for cam in cam_list:
+                if cam.lens_direction == fc.CameraLensDirection.BACK:
+                    selected_cam = cam
+                    break
             print(f"[Camera] 使用摄像头: {selected_cam.name}")
 
-            # 官方标准初始化参数
+            # 3. 官方标准初始化参数
             await camera_widget.initialize(
                 description=selected_cam,
                 resolution_preset=fc.ResolutionPreset.HIGH,
+                enable_audio=False,
                 image_format_group=fc.ImageFormatGroup.JPEG,
             )
-            camera_ready = True
+
+            # 4. 锁定拍摄方向，防止照片旋转
+            try:
+                await camera_widget.lock_capture_orientation()
+            except Exception as ex:
+                print(f"[Camera] 锁定方向失败（不影响使用）：{ex}")
+
+            is_initialized = True
             print("[Camera] 相机初始化完成")
+
         except Exception as e:
             print(f"[Camera] 初始化失败：{e}")
             show_snack(page, f"相机启动失败：{str(e)[:30]}", ft.Colors.RED)
             await close_camera()
 
-    # ========== 修复问题1：移除错误的page.focus，模态Dialog自动让输入框失焦收起键盘 ==========
-    # AlertDialog模态弹出后，底层输入框自动失去焦点，软键盘会自动收起，无需手动调用
-
-    # 构建相机预览控件
-    camera_widget = fc.Camera(
-        expand=True,
-        preview_enabled=True,
+    # ========== 构建控件按钮 ==========
+    # 闪光灯按钮（复用原有样式）
+    flash_btn = ft.IconButton(
+        icon=ft.Icons.FLASH_OFF,
+        icon_size=28,
+        bgcolor=ft.Colors.WHITE,
+        padding=8,
+        style=ft.ButtonStyle(shape=ft.CircleBorder()),
+        tooltip="闪光灯",
+        on_click=lambda e: page.run_task(toggle_flash, e),
     )
 
-    # ========== 修复问题4：相机用Dialog承载，层级天然最高，盖住出库弹窗 ==========
+    # 关闭按钮
+    close_btn = ft.IconButton(
+        icon=ft.Icons.CLOSE,
+        icon_color=ft.Colors.WHITE,
+        bgcolor=ft.Colors.BLACK54,
+        icon_size=28,
+        on_click=lambda e: page.run_task(close_camera),
+    )
+
+    # 拍照按钮
+    take_btn = ft.IconButton(
+        icon=ft.Icons.CAMERA,
+        icon_color=ft.Colors.WHITE,
+        bgcolor=ft.Colors.BLUE_600,
+        icon_size=48,
+        on_click=lambda e: page.run_task(take_photo),
+    )
+
+    # ========== 构建全屏相机弹窗（Dialog承载，层级最高） ==========
     camera_dialog = ft.AlertDialog(
         modal=True,
         content_padding=ft.Padding(0, 0, 0, 0),
@@ -531,26 +613,19 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                     expand=True,
                     alignment=ft.Alignment(0, 0),
                 ),
-                # 顶部关闭按钮
+                # 左上角：闪光灯按钮
                 ft.Container(
-                    content=ft.IconButton(
-                        icon=ft.Icons.CLOSE,
-                        icon_color=ft.Colors.WHITE,
-                        bgcolor=ft.Colors.BLACK54,
-                        icon_size=28,
-                        on_click=lambda e: page.run_task(close_camera),
-                    ),
+                    content=flash_btn,
                     alignment=ft.Alignment(-0.9, -0.9),
                 ),
-                # 底部拍照按钮
+                # 右上角：关闭按钮
                 ft.Container(
-                    content=ft.IconButton(
-                        icon=ft.Icons.CAMERA,
-                        icon_color=ft.Colors.WHITE,
-                        bgcolor=ft.Colors.BLUE_600,
-                        icon_size=48,
-                        on_click=lambda e: page.run_task(take_photo),
-                    ),
+                    content=close_btn,
+                    alignment=ft.Alignment(0.9, -0.9),
+                ),
+                # 底部居中：拍照按钮
+                ft.Container(
+                    content=take_btn,
                     alignment=ft.Alignment(0, 0.85),
                 ),
             ],
