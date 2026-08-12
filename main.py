@@ -387,12 +387,12 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
 
 def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
     """
-    启动全屏相机，支持闪光灯、对焦，并自动保存照片到相册子文件夹。
-    回调参数为临时图片路径（与原接口保持一致）。
+    重构版全屏相机：Dialog承载，层级最高，修复键盘缩放、拍照无反应、关闭无效、层级靠底四大问题
+    回调接口与原函数完全一致，上层业务无需修改
     """
-    print("[Camera] show_camera_view (优化版)")
+    print("[Camera] 重构版相机启动")
 
-    # 桌面端降级到相册选择
+    # 桌面端降级逻辑保留不变
     if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS):
         async def desktop_fallback():
             path = await pick_image_async(page)
@@ -401,248 +401,123 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         page.run_task(desktop_fallback)
         return
 
-    async def camera_logic():
-        camera_widget: Optional[fc.Camera] = None
-        camera_container: Optional[ft.Container] = None
-        flash_on = False
+    # ========== 移动端相机实现 ==========
+    camera_widget: Optional[fc.Camera] = None
+    camera_dialog: Optional[ft.AlertDialog] = None
+    camera_ready = False  # 相机就绪状态锁，修复拍照无反应
 
-        # ----- 关闭相机 -----
-        async def close_camera():
-            nonlocal camera_container
-            if camera_container and camera_container in page.overlay:
-                page.overlay.remove(camera_container)
-                page.update()
-
-        # ----- 1. 相机权限 + 存储权限 -----
-        if page.platform == ft.PagePlatform.ANDROID:
-            ph = page._permission_handler
-            # 相机权限
-            status = await ph.request(fph.Permission.CAMERA)
-            if status != fph.PermissionStatus.GRANTED:
-                if status == fph.PermissionStatus.PERMANENTLY_DENIED:
-                    show_snack(page, "相机权限被永久拒绝", ft.Colors.RED)
-                else:
-                    show_snack(page, "相机权限被拒绝，跳转相册", ft.Colors.RED)
-                path = await pick_image_async(page)
-                if path:
-                    on_picture_taken(path)
-                return
-            # 存储权限（用于保存到相册，非必须）
-            storage_status = await ph.request(fph.Permission.STORAGE)
-            if storage_status != fph.PermissionStatus.GRANTED:
-                show_snack(page, "存储权限未授予，照片将不会保存到相册", ft.Colors.ORANGE)
-
-        # ----- 2. 创建相机控件 -----
-        camera_widget = fc.Camera(expand=True, preview_enabled=True)
-
-        def on_camera_state(e: fc.CameraStateEvent):
-            if e.has_error:
-                show_snack(page, f"相机异常: {e.error_description}", ft.Colors.RED)
-                page.run_task(close_camera)
-        camera_widget.on_state_change = on_camera_state
-
-        # ----- 3. 构建全屏UI（含控制按钮） -----
-        # 闪光灯按钮
-        flash_btn = ft.IconButton(
-            icon=ft.Icons.FLASH_OFF,
-            icon_size=28,
-            bgcolor=ft.Colors.WHITE,
-            padding=8,
-            style=ft.ButtonStyle(shape=ft.CircleBorder()),
-            tooltip="闪光灯"
-        )
-
-        # 对焦按钮
-        focus_btn = ft.IconButton(
-            icon=ft.Icons.CENTER_FOCUS_STRONG,
-            icon_size=28,
-            bgcolor=ft.Colors.WHITE,
-            padding=8,
-            style=ft.ButtonStyle(shape=ft.CircleBorder()),
-            tooltip="自动对焦"
-        )
-
-        # 拍照按钮
-        take_btn = ft.IconButton(
-            icon=ft.Icons.CAMERA_ALT,
-            icon_size=48,
-            bgcolor=ft.Colors.WHITE,
-            padding=15,
-            style=ft.ButtonStyle(shape=ft.CircleBorder()),
-            tooltip="拍照"
-        )
-
-        # 关闭按钮
-        close_btn = ft.IconButton(
-            icon=ft.Icons.CLOSE,
-            icon_size=32,
-            bgcolor=ft.Colors.WHITE,
-            padding=10,
-            style=ft.ButtonStyle(shape=ft.CircleBorder()),
-            tooltip="关闭"
-        )
-
-        # 顶部工具栏（左对齐）
-        top_bar = ft.Row(
-            [flash_btn, focus_btn],
-            alignment=ft.MainAxisAlignment.START,
-            spacing=15,
-            left=20,
-            top=30,
-        )
-
-        # 底部工具栏（居中）
-        bottom_bar = ft.Row(
-            [take_btn, close_btn],
-            alignment=ft.MainAxisAlignment.CENTER,
-            spacing=30,
-            bottom=40,
-        )
-
-        camera_container = ft.Container(
-            expand=True,
-            bgcolor=ft.Colors.BLACK,
-            content=ft.Stack(
-                [
-                    camera_widget,
-                    top_bar,
-                    bottom_bar,
-                ],
-                expand=True,
-            )
-        )
-
-        page.overlay.append(camera_container)
-        page.update()
-        await asyncio.sleep(0.3)
-
-        # ----- 4. 初始化摄像头（高分辨率） -----
+    async def close_camera():
+        """安全关闭相机：先释放资源，再关闭弹窗"""
+        nonlocal camera_ready
+        camera_ready = False
         try:
-            cam_list = await camera_widget.get_available_cameras()
-            if not cam_list:
-                show_snack(page, "未检测到摄像头", ft.Colors.RED)
-                await close_camera()
-                return
-            selected_cam = cam_list[0]
-            print(f"[Camera] 使用摄像头: {selected_cam.name}")
+            if camera_widget is not None:
+                await camera_widget.stop()
+        except Exception as e:
+            print(f"[Camera] 停止相机异常：{e}")
+        # 关闭弹窗
+        page.pop_dialog()
+        page.update()
 
-            # 提高拍照像素：使用 HIGH 预设
-            await camera_widget.initialize(
-                description=selected_cam,
-                resolution_preset=fc.ResolutionPreset.HIGH,
-                image_format_group=fc.ImageFormatGroup.JPEG,
-            )
-            print("[Camera] 相机启动成功")
-        except Exception as init_err:
-            print(f"[Camera] 初始化失败: {init_err}")
-            show_snack(page, f"相机启动失败: {str(init_err)[:50]}", ft.Colors.RED)
-            await close_camera()
+    async def take_photo(_):
+        """拍照逻辑：就绪校验 + 异常兜底"""
+        nonlocal camera_ready
+        if not camera_ready or camera_widget is None:
+            show_snack(page, "相机正在初始化，请稍候...", ft.Colors.ORANGE)
             return
 
-        # ----- 5. 闪光灯切换（兼容性处理） -----
-        async def toggle_flash(e):
-            nonlocal flash_on
-            flash_on = not flash_on
-            try:
-                if flash_on:
-                    await camera_widget.set_flash_mode(fc.FlashMode.TORCH)
-                    flash_btn.icon = ft.Icons.FLASH_ON
-                else:
-                    await camera_widget.set_flash_mode(fc.FlashMode.OFF)
-                    flash_btn.icon = ft.Icons.FLASH_OFF
-                flash_btn.update()
-            except AttributeError:
-                show_snack(page, "闪光灯控制不可用", ft.Colors.ORANGE)
-                flash_on = not flash_on
-            except Exception as ex:
-                print(f"[Camera] 闪光灯异常: {ex}")
+        try:
+            # 捕获拍照结果
+            img_bytes = await camera_widget.take_picture()
+            if not img_bytes:
+                show_snack(page, "拍照失败，请重试", ft.Colors.RED)
+                return
 
-        flash_btn.on_click = toggle_flash
+            # 保存为临时文件
+            tmp_path = tempfile.mktemp(suffix=".jpg")
+            with open(tmp_path, "wb") as f:
+                f.write(img_bytes)
 
-        # ----- 6. 对焦功能（兼容性） -----
-        async def do_focus(e):
-            try:
-                if hasattr(camera_widget, 'auto_focus'):
-                    await camera_widget.auto_focus()
-                    show_snack(page, "对焦完成", ft.Colors.GREEN)
-                else:
-                    show_snack(page, "对焦功能不可用", ft.Colors.ORANGE)
-            except Exception as ex:
-                print(f"[Camera] 对焦失败: {ex}")
+            # 先关闭相机，再回调业务层
+            await close_camera()
+            on_picture_taken(tmp_path)
 
-        focus_btn.on_click = do_focus
+        except Exception as e:
+            print(f"[Camera] 拍照异常：{e}")
+            show_snack(page, f"拍照失败：{str(e)[:30]}", ft.Colors.RED)
 
-        # ----- 7. 拍照逻辑（高分辨率 + 保存到相册子文件夹） -----
-        async def take_photo_action():
-            try:
-                # 获取原始图片数据（未压缩）
-                img_data = await camera_widget.take_picture()
-                if isinstance(img_data, str):
-                    if "," in img_data:
-                        _, b64_body = img_data.split(",", 1)
-                        img_bytes = base64.b64decode(b64_body)
-                    else:
-                        img_bytes = base64.b64decode(img_data)
-                elif isinstance(img_data, bytes):
-                    img_bytes = img_data
-                else:
-                    raise Exception("图片数据格式无效")
+    async def init_camera():
+        """异步初始化相机，完成后解锁拍照按钮"""
+        nonlocal camera_ready
+        try:
+            await camera_widget.initialize()
+            camera_ready = True
+            page.update()
+            print("[Camera] 相机初始化完成")
+        except Exception as e:
+            print(f"[Camera] 初始化失败：{e}")
+            show_snack(page, f"相机启动失败：{str(e)[:30]}", ft.Colors.RED)
+            await close_camera()
 
-                # 保存到临时文件
-                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-                    tmp.write(img_bytes)
-                    tmp_path = tmp.name
+    # ========== 修复问题1：打开相机前收起软键盘，避免键盘挤压界面 ==========
+    page.focus(None)  # 取消所有输入框焦点，强制收起键盘
 
-                # 关闭相机界面
-                await close_camera()
+    # 构建相机预览控件
+    camera_widget = fc.Camera(
+        resolution=fc.ResolutionPreset.HIGH,
+        enable_audio=False,
+    )
 
-                # ----- 后台保存到相册子文件夹（失败不影响主流程）-----
-                def save_to_gallery():
-                    try:
-                        # 构建目标路径：/storage/emulated/0/Pictures/com.JCheng/
-                        base_pics = "/storage/emulated/0/Pictures"
-                        if not os.path.exists(base_pics):
-                            base_pics = os.path.join(
-                                os.environ.get("EXTERNAL_STORAGE", ""), "Pictures"
-                            )
-                        target_dir = os.path.join(base_pics, "com.JCheng")
-                        os.makedirs(target_dir, exist_ok=True)
+    # ========== 修复问题4：相机用Dialog承载，层级天然最高，盖住出库弹窗 ==========
+    camera_dialog = ft.AlertDialog(
+        modal=True,
+        content_padding=ft.Padding(0, 0, 0, 0),
+        title_padding=ft.Padding(0, 0, 0, 0),
+        actions_padding=ft.Padding(0, 0, 0, 0),
+        content=ft.Stack(
+            controls=[
+                # 相机预览全屏
+                ft.Container(
+                    content=camera_widget,
+                    expand=True,
+                    alignment=ft.Alignment(0, 0),
+                ),
+                # 顶部关闭按钮
+                ft.Container(
+                    content=ft.IconButton(
+                        icon=ft.Icons.CLOSE,
+                        icon_color=ft.Colors.WHITE,
+                        bgcolor=ft.Colors.BLACK54,
+                        icon_size=28,
+                        on_click=lambda e: page.run_task(close_camera),
+                    ),
+                    alignment=ft.Alignment(-0.9, -0.9),
+                ),
+                # 底部拍照按钮
+                ft.Container(
+                    content=ft.IconButton(
+                        icon=ft.Icons.CAMERA,
+                        icon_color=ft.Colors.WHITE,
+                        bgcolor=ft.Colors.BLUE_600,
+                        icon_size=48,
+                        on_click=lambda e: page.run_task(take_photo),
+                    ),
+                    alignment=ft.Alignment(0, 0.85),
+                ),
+            ],
+            expand=True,
+            width=page.width,
+            height=page.height,
+        ),
+        actions=[],
+    )
 
-                        # 生成文件名
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        dest_path = os.path.join(target_dir, f"photo_{timestamp}.jpg")
+    # 弹出相机弹窗（层级高于所有已有弹窗）
+    page.show_dialog(camera_dialog)
+    page.update()
 
-                        # 复制文件
-                        shutil.copy2(tmp_path, dest_path)
-
-                        # 通知系统扫描（广播）
-                        try:
-                            import subprocess
-                            subprocess.run(
-                                ["am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
-                                 "-d", f"file://{dest_path}"],
-                                capture_output=True, timeout=2
-                            )
-                        except:
-                            pass
-                        print(f"[Camera] 照片已保存到: {dest_path}")
-                    except Exception as e:
-                        print(f"[Camera] 保存相册失败（不影响程序）: {e}")
-
-                threading.Thread(target=save_to_gallery, daemon=True).start()
-
-                # 回调业务层（传递临时路径）
-                on_picture_taken(tmp_path)
-
-            except Exception as pic_err:
-                print(f"[Camera] 拍照失败: {pic_err}")
-                show_snack(page, f"拍照失败: {str(pic_err)[:50]}", ft.Colors.RED)
-                await close_camera()
-
-        take_btn.on_click = take_photo_action
-        close_btn.on_click = lambda e: page.run_task(close_camera)
-
-    page.run_task(camera_logic)
+    # 异步初始化相机（不阻塞弹窗弹出）
+    page.run_task(init_camera)
 
 def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], None], title: str = "选择图片"):
     close_all_dialogs(page)
@@ -2404,7 +2279,7 @@ def main(page: ft.Page):
             def capture_payment_voucher(biz_order_no, out_order_no, item_id):
                 # 关闭当前详情弹窗，唤起图片选择
                 page.pop_dialog()
-
+                payment_voucher = f"db:payment_vouchers:{out_order_no}"
                 def on_image_selected(path):
                     if not path:
                         # 用户取消选择，重新打开订单详情弹窗
@@ -2429,8 +2304,8 @@ def main(page: ft.Page):
                                 # 1. 纯后台上传图片
                                 success, upload_result, err_msg = upload_image_to_db(
                                     file_path=path,
-                                    file_type="pay_voucher",
-                                    biz_no=biz_order_no,
+                                    file_type="payment_vouchers",
+                                    biz_no=out_order_no,
                                     prefix="PV",
                                     delete_old=True
                                 )
@@ -2440,8 +2315,8 @@ def main(page: ft.Page):
                                     if conn:
                                         cur = conn.cursor()
                                         cur.execute(
-                                            "UPDATE sale_items SET full_out_no = %s WHERE id = %s",
-                                            (scan_code, item_id)
+                                            "UPDATE sale_items SET full_out_no = %s, payment_voucher = %s WHERE id = %s",
+                                            (scan_code,payment_voucher, item_id)
                                         )
                                         conn.commit()
                                         conn.close()
