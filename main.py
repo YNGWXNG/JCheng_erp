@@ -387,10 +387,10 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
 
 def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
     """
-    重构版全屏相机：Dialog承载，层级最高，修复键盘缩放、拍照无反应、关闭无效、层级靠底四大问题
+    修复版全屏相机：适配Flet 0.86.2 API，修复focus报错、初始化失败、层级、键盘四大问题
     回调接口与原函数完全一致，上层业务无需修改
     """
-    print("[Camera] 重构版相机启动")
+    print("[Camera] 修复版相机启动")
 
     # 桌面端降级逻辑保留不变
     if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS):
@@ -412,6 +412,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         camera_ready = False
         try:
             if camera_widget is not None:
+                # 停止相机预览，释放系统相机资源
                 await camera_widget.stop()
         except Exception as e:
             print(f"[Camera] 停止相机异常：{e}")
@@ -420,15 +421,27 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         page.update()
 
     async def take_photo(_):
-        """拍照逻辑：就绪校验 + 异常兜底"""
+        """拍照逻辑：就绪校验 + 兼容base64返回格式"""
         nonlocal camera_ready
         if not camera_ready or camera_widget is None:
             show_snack(page, "相机正在初始化，请稍候...", ft.Colors.ORANGE)
             return
 
         try:
-            # 捕获拍照结果
-            img_bytes = await camera_widget.take_picture()
+            # 兼容flet_camera返回格式：支持base64字符串和bytes两种
+            img_data = await camera_widget.take_picture()
+            if isinstance(img_data, str):
+                # base64格式解码
+                if "," in img_data:
+                    _, b64_body = img_data.split(",", 1)
+                    img_bytes = base64.b64decode(b64_body)
+                else:
+                    img_bytes = base64.b64decode(img_data)
+            elif isinstance(img_data, bytes):
+                img_bytes = img_data
+            else:
+                raise Exception("图片数据格式无效")
+
             if not img_bytes:
                 show_snack(page, "拍照失败，请重试", ft.Colors.RED)
                 return
@@ -437,6 +450,30 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
             tmp_path = tempfile.mktemp(suffix=".jpg")
             with open(tmp_path, "wb") as f:
                 f.write(img_bytes)
+
+            # 保存到相册的后台线程（保留原有逻辑）
+            def save_to_gallery():
+                try:
+                    base_pics = "/storage/DCIM"
+                    target_dir = os.path.join(base_pics, "com.JCheng")
+                    os.makedirs(target_dir, exist_ok=True)
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    dest_path = os.path.join(target_dir, f"photo_{timestamp}.jpg")
+                    shutil.copy2(tmp_path, dest_path)
+                    # 通知系统扫描
+                    try:
+                        import subprocess
+                        subprocess.run(
+                            ["am", "broadcast", "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+                             "-d", f"file://{dest_path}"],
+                            capture_output=True, timeout=2
+                        )
+                    except:
+                        pass
+                    print(f"[Camera] 照片已保存到: {dest_path}")
+                except Exception as e:
+                    print(f"[Camera] 保存相册失败：{e}")
+            threading.Thread(target=save_to_gallery, daemon=True).start()
 
             # 先关闭相机，再回调业务层
             await close_camera()
@@ -447,25 +484,36 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
             show_snack(page, f"拍照失败：{str(e)[:30]}", ft.Colors.RED)
 
     async def init_camera():
-        """异步初始化相机，完成后解锁拍照按钮"""
+        """异步初始化相机：获取摄像头列表→选择后置→初始化，完成后解锁拍照"""
         nonlocal camera_ready
         try:
-            await camera_widget.initialize()
+            # 获取可用摄像头，优先选后置
+            cam_list = await camera_widget.get_available_cameras()
+            if not cam_list:
+                raise Exception("未检测到可用摄像头")
+            selected_cam = cam_list[0]  # 默认后置摄像头
+            print(f"[Camera] 使用摄像头: {selected_cam.name}")
+
+            # 官方标准初始化参数
+            await camera_widget.initialize(
+                description=selected_cam,
+                resolution_preset=fc.ResolutionPreset.HIGH,
+                image_format_group=fc.ImageFormatGroup.JPEG,
+            )
             camera_ready = True
-            page.update()
             print("[Camera] 相机初始化完成")
         except Exception as e:
             print(f"[Camera] 初始化失败：{e}")
             show_snack(page, f"相机启动失败：{str(e)[:30]}", ft.Colors.RED)
             await close_camera()
 
-    # ========== 修复问题1：打开相机前收起软键盘，避免键盘挤压界面 ==========
-    page.focus(None)  # 取消所有输入框焦点，强制收起键盘
+    # ========== 修复问题1：移除错误的page.focus，模态Dialog自动让输入框失焦收起键盘 ==========
+    # AlertDialog模态弹出后，底层输入框自动失去焦点，软键盘会自动收起，无需手动调用
 
     # 构建相机预览控件
     camera_widget = fc.Camera(
-        resolution=fc.ResolutionPreset.HIGH,
-        enable_audio=False,
+        expand=True,
+        preview_enabled=True,
     )
 
     # ========== 修复问题4：相机用Dialog承载，层级天然最高，盖住出库弹窗 ==========
@@ -474,6 +522,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         content_padding=ft.Padding(0, 0, 0, 0),
         title_padding=ft.Padding(0, 0, 0, 0),
         actions_padding=ft.Padding(0, 0, 0, 0),
+        inset_padding=ft.Padding(0, 0, 0, 0),
         content=ft.Stack(
             controls=[
                 # 相机预览全屏
