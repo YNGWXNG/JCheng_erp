@@ -24,6 +24,7 @@ from pyzbar.pyzbar import decode as pyzbar_decode
 import concurrent.futures
 import time
 import re
+import shutil
 
 SERVER_DECODE_URL = os.getenv("SERVER_DECODE_URL", "https://api.qrserver.com/v1/read-qr-code/")
 MAX_IMAGE_LONG_EDGE = 1280
@@ -198,42 +199,39 @@ def safe_remove_dialog(page: ft.Page, dialog):
                 pass
     page.run_task(_remove)                 # 安全调度到事件循环
 
-async def show_alert_async(page: ft.Page, title, content, on_ok=None):
-    """异步安全的弹窗，可在协程内直接调用"""
-    close_all_dialogs(page)          # 同步调用，没问题
-    async def handle_ok(e):
-        dlg.open = False
-        page.update()                # 直接调用，不要 await
-        safe_remove_dialog(page, dlg)
-        if on_ok:
-            on_ok(e)
-    dlg = ft.AlertDialog(
-        title=ft.Text(title, weight=ft.FontWeight.BOLD),
-        content=ft.Text(content),
-        modal=True,
-        actions=[ft.TextButton("确定", on_click=handle_ok)]
-    )
-    page.overlay.append(dlg)
-    dlg.open = True
-    page.update()                    # 同样直接调用
 
 def show_alert(page: ft.Page, title, content, on_ok=None):
-    close_all_dialogs(page)
+    """同步弹窗，统一使用官方API，层级由框架管理"""
+
     async def handle_ok(e):
-        dlg.open = False
-        page.update()
-        safe_remove_dialog(page, dlg)
+        page.pop_dialog()
         if on_ok:
             on_ok(e)
+
     dlg = ft.AlertDialog(
         title=ft.Text(title, weight=ft.FontWeight.BOLD),
         content=ft.Text(content),
         modal=True,
         actions=[ft.TextButton("确定", on_click=handle_ok)]
     )
-    page.overlay.append(dlg)
-    dlg.open = True
-    page.update()
+    page.show_dialog(dlg)
+
+
+async def show_alert_async(page: ft.Page, title, content, on_ok=None):
+    """异步安全弹窗，统一官方API"""
+
+    async def handle_ok(e):
+        page.pop_dialog()
+        if on_ok:
+            await on_ok(e)
+
+    dlg = ft.AlertDialog(
+        title=ft.Text(title, weight=ft.FontWeight.BOLD),
+        content=ft.Text(content),
+        modal=True,
+        actions=[ft.TextButton("确定", on_click=handle_ok)]
+    )
+    page.show_dialog(dlg)
 
 def show_snack(page: ft.Page, msg, bgcolor=ft.Colors.GREY_800):
     # 创建 SnackBar 对象（可增加浮动行为避免被遮挡）
@@ -299,58 +297,90 @@ async def request_location_permission(page: ft.Page) -> bool:
     status_coarse = await ph.request(fph.Permission.ACCESS_COARSE_LOCATION)
     return status_coarse == fph.PermissionStatus.GRANTED
 
+async def request_gallery_permission(page: ft.Page) -> bool:
+    """
+    多机型兼容的相册权限申请
+    优先级：安卓13+/鸿蒙4.x媒体权限 → 原有存储权限降级
+    返回：是否获得相册权限
+    """
+    if page.platform != ft.PagePlatform.ANDROID:
+        return True
+
+    ph = page._permission_handler
+    print("[Picker] 相册权限多级适配启动")
+
+    # ========== 第一级：安卓13+/鸿蒙4.x 专属图片权限 ==========
+    try:
+        media_perm = fph.Permission.READ_MEDIA_IMAGES
+        status = await ph.request(media_perm)
+        print(f"[Picker] READ_MEDIA_IMAGES 授权结果：{status}")
+
+        if status == fph.PermissionStatus.GRANTED:
+            print("[Picker] 高版本相册权限授权成功")
+            return True
+
+        if status == fph.PermissionStatus.PERMANENTLY_DENIED:
+            await ph.open_app_settings()
+            page.show_snack_bar(
+                ft.SnackBar(content=ft.Text("相册权限已永久禁用，请前往系统设置手动开启"))
+            )
+            return False
+
+    except AttributeError:
+        print("[Picker] 权限库无READ_MEDIA_IMAGES枚举，降级使用旧版存储权限")
+    except Exception as e:
+        print(f"[Picker] 高版本权限申请异常，降级处理：{e}")
+
+    # ========== 第二级：降级为原有 STORAGE 存储权限（保留原有方式） ==========
+    print("[Picker] 降级申请 STORAGE 存储权限（原有兼容方式）")
+    status = await ph.request(fph.Permission.STORAGE)
+    print(f"[Picker] STORAGE 授权结果：{status}")
+
+    if status == fph.PermissionStatus.GRANTED:
+        return True
+
+    if status == fph.PermissionStatus.PERMANENTLY_DENIED:
+        await ph.open_app_settings()
+        page.show_snack_bar(
+            ft.SnackBar(content=ft.Text("相册权限已永久禁用，请前往系统设置手动开启"))
+        )
+        return False
+
+    # 普通拒绝
+    page.show_snack_bar(ft.SnackBar(content=ft.Text("未授予相册读取权限")))
+    return False
 
 async def pick_image_async(page: ft.Page) -> Optional[str]:
     print("[Picker] 鸿蒙4.x 相册权限适配启动")
-
-    # 确保 page.data 是字典（防止 None 报错）
     if page.data is None:
         page.data = {}
-
     if page.data.get("picker_lock", False):
         print("[Picker] 文件选择器正在运行，禁止重复唤起")
         return None
     page.data["picker_lock"] = True
-
     result_path: Optional[str] = None
 
     try:
-        # 保留你原来的权限逻辑（未修改）
+        # ========== 替换为新的多级权限适配 ==========
         if page.platform == ft.PagePlatform.ANDROID:
-            ph = page._permission_handler
-            perm_status = await ph.request(fph.Permission.STORAGE)
-            print(f"[Picker] STORAGE 授权结果：{perm_status}")
-
-            if perm_status != fph.PermissionStatus.GRANTED:
-                if perm_status == fph.PermissionStatus.PERMANENTLY_DENIED:
-                    await ph.open_app_settings()
-                    page.show_snack_bar(
-                        ft.SnackBar(content=ft.Text("相册权限已永久禁用，请前往系统设置手动开启"))
-                    )
-                else:
-                    page.show_snack_bar(
-                        ft.SnackBar(content=ft.Text("未授予相册读取权限"))
-                    )
+            has_permission = await request_gallery_permission(page)
+            if not has_permission:
                 return None
 
-        # ===== 关键修正：完全对标官方示例，不操作 overlay，返回值直接按列表处理 =====
+        # 原有选图逻辑完全保留
         file_picker = ft.FilePicker()
         files = await file_picker.pick_files(
             allow_multiple=False,
             file_type=ft.FilePickerFileType.IMAGE
         )
-
-        # 官方例子用法：files 是列表或 None
         if files and len(files) > 0:
             result_path = files[0].path
-        # 如果取消选择，files 为 None 或空列表，result_path 保持 None
 
     except Exception as err:
         print(f"[Picker] 相册运行异常：{err}")
         page.show_snack_bar(ft.SnackBar(content=ft.Text(f"打开相册失败：{str(err)}")))
     finally:
         page.data["picker_lock"] = False
-        # 不需要 remove，FilePicker 内部自动清理
 
     return result_path
 
@@ -979,17 +1009,19 @@ def generate_pdf_order(order_no, items, cust_name, phone, full_addr, send_date, 
         print(f"生成PDF失败: {e}")
         return None
 
-def upload_image_to_db(page: ft.Page, file_path: str, file_type: str, biz_no: str, prefix:str,delete_old: bool = True) -> Optional[str]:
+def upload_image_to_db(file_path: str, file_type: str, biz_no: str, prefix:str, delete_old: bool = True) -> tuple[bool, Optional[str], str]:
+    """
+    纯后台图片入库函数，无任何UI操作
+    返回：(是否成功, 成功时返回db标记, 失败时返回错误信息)
+    """
     if not biz_no:
-        show_alert(page, "上传失败", "业务编号不能为空")
-        return None
+        return False, None, "业务编号不能为空"
     try:
         img_bytes = compress_image_to_bytes(file_path)
         file_name = f"{prefix}{biz_no}.jpg"
         conn = get_db_conn()
         if not conn:
-            show_alert(page, "上传失败", "数据库连接异常")
-            return None
+            return False, None, "数据库连接异常"
         cur = conn.cursor()
         if delete_old:
             cur.execute("DELETE FROM erp_files WHERE file_type=%s AND biz_no=%s", (file_type, biz_no))
@@ -1000,11 +1032,10 @@ def upload_image_to_db(page: ft.Page, file_path: str, file_type: str, biz_no: st
         )
         conn.commit()
         conn.close()
-        return f"db:{file_type}:{biz_no}"
+        return True, f"db:{file_type}:{biz_no}", ""
     except Exception as ex:
         print(f"图片入库异常:{str(ex)}")
-        show_alert(page, "图片上传错误", f"{str(ex)[:60]}")
-        return None
+        return False, None, str(ex)[:60]
 
 def get_file_from_db(file_type, biz_no):
     conn = get_db_conn()
@@ -1043,6 +1074,53 @@ def clear_credentials():
             os.remove(CREDENTIALS_FILE)
         except Exception as e:
             print(f"清除凭据失败: {e}")
+
+# ====================== 上传动画封装（Dialog顶层版，盖住所有弹窗） ======================
+_loading_dialog = None
+
+async def show_upload_loading_async(page: ft.Page, text: str = "正在上传，请稍候..."):
+    """
+    用官方Dialog实现顶层加载弹窗
+    自动盖住所有已打开的弹窗，底层界面完全不可操作
+    """
+    global _loading_dialog
+    if _loading_dialog is not None:
+        return
+
+    # 构造加载内容，严格对齐官方ProgressRing示例
+    loading_content = ft.Column(
+        controls=[
+            ft.ProgressRing(width=48, height=48, stroke_width=4),
+            ft.Text(text, size=16),
+        ],
+        alignment=ft.MainAxisAlignment.CENTER,
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        spacing=20,
+        width=200,
+        height=140,
+    )
+
+    # 模态加载弹窗：无按钮、用户无法手动关闭
+    _loading_dialog = ft.AlertDialog(
+        modal=True,
+        content=loading_content,
+        actions=[],
+        content_padding=ft.Padding(20, 30, 20, 30),
+    )
+
+    page.show_dialog(_loading_dialog)
+    page.update()
+
+    # 确保弹窗渲染完成
+    await asyncio.sleep(0.15)
+
+def hide_upload_loading(page: ft.Page):
+    """关闭加载弹窗"""
+    global _loading_dialog
+    if _loading_dialog is not None:
+        page.pop_dialog()
+        _loading_dialog = None
+        page.update()
 
 # ====================== 主程序 ======================
 def main(page: ft.Page):
@@ -2101,29 +2179,22 @@ def main(page: ft.Page):
 
         result_list = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO)
 
-        # ---------------------- 加载动画工具函数 ----------------------
-        def show_loading(text="正在上传数据，请稍等..."):
-            """显示全屏加载动画"""
-            page.splash = ft.Container(
-                content=ft.Column(
-                    [
-                        ft.ProgressRing(width=48, height=48, color=ft.Colors.WHITE),
-                        ft.Text(text, size=16, color=ft.Colors.WHITE),
-                    ],
-                    alignment=ft.MainAxisAlignment.CENTER,
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    spacing=20,
-                ),
-                alignment=ft.alignment.center,
-                bgcolor=ft.Colors.BLACK38,
-            )
-            page.update()
 
-        def hide_loading():
-            """隐藏加载动画"""
-            page.splash = None
-            page.update()
+        # ====================== 优化 show_snack 线程安全 ======================
+        def show_snack(page: ft.Page, msg, bgcolor=ft.Colors.GREY_800):
+            """线程安全的 SnackBar 显示，统一调度到主线程"""
 
+            def _show():
+                snack = ft.SnackBar(
+                    ft.Text(msg),
+                    bgcolor=bgcolor,
+                    behavior=ft.SnackBarBehavior.FLOATING
+                )
+                page.overlay.append(snack)
+                snack.open = True
+                page.update()
+
+            run_ui_task(page, _show)
         # ------------------------------------------------------------
 
         def load_orders(is_default=False):
@@ -2351,25 +2422,21 @@ def main(page: ft.Page):
                         size=14
                     )
 
-                    # ---------- 修改点：确认上传改为异步，并加入加载动画 ----------
                     async def confirm_upload_async():
-                        show_loading("正在上传支付凭证，请稍等...")
+                        await show_upload_loading_async(page, "正在上传支付凭证...")
                         try:
-                            # 将同步上传操作放到线程中执行
-                            upload_result = await asyncio.to_thread(
-                                upload_image_to_db,
-                                page=page,
-                                file_path=path,
-                                file_type="pay_voucher",
-                                biz_no=biz_order_no,
-                                prefix="PV",
-                                delete_old=True
-                            )
-
-                            if upload_result:
-                                # 识别到单号则写入数据库
-                                if scan_code:
-                                    conn = await asyncio.to_thread(get_db_conn)
+                            def _background_work():
+                                # 1. 纯后台上传图片
+                                success, upload_result, err_msg = upload_image_to_db(
+                                    file_path=path,
+                                    file_type="pay_voucher",
+                                    biz_no=biz_order_no,
+                                    prefix="PV",
+                                    delete_old=True
+                                )
+                                # 2. 纯后台更新单号
+                                if success and scan_code:
+                                    conn = get_db_conn()
                                     if conn:
                                         cur = conn.cursor()
                                         cur.execute(
@@ -2378,21 +2445,21 @@ def main(page: ft.Page):
                                         )
                                         conn.commit()
                                         conn.close()
-                                        print(f"[Voucher] Updated full_out_no for item {item_id}")
+                                return success, err_msg
 
-                                # UI 操作需要在主线程执行，但已经位于异步上下文中，直接调用即可
-                                page.pop_dialog()  # 关闭预览弹窗
-                                load_items()
+                            success, err_msg = await asyncio.to_thread(_background_work)
+                            if success:
+                                hide_upload_loading(page)
+                                page.pop_dialog()
+                                await asyncio.to_thread(load_items)
                                 page.show_dialog(detail_dlg)
-                                show_alert(page, "操作成功", "支付凭证已上传，单号已自动录入")
+                                await show_alert_async(page, "操作成功", "支付凭证已上传，单号已自动录入")
                             else:
-                                show_alert(page, "上传失败", "图片存入数据库异常，请重试")
+                                hide_upload_loading(page)
+                                await show_alert_async(page, "上传失败", f"图片存入数据库异常：{err_msg[:30]}")
                         except Exception as ex:
-                            print(f"[Voucher] Upload error: {ex}")
-                            show_alert(page, "错误", f"上传异常: {str(ex)}")
-                        finally:
-                            hide_loading()
-                        page.update()
+                            hide_upload_loading(page)
+                            await show_alert_async(page, "错误", f"上传异常: {str(ex)[:30]}")
 
                     def btn_confirm_upload(ev):
                         page.run_task(confirm_upload_async)
@@ -2714,29 +2781,38 @@ def main(page: ft.Page):
         # 全局默认送货人配置
         DEFAULT_DELIVER1 = "麻跃进"
         DEFAULT_DELIVER2 = "徐连配"
+        # 上传并发锁：防止重复点击上传
+        upload_busy_lock = False
 
-        # ---------------------- 加载动画工具函数 ----------------------
-        def show_loading(text="正在上传数据，请稍等..."):
-            """显示全屏加载动画"""
-            page.splash = ft.Container(
-                content=ft.Column(
-                    [
-                        ft.ProgressRing(width=48, height=48, color=ft.Colors.WHITE),
-                        ft.Text(text, size=16, color=ft.Colors.WHITE),
-                    ],
-                    alignment=ft.MainAxisAlignment.CENTER,
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    spacing=20,
-                ),
-                alignment=ft.alignment.center,
-                bgcolor=ft.Colors.BLACK38,
-            )
-            page.update()
+        # ====================== 优化 show_snack 线程安全 ======================
+        def show_snack(page: ft.Page, msg, bgcolor=ft.Colors.GREY_800):
+            """线程安全的 SnackBar 显示，统一调度到主线程"""
 
-        def hide_loading():
-            """隐藏加载动画"""
-            page.splash = None
-            page.update()
+            def _show():
+                snack = ft.SnackBar(
+                    ft.Text(msg),
+                    bgcolor=bgcolor,
+                    behavior=ft.SnackBarBehavior.FLOATING
+                )
+                page.overlay.append(snack)
+                snack.open = True
+                page.update()
+
+            run_ui_task(page, _show)
+
+        # 统一关闭当前所有弹窗（业务专用）
+        def close_all_trans_dialogs():
+            """异步安全关闭多层弹窗，避免阻塞UI"""
+
+            async def _close_all():
+                for _ in range(5):  # 最多关闭5层弹窗，防止死循环
+                    try:
+                        page.pop_dialog()
+                        await asyncio.sleep(0.01)
+                    except Exception:
+                        break
+
+            page.run_task(_close_all)
 
         # ------------------------------------------------------------
 
@@ -3003,7 +3079,7 @@ def main(page: ft.Page):
                 )
                 page.show_dialog(img_dlg)
 
-            # ---------------------- SN码管理弹窗 (含上传加载动画) ----------------------
+            # ---------------------- SN码管理弹窗 (优化上传+弹窗关闭) ----------------------
             def open_sn_manage_dialog(e):
                 sn_dialog = None
                 current_mode = "menu"
@@ -3011,15 +3087,78 @@ def main(page: ft.Page):
                 def refresh_view():
                     if current_mode == "menu":
                         sn_dialog.content = build_menu_view()
-                    elif current_mode == "upload":
-                        sn_dialog.content = build_upload_view()
                     elif current_mode == "manual":
                         sn_dialog.content = build_manual_view()
                     page.update()
 
                 def build_menu_view():
                     def go_scan(e):
-                        unified_barcode_scan(page, process_code, title="扫描SN条码")
+                        # 关闭当前菜单弹窗，唤起图片选择（拍照/相册）
+                        page.pop_dialog()
+
+                        def on_image_selected(path):
+                            if not path:
+                                # 用户取消选图，重新打开菜单
+                                open_sn_manage_dialog(None)
+                                return
+
+                            # 异步执行识别+后续流程（定义在回调内部，作用域正确）
+                            async def decode_and_process():
+                                # 显示识别动画
+                                await show_upload_loading_async(page, "正在识别条码...")
+                                try:
+                                    # 子线程解码
+                                    codes = await asyncio.to_thread(barcode_image_decode, path, timeout=3.0)
+                                    hide_upload_loading(page)
+
+                                    if not codes:
+                                        show_alert(page, "提示", "未识别到条码或二维码",
+                                                   on_ok=lambda ev: open_sn_manage_dialog(None))
+                                        return
+
+                                    if len(codes) == 1:
+                                        # 单条码确认
+                                        code = codes[0].strip()
+
+                                        def on_confirm(ev):
+                                            page.pop_dialog()
+
+                                            # 确认后异步执行保存
+                                            async def do_save():
+                                                await save_sn_and_photo(code, path)
+
+                                            page.run_task(do_save)
+
+                                        confirm_dlg = ft.AlertDialog(
+                                            title=ft.Text("识别到条码"),
+                                            content=ft.Text(f"SN码：{code}"),
+                                            modal=True,
+                                            actions=[
+                                                ft.TextButton("取消", on_click=lambda ev: (
+                                                page.pop_dialog(), open_sn_manage_dialog(None))),
+                                                ft.TextButton("确认", on_click=on_confirm),
+                                            ]
+                                        )
+                                        page.show_dialog(confirm_dlg)
+                                    else:
+                                        # 多条码选择
+                                        def handle_select(selected_code):
+                                            async def do_save():
+                                                await save_sn_and_photo(selected_code, path)
+
+                                            page.run_task(do_save)
+
+                                        await show_code_selector(page, codes, handle_select)
+
+                                except Exception as ex:
+                                    hide_upload_loading(page)
+                                    show_alert(page, "错误", f"识别失败: {str(ex)[:30]}")
+
+                            # 拿到图片路径后，启动异步识别任务
+                            page.run_task(decode_and_process)
+
+                        # 唤起拍照/相册选择界面（补上缺失的步骤）
+                        show_image_source_dialog(page, on_image_selected, title="选择条码图片")
 
                     def go_manual(e):
                         nonlocal current_mode
@@ -3033,7 +3172,7 @@ def main(page: ft.Page):
                             ft.ListTile(
                                 leading=ft.Icon(ft.Icons.CAMERA_ALT, color=ft.Colors.BLUE),
                                 title=ft.Text("扫码录入"),
-                                subtitle=ft.Text("调用相机扫描SN条码"),
+                                subtitle=ft.Text("拍照/选图自动识别，一步完成"),
                                 on_click=go_scan
                             ),
                             ft.ListTile(
@@ -3047,103 +3186,88 @@ def main(page: ft.Page):
                         spacing=8,
                     )
 
-                def process_code(code):
-                    sn_code = code.strip()
-                    print(f"[SN] Code scanned: {sn_code}")
+                async def save_sn_and_photo(sn_code, img_path):
+                    await show_upload_loading_async(page, "正在保存并上传...")
                     try:
-                        conn = get_db_conn()
-                        cur = conn.cursor()
-                        cur.execute(
-                            "UPDATE transport SET sn_code=%s WHERE out_order_no=%s",
-                            (sn_code, current_order["out_order_no"])
-                        )
-                        conn.commit()
-                        conn.close()
-                        current_order["sn_code"] = sn_code
-                        sn_entry.value = sn_code
-                        nonlocal current_mode
-                        current_mode = "upload"
-                        refresh_view()
+                        def _background_work():
+                            # 纯后台：传图+更数据
+                            success, db_tag, err = upload_image_to_db(
+                                img_path, "sn_photos",
+                                current_order["out_order_no"], "SN", delete_old=True
+                            )
+                            if not success:
+                                return False, err
+                            conn = get_db_conn()
+                            if not conn:
+                                return False, "数据库连接失败"
+                            cur = conn.cursor()
+                            cur.execute(
+                                "UPDATE transport SET sn_code=%s, sn_photo=%s WHERE out_order_no=%s",
+                                (sn_code, db_tag, current_order["out_order_no"])
+                            )
+                            conn.commit()
+                            conn.close()
+                            return True, ""
+
+                        success, err_msg = await asyncio.to_thread(_background_work)
+                        # 先移除遮罩
+                        hide_upload_loading(page)
+
+                        if success:
+                            # 更新UI状态
+                            current_order["sn_code"] = sn_code
+                            current_order["sn_photo"] = f"db:sn_photos:{current_order['out_order_no']}"
+                            sn_entry.value = sn_code
+                            sn_photo_status.value = "SN照片: 已上传"
+                            sn_photo_status.color = ft.Colors.GREEN
+
+                            def on_ok(ev):
+                                close_all_trans_dialogs()
+
+                                async def reopen():
+                                    await asyncio.sleep(0.1)
+                                    open_operation_dialog(row)
+
+                                page.run_task(reopen)
+
+                            show_alert(page, "成功", "SN码已保存，照片已自动上传", on_ok=on_ok)
+                        else:
+                            show_alert(page, "失败", f"保存失败: {err_msg[:30]}")
                     except Exception as ex:
-                        print(f"[SN] Error saving code: {ex}")
-                        show_alert(page, "保存失败", str(ex)[:30])
-
-                def build_upload_view():
-                    tip = ft.Text("请拍摄或选择SN照片完成存档", size=12, text_align=ft.TextAlign.CENTER)
-
-                    # ---------- 修改点：上传SN照片时显示加载动画 ----------
-                    def pick_photo(e):
-                        async def _pick():
-                            path = await pick_image_async(page)
-                            if path:
-                                show_loading("正在上传SN照片，请稍等...")
-                                try:
-                                    db_tag = await asyncio.to_thread(
-                                        upload_image_to_db, page, path, "sn_photos",
-                                        current_order["out_order_no"], "SN", delete_old=True
-                                    )
-                                    if db_tag:
-                                        current_order["sn_photo"] = db_tag
-                                        sn_photo_status.value = "SN照片: 已上传"
-                                        sn_photo_status.color = ft.Colors.GREEN
-                                        tip.value = "照片已保存，SN信息全部录入完成"
-                                        tip.color = ft.Colors.GREEN
-                                except Exception as ex:
-                                    print(f"[SN] Upload error: {ex}")
-                                    show_alert(page, "上传失败", str(ex)[:30])
-                                finally:
-                                    hide_loading()
-                                page.update()
-
-                        page.run_task(_pick)
-
-                    def back_to_menu(e):
-                        nonlocal current_mode
-                        current_mode = "menu"
-                        refresh_view()
-
-                    return ft.Column(
-                        [
-                            ft.Icon(ft.Icons.CHECK_CIRCLE, color=ft.Colors.GREEN, size=48),
-                            ft.Text("SN码识别成功", size=16, text_align=ft.TextAlign.CENTER, color=ft.Colors.GREEN),
-                            tip,
-                            ft.Button("上传SN照片", on_click=pick_photo, expand=True),
-                            ft.TextButton("返回菜单", on_click=back_to_menu)
-                        ],
-                        width=min(320, (get_window_width(page) or 480) - 40),
-                        spacing=12,
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER
-                    )
+                        hide_upload_loading(page)
+                        show_alert(page, "错误", f"处理异常: {str(ex)[:30]}")
 
                 def build_manual_view():
-                    tip = ft.Text("请先上传SN照片，再输入SN码保存", size=12, text_align=ft.TextAlign.CENTER)
+                    tip = ft.Text("请输入SN码并上传照片", size=12, text_align=ft.TextAlign.CENTER)
                     sn_input = ft.TextField(label="手动输入SN码", value=current_order["sn_code"], width=280)
 
-                    # ---------- 修改点：手动录入上传SN照片时显示加载动画 ----------
                     def pick_photo(e):
-                        async def _pick():
+                        async def _pick_task():
                             path = await pick_image_async(page)
-                            if path:
-                                show_loading("正在上传SN照片，请稍等...")
-                                try:
-                                    db_tag = await asyncio.to_thread(
-                                        upload_image_to_db, page, path, "sn_photos",
-                                        current_order["out_order_no"], "SN", delete_old=True
-                                    )
-                                    if db_tag:
-                                        current_order["sn_photo"] = db_tag
-                                        sn_photo_status.value = "SN照片: 已上传"
-                                        sn_photo_status.color = ft.Colors.GREEN
-                                        tip.value = "照片已保存，请输入SN码后点保存"
-                                        tip.color = ft.Colors.GREEN
-                                except Exception as ex:
-                                    print(f"[SN Manual] Upload error: {ex}")
-                                    show_alert(page, "上传失败", str(ex)[:30])
-                                finally:
-                                    hide_loading()
-                                page.update()
+                            if not path:
+                                return
+                            await show_upload_loading_async(page)
+                            try:
+                                success, db_tag, err_msg = await asyncio.to_thread(
+                                    upload_image_to_db,
+                                    path, "sn_photos",
+                                    current_order["out_order_no"], "SN", delete_old=True
+                                )
+                                if success:
+                                    current_order["sn_photo"] = db_tag
+                                    sn_photo_status.value = "SN照片: 已上传"
+                                    sn_photo_status.color = ft.Colors.GREEN
+                                    tip.value = "照片上传成功"
+                                    tip.color = ft.Colors.GREEN
+                                    page.update()
+                                else:
+                                    await show_alert_async(page, "上传失败", err_msg[:30])
+                            except Exception as ex:
+                                await show_alert_async(page, "上传失败", str(ex)[:30])
+                            finally:
+                                hide_upload_loading(page)
 
-                        page.run_task(_pick)
+                        page.run_task(_pick_task)
 
                     def save_sn_code(e):
                         sn_code = sn_input.value.strip()
@@ -3162,10 +3286,9 @@ def main(page: ft.Page):
                             current_order["sn_code"] = sn_code
                             sn_entry.value = sn_code
                             show_alert(page, "成功", "SN码已保存")
-                            page.pop_dialog()
-                            page.update()
+                            close_all_trans_dialogs()
+                            open_operation_dialog(row)
                         except Exception as ex:
-                            print(f"[SN Manual] Error saving: {ex}")
                             show_alert(page, "错误", f"保存失败: {str(ex)}")
 
                     def back_to_menu(e):
@@ -3204,28 +3327,33 @@ def main(page: ft.Page):
                 )
                 page.show_dialog(sn_dialog)
 
-            # ---------------------- 送货照片处理 (水印添加，同步函数) ----------------------
-            def process_image(file_path, add_watermark):
-                """水印优化：中文不乱码、加大字号、右下角水印、GPS定位"""
+            # ---------------------- 送货照片处理（水印逻辑严格拆分） ----------------------
+            def process_image(file_path, add_watermark, order_no, cust_name, full_addr, out_order_no):
+                """
+                纯后台图片处理+入库函数，无任何UI/权限操作
+                返回：(是否成功, 成功返回db_tag, 失败返回错误信息)
+                """
                 try:
                     import datetime
                     import io
                     import os
-                    import requests
                     from PIL import Image, ImageDraw, ImageFont
 
+                    # ========== 修复：移除错误的权限申请，仅保留纯网络IP定位 ==========
                     lat, lng = "获取失败", "获取失败"
                     try:
-                        import flet_permission_handler as ph
-                        ph.request_permission(ph.Permission.LOCATION)
+                        # 纯网络IO，子线程可安全执行，无需系统位置权限
+                        # 若后续需要真实GPS精准定位，需额外集成定位库，在主线程获取坐标后传入
                         res = requests.get("https://ipapi.co/json", timeout=4)
-                        loc_json = res.json()
-                        lat = loc_json.get("latitude", "获取失败")
-                        lng = loc_json.get("longitude", "获取失败")
+                        if res.status_code == 200:
+                            loc_json = res.json()
+                            lat = loc_json.get("latitude", "获取失败")
+                            lng = loc_json.get("longitude", "获取失败")
                     except Exception:
                         pass
 
                     img = Image.open(file_path)
+                    # 仅拍照模式执行水印绘制
                     if add_watermark:
                         draw = ImageDraw.Draw(img)
                         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -3237,7 +3365,6 @@ def main(page: ft.Page):
                             f"地址:{full_addr}",
                             loc_line
                         ])
-
                         try:
                             font = ImageFont.truetype("simhei.ttf", 28)
                         except:
@@ -3245,13 +3372,11 @@ def main(page: ft.Page):
                                 font = ImageFont.truetype("/system/fonts/DroidSansFallback.ttf", 28)
                             except:
                                 font = ImageFont.load_default(size=28)
-
                         bbox = draw.textbbox((0, 0), watermark_text, font=font)
                         tw = bbox[2] - bbox[0]
                         th = bbox[3] - bbox[1]
                         x_pos = img.width - tw - 20
                         y_pos = img.height - th - 20
-
                         draw.rectangle(
                             [x_pos - 8, y_pos - 8, x_pos + tw + 8, y_pos + th + 8],
                             fill=(0, 0, 0, 170)
@@ -3263,24 +3388,23 @@ def main(page: ft.Page):
                     tmp_file = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False).name
                     with open(tmp_file, "wb") as f:
                         f.write(buf.getvalue())
-
                     biz_no, prefix = get_home_photo_biz_info(order_no, out_order_no)
-                    db_tag = upload_image_to_db(page, tmp_file, "home_photos", biz_no, prefix, delete_old=True)
-                    if db_tag:
-                        current_order["home_photo"] = db_tag
-                        home_photo_status.value = "送货照片: 已上传"
-                        home_photo_status.color = ft.Colors.GREEN
-                        show_alert(page, "成功", "送货入户照片已上传（已加水印）")
+                    # 调用纯后台入库
+                    success, db_tag, err = upload_image_to_db(tmp_file, "home_photos", biz_no, prefix, delete_old=True)
                     try:
                         os.unlink(tmp_file)
                     except:
                         pass
+                    return success, db_tag, err
                 except Exception as ex:
                     print(f"[HomePhoto] Process error: {ex}")
-                    show_alert(page, "错误", f"图片处理失败: {str(ex)}")
+                    return False, None, str(ex)
 
-            # ---------------------- 送货照片上传入口 (含加载动画) ----------------------
+            # ---------------------- 送货照片上传入口 ----------------------
             def do_upload_home_photo(e):
+                if upload_busy_lock:
+                    show_alert(page, "提示", "正在上传中，请稍后再操作")
+                    return
                 biz_no, prefix = get_home_photo_biz_info(order_no, out_order_no)
                 conn = get_db_conn()
                 if not conn:
@@ -3294,54 +3418,123 @@ def main(page: ft.Page):
                     show_alert(page, "错误", "未找到订单信息")
                     return
 
-                # ---------- 修改点：拍照上传带加载动画 ----------
                 def on_camera_click(e):
-                    page.pop_dialog()  # 关闭上传选择弹窗
+                    page.pop_dialog()
 
                     def camera_callback(path):
-                        if path:
-                            async def upload_with_loading():
-                                show_loading("正在处理并上传送货照片，请稍等...")
-                                try:
-                                    await asyncio.to_thread(process_image, path, add_watermark=True)
-                                except Exception as ex:
-                                    print(f"[HomePhoto] Error: {ex}")
-                                    show_alert(page, "错误", f"图片处理失败: {str(ex)}")
-                                finally:
-                                    hide_loading()
-                                # 上传完毕后重新打开操作弹窗
-                                open_operation_dialog(row)
+                        if not path:
+                            return
 
-                            page.run_task(upload_with_loading)
+                        async def upload_task():
+                            # ========== 方案B新增：主线程提前申请位置权限 ==========
+                            if page.platform == ft.PagePlatform.ANDROID:
+                                has_loc_perm = await request_location_permission(page)
+                                if not has_loc_perm:
+                                    show_snack(page, "未授予位置权限，水印将使用IP粗略定位", ft.Colors.ORANGE)
+
+                            # 显示加载动画
+                            await show_upload_loading_async(page, "正在处理并上传照片...")
+                            try:
+                                # 纯后台执行图片处理+入库（零UI、零权限操作）
+                                success, db_tag, err_msg = await asyncio.to_thread(
+                                    process_image,
+                                    path,
+                                    add_watermark=True,
+                                    order_no=order_no,
+                                    cust_name=cust_name,
+                                    full_addr=full_addr,
+                                    out_order_no=out_order_no
+                                )
+
+                                # 先移除加载遮罩，再弹结果
+                                hide_upload_loading(page)
+
+                                if success:
+                                    current_order["home_photo"] = db_tag
+                                    home_photo_status.value = "送货照片: 已上传"
+                                    home_photo_status.color = ft.Colors.GREEN
+
+                                    def on_ok(ev):
+                                        close_all_trans_dialogs()
+
+                                        async def reopen():
+                                            await asyncio.sleep(0.1)
+                                            open_operation_dialog(row)
+
+                                        page.run_task(reopen)
+
+                                    show_alert(page, "成功", "送货照片上传完成", on_ok=on_ok)
+                                else:
+                                    show_alert(page, "错误", f"上传失败: {err_msg[:50]}")
+
+                            except Exception as ex:
+                                hide_upload_loading(page)
+                                show_alert(page, "错误", f"上传异常: {str(ex)[:50]}")
+
+                        page.run_task(upload_task)
 
                     show_camera_view(page, camera_callback)
 
-                # ---------- 修改点：相册上传带加载动画 ----------
                 def on_gallery_click(e):
                     page.pop_dialog()
 
-                    async def pick():
+                    async def pick_task():
                         path = await pick_image_async(page)
-                        if path:
-                            show_loading("正在上传送货照片，请稍等...")
-                            try:
-                                await asyncio.to_thread(process_image, path, add_watermark=False)
-                            except Exception as ex:
-                                print(f"[HomePhoto] Error: {ex}")
-                                show_alert(page, "错误", f"图片处理失败: {str(ex)}")
-                            finally:
-                                hide_loading()
-                            open_operation_dialog(row)
+                        if not path:
+                            return
 
-                    page.run_task(pick)
+                        # ========== 方案B新增：主线程提前申请位置权限 ==========
+                        if page.platform == ft.PagePlatform.ANDROID:
+                            has_loc_perm = await request_location_permission(page)
+                            if not has_loc_perm:
+                                show_snack(page, "未授予位置权限，水印将使用IP粗略定位", ft.Colors.ORANGE)
+
+                        # 显示加载动画
+                        await show_upload_loading_async(page, "正在上传照片...")
+                        try:
+                            success, db_tag, err_msg = await asyncio.to_thread(
+                                process_image,
+                                path,
+                                add_watermark=False,
+                                order_no=order_no,
+                                cust_name=cust_name,
+                                full_addr=full_addr,
+                                out_order_no=out_order_no
+                            )
+
+                            hide_upload_loading(page)
+
+                            if success:
+                                current_order["home_photo"] = db_tag
+                                home_photo_status.value = "送货照片: 已上传"
+                                home_photo_status.color = ft.Colors.GREEN
+
+                                def on_ok(ev):
+                                    close_all_trans_dialogs()
+
+                                    async def reopen():
+                                        await asyncio.sleep(0.1)
+                                        open_operation_dialog(row)
+
+                                    page.run_task(reopen)
+
+                                show_alert(page, "成功", "送货照片上传完成", on_ok=on_ok)
+                            else:
+                                show_alert(page, "错误", f"上传失败: {err_msg[:50]}")
+                        except Exception as ex:
+                            hide_upload_loading(page)
+                            show_alert(page, "错误", f"上传异常: {str(ex)[:50]}")
+
+                    page.run_task(pick_task)
+
 
                 upload_dlg = ft.AlertDialog(
                     title=ft.Text("上传送货照片", weight=ft.FontWeight.BOLD),
                     content=ft.Column([
                         ft.ListTile(leading=ft.Icon(ft.Icons.CAMERA_ALT, color=ft.Colors.BLUE),
-                                    title=ft.Text("拍照"), on_click=on_camera_click),
+                                    title=ft.Text("拍照（自动添加水印）"), on_click=on_camera_click),
                         ft.ListTile(leading=ft.Icon(ft.Icons.PHOTO, color=ft.Colors.GREEN),
-                                    title=ft.Text("从相册选择"), on_click=on_gallery_click),
+                                    title=ft.Text("从相册选择（无水印）"), on_click=on_gallery_click),
                     ], tight=True),
                     actions=[ft.TextButton("取消", on_click=lambda e: page.pop_dialog())],
                     modal=True,
