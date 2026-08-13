@@ -25,6 +25,9 @@ import concurrent.futures
 import time
 import re
 import shutil
+import flet_flashlight as ffl
+import flet_geolocator as ftg
+
 
 SERVER_DECODE_URL = os.getenv("SERVER_DECODE_URL", "https://api.qrserver.com/v1/read-qr-code/")
 MAX_IMAGE_LONG_EDGE = 1280
@@ -287,15 +290,64 @@ def compress_image_to_bytes(file_path: str, max_long_edge: int = MAX_IMAGE_LONG_
         img.convert("RGB").save(buf, format="JPEG", quality=100, optimize=True)
         return buf.getvalue()
 
-async def request_location_permission(page: ft.Page) -> bool:
-    ph = page._permission_handler
-    # 优先申请高精度定位
-    status = await ph.request(fph.Permission.ACCESS_FINE_LOCATION)
-    if status == fph.PermissionStatus.GRANTED:
-        return True
-    # 高精度被拒则降级粗略定位
-    status_coarse = await ph.request(fph.Permission.ACCESS_COARSE_LOCATION)
-    return status_coarse == fph.PermissionStatus.GRANTED
+async def get_current_location(page: ft.Page) -> tuple[bool, str, str]:
+    """
+    对齐官方flet_geolocator示例：申请位置权限 + 获取当前坐标
+    返回：(是否成功, 纬度, 经度)
+    失败自动降级IP粗略定位
+    """
+    # 桌面端/Web直接走IP定位
+    if page.platform not in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS):
+        try:
+            res = requests.get("https://ipapi.co/json", timeout=4)
+            if res.status_code == 200:
+                loc = res.json()
+                return True, str(loc.get("latitude", "获取失败")), str(loc.get("longitude", "获取失败"))
+        except:
+            pass
+        return False, "获取失败", "获取失败"
+
+    try:
+        # 对齐官方：创建Geolocator实例
+        geo = ftg.Geolocator(
+            configuration=ftg.GeolocatorConfiguration(
+                accuracy=ftg.GeolocatorPositionAccuracy.LOW
+            )
+        )
+        # 申请位置权限（对齐官方request_permission）
+        perm_status = await geo.request_permission()
+        print(f"[Location] 权限申请结果：{perm_status}")
+
+        if perm_status != ftg.GeolocatorPermissionStatus.GRANTED:
+            print("[Location] 位置权限未授予，降级IP定位")
+            # 权限拒绝，降级IP定位
+            try:
+                res = requests.get("https://ipapi.co/json", timeout=4)
+                if res.status_code == 200:
+                    loc = res.json()
+                    return True, str(loc.get("latitude", "获取失败")), str(loc.get("longitude", "获取失败"))
+            except:
+                pass
+            return False, "获取失败", "获取失败"
+
+        # 获取当前GPS坐标（对齐官方get_current_position）
+        position = await geo.get_current_position()
+        lat = str(round(position.latitude, 6))
+        lng = str(round(position.longitude, 6))
+        print(f"[Location] GPS定位成功：{lat}, {lng}")
+        return True, lat, lng
+
+    except Exception as e:
+        print(f"[Location] 定位异常：{e}")
+        # 异常降级IP定位
+        try:
+            res = requests.get("https://ipapi.co/json", timeout=4)
+            if res.status_code == 200:
+                loc = res.json()
+                return True, str(loc.get("latitude", "获取失败")), str(loc.get("longitude", "获取失败"))
+        except:
+            pass
+        return False, "获取失败", "获取失败"
 
 async def request_gallery_permission(page: ft.Page) -> bool:
     """
@@ -387,11 +439,10 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
 
 def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
     """
-    官方规范版全屏相机：保留原有闪光灯功能，对齐官方初始化写法
-    修复：参数报错、层级靠底、拍照偶发无反应问题
+    修改版全屏相机：移除关闭按钮 + 闪光灯改用flet_flashlight官方插件
     上层业务回调接口完全不变
     """
-    print("[Camera] 带闪光灯官方规范版相机启动")
+    print("[Camera] 闪光灯独立版相机启动")
 
     # 桌面端降级逻辑保留不变
     if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS):
@@ -402,62 +453,64 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         page.run_task(desktop_fallback)
         return
 
-    # ========== 状态管理（对齐官方设计 + 保留原有闪光灯状态） ==========
+    # ========== 状态管理 ==========
     is_initialized = False
-    flash_on = False  # 闪光灯状态，复用原有逻辑
+    flash_on = False
     camera_widget = fc.Camera(
         expand=True,
         preview_enabled=True,
     )
 
-    # ========== 关闭相机 ==========
+    # ========== 关闭相机：移除无效stop调用，自动关闪光灯 ==========
     async def close_camera():
         nonlocal is_initialized, flash_on
-        if is_initialized and camera_widget is not None:
+        # 退出时自动熄灭闪光灯
+        if flash_on:
             try:
-                # 关闭前先关掉闪光灯，避免后台常亮
-                if flash_on:
-                    await camera_widget.set_flash_mode(fc.FlashMode.OFF)
-                    flash_on = False
-                await camera_widget.stop()
-            except Exception as e:
-                print(f"[Camera] 停止相机异常：{e}")
+                await ffl.Flashlight().off()
+                flash_on = False
+            except Exception:
+                pass
         is_initialized = False
+        # 直接关闭弹窗，系统自动释放相机资源
         page.pop_dialog()
         page.update()
 
-    # ========== 闪光灯开关（完全复用原有正常逻辑） ==========
+    # ========== 闪光灯开关：完全对齐官方flet_flashlight示例 ==========
     async def toggle_flash(e):
         nonlocal flash_on
         if not is_initialized:
             show_snack(page, "相机正在初始化，请稍候...", ft.Colors.ORANGE)
             return
-        flash_on = not flash_on
         try:
             if flash_on:
-                await camera_widget.set_flash_mode(fc.FlashMode.TORCH)
-                flash_btn.icon = ft.Icons.FLASH_ON
-            else:
-                await camera_widget.set_flash_mode(fc.FlashMode.OFF)
+                await ffl.Flashlight().off()
                 flash_btn.icon = ft.Icons.FLASH_OFF
+                flash_on = False
+            else:
+                await ffl.Flashlight().on()
+                flash_btn.icon = ft.Icons.FLASH_ON
+                flash_on = True
             flash_btn.update()
-        except AttributeError:
-            show_snack(page, "闪光灯控制不可用", ft.Colors.ORANGE)
-            flash_on = not flash_on
         except Exception as ex:
             print(f"[Camera] 闪光灯异常: {ex}")
-            show_snack(page, "闪光灯控制失败", ft.Colors.ORANGE)
-            flash_on = not flash_on
+            show_snack(page, "闪光灯控制不可用", ft.Colors.ORANGE)
 
-    # ========== 拍照逻辑（对齐官方无参异步写法） ==========
+    # ========== 拍照逻辑 ==========
     async def take_photo():
-        nonlocal is_initialized
+        nonlocal is_initialized, flash_on  # 补充声明外层变量
         if not is_initialized:
             show_snack(page, "相机正在初始化，请稍候...", ft.Colors.ORANGE)
             return
 
         try:
-            # 完全对齐官方：直接调用take_picture，返回base64字符串
+            # 拍照前自动关闪光灯（避免过曝），不需要可注释掉
+            if flash_on:
+                await ffl.Flashlight().off()
+                flash_on = False
+                flash_btn.icon = ft.Icons.FLASH_OFF
+                flash_btn.update()
+
             img_data = await camera_widget.take_picture()
 
             # 兼容base64和bytes两种返回格式
@@ -476,12 +529,12 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                 show_snack(page, "拍照失败，请重试", ft.Colors.RED)
                 return
 
-            # 保存为临时文件，回调业务层
+            # 保存为临时文件
             tmp_path = tempfile.mktemp(suffix=".jpg")
             with open(tmp_path, "wb") as f:
                 f.write(img_bytes)
 
-            # 后台保存到系统相册（保留原有逻辑）
+            # 后台保存到系统相册
             def save_to_gallery():
                 try:
                     base_pics = "/storage/emulated/0/Pictures"
@@ -503,9 +556,10 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                     print(f"[Camera] 照片已保存到: {dest_path}")
                 except Exception as e:
                     print(f"[Camera] 保存相册失败：{e}")
+
             threading.Thread(target=save_to_gallery, daemon=True).start()
 
-            # 先关闭相机，再回调业务
+            # 关闭相机并回调业务层
             await close_camera()
             on_picture_taken(tmp_path)
 
@@ -513,7 +567,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
             print(f"[Camera] 拍照异常：{e}")
             show_snack(page, f"拍照失败：{str(e)[:30]}", ft.Colors.RED)
 
-    # ========== 相机状态回调（对齐官方on_state_change） ==========
+    # ========== 相机状态回调 ==========
     def on_camera_state(e: fc.CameraStateEvent):
         nonlocal is_initialized
         if e.has_error:
@@ -523,22 +577,20 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         elif e.is_preview_paused:
             is_initialized = False
         else:
-            # 预览正常渲染，标记为已初始化
             is_initialized = True
         page.update()
 
     camera_widget.on_state_change = on_camera_state
 
-    # ========== 初始化相机（完全对齐官方参数） ==========
+    # ========== 初始化相机（对齐官方参数） ==========
     async def init_camera():
         nonlocal is_initialized
         try:
-            # 1. 获取可用摄像头列表
             cam_list = await camera_widget.get_available_cameras()
             if not cam_list:
                 raise Exception("未检测到可用摄像头")
 
-            # 2. 优先选择后置摄像头
+            # 优先选择后置摄像头
             selected_cam = cam_list[0]
             for cam in cam_list:
                 if cam.lens_direction == fc.CameraLensDirection.BACK:
@@ -546,7 +598,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                     break
             print(f"[Camera] 使用摄像头: {selected_cam.name}")
 
-            # 3. 官方标准初始化参数
+            # 官方标准初始化参数
             await camera_widget.initialize(
                 description=selected_cam,
                 resolution_preset=fc.ResolutionPreset.HIGH,
@@ -554,7 +606,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                 image_format_group=fc.ImageFormatGroup.JPEG,
             )
 
-            # 4. 锁定拍摄方向，防止照片旋转
+            # 锁定拍摄方向，防止照片旋转
             try:
                 await camera_widget.lock_capture_orientation()
             except Exception as ex:
@@ -569,7 +621,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
             await close_camera()
 
     # ========== 构建控件按钮 ==========
-    # 闪光灯按钮（复用原有样式）
+    # 闪光灯按钮（保留原有样式）
     flash_btn = ft.IconButton(
         icon=ft.Icons.FLASH_OFF,
         icon_size=28,
@@ -578,15 +630,6 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         style=ft.ButtonStyle(shape=ft.CircleBorder()),
         tooltip="闪光灯",
         on_click=lambda e: page.run_task(toggle_flash, e),
-    )
-
-    # 关闭按钮
-    close_btn = ft.IconButton(
-        icon=ft.Icons.CLOSE,
-        icon_color=ft.Colors.WHITE,
-        bgcolor=ft.Colors.BLACK54,
-        icon_size=28,
-        on_click=lambda e: page.run_task(close_camera),
     )
 
     # 拍照按钮
@@ -618,11 +661,6 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                     content=flash_btn,
                     alignment=ft.Alignment(-0.9, -0.9),
                 ),
-                # 右上角：关闭按钮
-                ft.Container(
-                    content=close_btn,
-                    alignment=ft.Alignment(0.9, -0.9),
-                ),
                 # 底部居中：拍照按钮
                 ft.Container(
                     content=take_btn,
@@ -640,7 +678,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
     page.show_dialog(camera_dialog)
     page.update()
 
-    # 异步初始化相机（不阻塞弹窗弹出）
+    # 异步初始化相机
     page.run_task(init_camera)
 
 def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], None], title: str = "选择图片"):
@@ -3327,9 +3365,11 @@ def main(page: ft.Page):
                 page.show_dialog(sn_dialog)
 
             # ---------------------- 送货照片处理（水印逻辑严格拆分） ----------------------
-            def process_image(file_path, add_watermark, order_no, cust_name, full_addr, out_order_no):
+            def process_image(file_path, add_watermark, order_no, cust_name, full_addr, out_order_no, lat="获取失败",
+                              lng="获取失败"):
                 """
-                纯后台图片处理+入库函数，无任何UI/权限操作
+                纯后台图片处理+入库函数，无任何UI/权限/定位操作
+                位置信息由上层主线程获取后传入
                 返回：(是否成功, 成功返回db_tag, 失败返回错误信息)
                 """
                 try:
@@ -3337,19 +3377,6 @@ def main(page: ft.Page):
                     import io
                     import os
                     from PIL import Image, ImageDraw, ImageFont
-
-                    # ========== 修复：移除错误的权限申请，仅保留纯网络IP定位 ==========
-                    lat, lng = "获取失败", "获取失败"
-                    try:
-                        # 纯网络IO，子线程可安全执行，无需系统位置权限
-                        # 若后续需要真实GPS精准定位，需额外集成定位库，在主线程获取坐标后传入
-                        res = requests.get("https://ipapi.co/json", timeout=4)
-                        if res.status_code == 200:
-                            loc_json = res.json()
-                            lat = loc_json.get("latitude", "获取失败")
-                            lng = loc_json.get("longitude", "获取失败")
-                    except Exception:
-                        pass
 
                     img = Image.open(file_path)
                     # 仅拍照模式执行水印绘制
@@ -3425,16 +3452,15 @@ def main(page: ft.Page):
                             return
 
                         async def upload_task():
-                            # ========== 方案B新增：主线程提前申请位置权限 ==========
-                            if page.platform == ft.PagePlatform.ANDROID:
-                                has_loc_perm = await request_location_permission(page)
-                                if not has_loc_perm:
-                                    show_snack(page, "未授予位置权限，水印将使用IP粗略定位", ft.Colors.ORANGE)
+                            # ========== 主线程先获取位置（含权限申请） ==========
+                            loc_success, lat, lng = await get_current_location(page)
+                            if not loc_success:
+                                show_snack(page, "位置获取失败，水印将使用粗略定位", ft.Colors.ORANGE)
 
                             # 显示加载动画
                             await show_upload_loading_async(page, "正在处理并上传照片...")
                             try:
-                                # 纯后台执行图片处理+入库（零UI、零权限操作）
+                                # 纯后台执行图片处理+入库（零UI、零权限）
                                 success, db_tag, err_msg = await asyncio.to_thread(
                                     process_image,
                                     path,
@@ -3442,10 +3468,11 @@ def main(page: ft.Page):
                                     order_no=order_no,
                                     cust_name=cust_name,
                                     full_addr=full_addr,
-                                    out_order_no=out_order_no
+                                    out_order_no=out_order_no,
+                                    lat=lat,
+                                    lng=lng
                                 )
 
-                                # 先移除加载遮罩，再弹结果
                                 hide_upload_loading(page)
 
                                 if success:
@@ -3482,11 +3509,10 @@ def main(page: ft.Page):
                         if not path:
                             return
 
-                        # ========== 方案B新增：主线程提前申请位置权限 ==========
-                        if page.platform == ft.PagePlatform.ANDROID:
-                            has_loc_perm = await request_location_permission(page)
-                            if not has_loc_perm:
-                                show_snack(page, "未授予位置权限，水印将使用IP粗略定位", ft.Colors.ORANGE)
+                        # ========== 主线程先获取位置（含权限申请） ==========
+                        loc_success, lat, lng = await get_current_location(page)
+                        if not loc_success:
+                            show_snack(page, "位置获取失败，水印将使用粗略定位", ft.Colors.ORANGE)
 
                         # 显示加载动画
                         await show_upload_loading_async(page, "正在上传照片...")
@@ -3498,7 +3524,9 @@ def main(page: ft.Page):
                                 order_no=order_no,
                                 cust_name=cust_name,
                                 full_addr=full_addr,
-                                out_order_no=out_order_no
+                                out_order_no=out_order_no,
+                                lat=lat,
+                                lng=lng
                             )
 
                             hide_upload_loading(page)
