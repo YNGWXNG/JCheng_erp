@@ -440,10 +440,10 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
 
 def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
     """
-    闪光灯修复版：完全复用原正常的闪光灯调用逻辑 + Dialog顶层承载
-    修复：闪光灯不可用、层级靠底、拍照无反应三大问题
+    最终修复版：闪光灯改回原相机内置实现 + 移除公共相册保存
+    修复：闪光灯打不开、相册权限拒绝、关闭报错三大问题
     """
-    print("[Camera] 闪光灯修复版相机启动")
+    print("[Camera] 最终修复版相机启动")
 
     # 桌面端降级逻辑保留不变
     if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS):
@@ -454,24 +454,96 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         page.run_task(desktop_fallback)
         return
 
-    # ========== 状态变量 ==========
-    camera_widget = fc.Camera(expand=True, preview_enabled=True)
-    flash_on = False
+    # ========== 状态管理 ==========
     is_initialized = False
+    flash_on = False  # 闪光灯状态，复用原有逻辑
+    camera_widget = fc.Camera(
+        expand=True,
+        preview_enabled=True,
+    )
 
     # ========== 关闭相机 ==========
     async def close_camera():
         nonlocal is_initialized, flash_on
-        # 退出前先关闪光灯
-        if flash_on and is_initialized:
+        # 退出前自动关闭闪光灯
+        if flash_on:
             try:
                 await camera_widget.set_flash_mode(fc.FlashMode.OFF)
+                flash_on = False
             except Exception:
                 pass
-            flash_on = False
         is_initialized = False
         page.pop_dialog()
         page.update()
+
+    # ========== 闪光灯开关：复用原相机内置正常逻辑 ==========
+    async def toggle_flash(e):
+        nonlocal flash_on
+        if not is_initialized:
+            show_snack(page, "相机正在初始化，请稍候...", ft.Colors.ORANGE)
+            return
+        flash_on = not flash_on
+        try:
+            if flash_on:
+                await camera_widget.set_flash_mode(fc.FlashMode.TORCH)
+                flash_btn.icon = ft.Icons.FLASH_ON
+            else:
+                await camera_widget.set_flash_mode(fc.FlashMode.OFF)
+                flash_btn.icon = ft.Icons.FLASH_OFF
+            flash_btn.update()
+        except AttributeError:
+            show_snack(page, "闪光灯控制不可用", ft.Colors.ORANGE)
+            flash_on = not flash_on
+        except Exception as ex:
+            print(f"[Camera] 闪光灯异常: {ex}")
+            show_snack(page, "闪光灯控制失败", ft.Colors.ORANGE)
+            flash_on = not flash_on
+
+    # ========== 拍照逻辑 ==========
+    async def take_photo():
+        nonlocal is_initialized, flash_on
+        if not is_initialized:
+            show_snack(page, "相机正在初始化，请稍候...", ft.Colors.ORANGE)
+            return
+
+        try:
+            # 拍照前自动关闪光灯（避免过曝）
+            if flash_on:
+                await camera_widget.set_flash_mode(fc.FlashMode.OFF)
+                flash_on = False
+                flash_btn.icon = ft.Icons.FLASH_OFF
+                flash_btn.update()
+
+            img_data = await camera_widget.take_picture()
+
+            # 兼容base64和bytes两种返回格式
+            if isinstance(img_data, str):
+                if "," in img_data:
+                    _, b64_body = img_data.split(",", 1)
+                    img_bytes = base64.b64decode(b64_body)
+                else:
+                    img_bytes = base64.b64decode(img_data)
+            elif isinstance(img_data, bytes):
+                img_bytes = img_data
+            else:
+                raise Exception("图片数据格式无效")
+
+            if not img_bytes:
+                show_snack(page, "拍照失败，请重试", ft.Colors.RED)
+                return
+
+            # 保存为临时文件（业务直接使用，不再写入公共相册）
+            tmp_path = tempfile.mktemp(suffix=".jpg")
+            with open(tmp_path, "wb") as f:
+                f.write(img_bytes)
+
+            # 关闭相机并回调业务层
+            await close_camera()
+            on_picture_taken(tmp_path)
+
+        except Exception as e:
+            print(f"[Camera] 拍照异常：{e}")
+            show_snack(page, f"拍照失败：{str(e)[:30]}", ft.Colors.RED)
 
     # ========== 相机状态回调 ==========
     def on_camera_state(e: fc.CameraStateEvent):
@@ -488,28 +560,64 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
 
     camera_widget.on_state_change = on_camera_state
 
-    # ========== 控件创建（先不绑定事件，初始化后再绑） ==========
-    # 闪光灯按钮（完全复用原有样式）
+    # ========== 初始化相机 ==========
+    async def init_camera():
+        nonlocal is_initialized
+        try:
+            cam_list = await camera_widget.get_available_cameras()
+            if not cam_list:
+                raise Exception("未检测到可用摄像头")
+
+            # 优先选择后置摄像头
+            selected_cam = cam_list[0]
+            for cam in cam_list:
+                if cam.lens_direction == fc.CameraLensDirection.BACK:
+                    selected_cam = cam
+                    break
+            print(f"[Camera] 使用摄像头: {selected_cam.name}")
+
+            # 官方标准初始化参数
+            await camera_widget.initialize(
+                description=selected_cam,
+                resolution_preset=fc.ResolutionPreset.HIGH,
+                enable_audio=False,
+                image_format_group=fc.ImageFormatGroup.JPEG,
+            )
+
+            # 锁定拍摄方向
+            try:
+                await camera_widget.lock_capture_orientation()
+            except Exception as ex:
+                print(f"[Camera] 锁定方向失败（不影响使用）：{ex}")
+
+            is_initialized = True
+            print("[Camera] 相机初始化完成")
+
+        except Exception as e:
+            print(f"[Camera] 初始化失败：{e}")
+            show_snack(page, f"相机启动失败：{str(e)[:30]}", ft.Colors.RED)
+            await close_camera()
+
+    # ========== 构建控件按钮 ==========
     flash_btn = ft.IconButton(
         icon=ft.Icons.FLASH_OFF,
         icon_size=28,
         bgcolor=ft.Colors.WHITE,
         padding=8,
         style=ft.ButtonStyle(shape=ft.CircleBorder()),
-        tooltip="闪光灯"
+        tooltip="闪光灯",
+        on_click=lambda e: page.run_task(toggle_flash, e),
     )
 
-    # 拍照按钮
     take_btn = ft.IconButton(
-        icon=ft.Icons.CAMERA_ALT,
+        icon=ft.Icons.CAMERA,
+        icon_color=ft.Colors.WHITE,
+        bgcolor=ft.Colors.BLUE_600,
         icon_size=48,
-        bgcolor=ft.Colors.WHITE,
-        padding=15,
-        style=ft.ButtonStyle(shape=ft.CircleBorder()),
-        tooltip="拍照"
+        on_click=lambda e: page.run_task(take_photo),
     )
 
-    # ========== 构建全屏Dialog相机（层级最高，盖住出库弹窗） ==========
+    # ========== 构建全屏相机弹窗 ==========
     camera_dialog = ft.AlertDialog(
         modal=True,
         content_padding=ft.Padding(0, 0, 0, 0),
@@ -519,16 +627,8 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         content=ft.Stack(
             controls=[
                 ft.Container(content=camera_widget, expand=True, alignment=ft.Alignment(0, 0)),
-                # 左上角闪光灯按钮
-                ft.Container(
-                    content=flash_btn,
-                    alignment=ft.Alignment(-0.9, -0.9),
-                ),
-                # 底部居中拍照按钮
-                ft.Container(
-                    content=take_btn,
-                    alignment=ft.Alignment(0, 0.85),
-                ),
+                ft.Container(content=flash_btn, alignment=ft.Alignment(-0.9, -0.9)),
+                ft.Container(content=take_btn, alignment=ft.Alignment(0, 0.85)),
             ],
             expand=True,
             width=page.width,
@@ -539,104 +639,6 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
 
     page.show_dialog(camera_dialog)
     page.update()
-
-    # ========== 异步初始化相机 + 绑定事件（照搬原函数成功逻辑） ==========
-    async def init_camera():
-        nonlocal is_initialized
-        try:
-            # 获取摄像头
-            cam_list = await camera_widget.get_available_cameras()
-            if not cam_list:
-                show_snack(page, "未检测到摄像头", ft.Colors.RED)
-                await close_camera()
-                return
-            selected_cam = cam_list[0]
-            print(f"[Camera] 使用摄像头: {selected_cam.name}")
-
-            # 初始化相机
-            await camera_widget.initialize(
-                description=selected_cam,
-                resolution_preset=fc.ResolutionPreset.HIGH,
-                image_format_group=fc.ImageFormatGroup.JPEG,
-            )
-
-            # 锁定拍摄方向
-            try:
-                await camera_widget.lock_capture_orientation()
-            except Exception:
-                pass
-
-            is_initialized = True
-            print("[Camera] 相机初始化完成")
-
-            # ========== 关键：初始化成功后再绑定闪光灯事件（照搬原函数方式） ==========
-            async def toggle_flash(e):
-                nonlocal flash_on
-                flash_on = not flash_on
-                try:
-                    if flash_on:
-                        await camera_widget.set_flash_mode(fc.FlashMode.TORCH)
-                        flash_btn.icon = ft.Icons.FLASH_ON
-                    else:
-                        await camera_widget.set_flash_mode(fc.FlashMode.OFF)
-                        flash_btn.icon = ft.Icons.FLASH_OFF
-                    flash_btn.update()
-                except AttributeError:
-                    show_snack(page, "闪光灯控制不可用", ft.Colors.ORANGE)
-                    flash_on = not flash_on
-                except Exception as ex:
-                    print(f"[Camera] 闪光灯异常: {ex}")
-                    flash_on = not flash_on
-
-            flash_btn.on_click = toggle_flash
-
-            # 绑定拍照事件
-            async def take_photo_action(e):
-                nonlocal flash_on
-                if not is_initialized:
-                    show_snack(page, "相机正在初始化，请稍候...", ft.Colors.ORANGE)
-                    return
-                try:
-                    # 拍照前先关闪光灯（避免过曝）
-                    if flash_on:
-                        await camera_widget.set_flash_mode(fc.FlashMode.OFF)
-                        flash_on = False
-                        flash_btn.icon = ft.Icons.FLASH_OFF
-                        flash_btn.update()
-
-                    img_data = await camera_widget.take_picture()
-                    # 兼容base64和bytes
-                    if isinstance(img_data, str):
-                        if "," in img_data:
-                            _, b64_body = img_data.split(",", 1)
-                            img_bytes = base64.b64decode(b64_body)
-                        else:
-                            img_bytes = base64.b64decode(img_data)
-                    elif isinstance(img_data, bytes):
-                        img_bytes = img_data
-                    else:
-                        raise Exception("图片数据格式无效")
-
-                    # 保存临时文件
-                    tmp_path = tempfile.mktemp(suffix=".jpg")
-                    with open(tmp_path, "wb") as f:
-                        f.write(img_bytes)
-
-                    # 关闭相机并回调业务
-                    await close_camera()
-                    on_picture_taken(tmp_path)
-
-                except Exception as pic_err:
-                    print(f"[Camera] 拍照失败: {pic_err}")
-                    show_snack(page, f"拍照失败: {str(pic_err)[:50]}", ft.Colors.RED)
-
-            take_btn.on_click = take_photo_action
-
-        except Exception as init_err:
-            print(f"[Camera] 初始化失败: {init_err}")
-            show_snack(page, f"相机启动失败: {str(init_err)[:50]}", ft.Colors.RED)
-            await close_camera()
-
     page.run_task(init_camera)
 
 def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], None], title: str = "选择图片"):
