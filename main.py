@@ -439,13 +439,8 @@ async def pick_image_async(page: ft.Page) -> Optional[str]:
 
 
 def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
-    """
-    最终修复版：闪光灯改回原相机内置实现 + 移除公共相册保存
-    修复：闪光灯打不开、相册权限拒绝、关闭报错三大问题
-    """
     print("[Camera] 最终修复版相机启动")
 
-    # 桌面端降级逻辑保留不变
     if page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.LINUX, ft.PagePlatform.MACOS):
         async def desktop_fallback():
             path = await pick_image_async(page)
@@ -454,18 +449,15 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         page.run_task(desktop_fallback)
         return
 
-    # ========== 状态管理 ==========
     is_initialized = False
-    flash_on = False  # 闪光灯状态，复用原有逻辑
+    flash_on = False
     camera_widget = fc.Camera(
         expand=True,
         preview_enabled=True,
     )
 
-    # ========== 关闭相机 ==========
     async def close_camera():
         nonlocal is_initialized, flash_on
-        # 退出前自动关闭闪光灯
         if flash_on:
             try:
                 await camera_widget.set_flash_mode(fc.FlashMode.OFF)
@@ -476,12 +468,12 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         page.pop_dialog()
         page.update()
 
-    # ========== 闪光灯开关：复用原相机内置正常逻辑 ==========
     async def toggle_flash(e):
         nonlocal flash_on
         if not is_initialized:
             show_snack(page, "相机正在初始化，请稍候...", ft.Colors.ORANGE)
             return
+
         flash_on = not flash_on
         try:
             if flash_on:
@@ -499,7 +491,6 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
             show_snack(page, "闪光灯控制失败", ft.Colors.ORANGE)
             flash_on = not flash_on
 
-    # ========== 拍照逻辑 ==========
     async def take_photo():
         nonlocal is_initialized, flash_on
         if not is_initialized:
@@ -507,7 +498,6 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
             return
 
         try:
-            # 拍照前自动关闪光灯（避免过曝）
             if flash_on:
                 await camera_widget.set_flash_mode(fc.FlashMode.OFF)
                 flash_on = False
@@ -516,7 +506,6 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
 
             img_data = await camera_widget.take_picture()
 
-            # 兼容base64和bytes两种返回格式
             if isinstance(img_data, str):
                 if "," in img_data:
                     _, b64_body = img_data.split(",", 1)
@@ -532,12 +521,10 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                 show_snack(page, "拍照失败，请重试", ft.Colors.RED)
                 return
 
-            # 保存为临时文件（业务直接使用，不再写入公共相册）
             tmp_path = tempfile.mktemp(suffix=".jpg")
             with open(tmp_path, "wb") as f:
                 f.write(img_bytes)
 
-            # 关闭相机并回调业务层
             await close_camera()
             on_picture_taken(tmp_path)
 
@@ -545,7 +532,6 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
             print(f"[Camera] 拍照异常：{e}")
             show_snack(page, f"拍照失败：{str(e)[:30]}", ft.Colors.RED)
 
-    # ========== 相机状态回调 ==========
     def on_camera_state(e: fc.CameraStateEvent):
         nonlocal is_initialized
         if e.has_error:
@@ -560,7 +546,6 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
 
     camera_widget.on_state_change = on_camera_state
 
-    # ========== 初始化相机 ==========
     async def init_camera():
         nonlocal is_initialized
         try:
@@ -568,7 +553,6 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
             if not cam_list:
                 raise Exception("未检测到可用摄像头")
 
-            # 优先选择后置摄像头
             selected_cam = cam_list[0]
             for cam in cam_list:
                 if cam.lens_direction == fc.CameraLensDirection.BACK:
@@ -576,7 +560,6 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                     break
             print(f"[Camera] 使用摄像头: {selected_cam.name}")
 
-            # 官方标准初始化参数
             await camera_widget.initialize(
                 description=selected_cam,
                 resolution_preset=fc.ResolutionPreset.HIGH,
@@ -584,7 +567,6 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
                 image_format_group=fc.ImageFormatGroup.JPEG,
             )
 
-            # 锁定拍摄方向
             try:
                 await camera_widget.lock_capture_orientation()
             except Exception as ex:
@@ -598,7 +580,6 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
             show_snack(page, f"相机启动失败：{str(e)[:30]}", ft.Colors.RED)
             await close_camera()
 
-    # ========== 构建控件按钮 ==========
     flash_btn = ft.IconButton(
         icon=ft.Icons.FLASH_OFF,
         icon_size=28,
@@ -617,7 +598,6 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         on_click=lambda e: page.run_task(take_photo),
     )
 
-    # ========== 构建全屏相机弹窗 ==========
     camera_dialog = ft.AlertDialog(
         modal=True,
         content_padding=ft.Padding(0, 0, 0, 0),
@@ -626,9 +606,28 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
         inset_padding=ft.Padding(0, 0, 0, 0),
         content=ft.Stack(
             controls=[
-                ft.Container(content=camera_widget, expand=True, alignment=ft.Alignment(0, 0)),
-                ft.Container(content=flash_btn, alignment=ft.Alignment(-0.9, -0.9)),
-                ft.Container(content=take_btn, alignment=ft.Alignment(0, 0.85)),
+                # 相机底层预览
+                ft.Container(
+                    content=camera_widget,
+                    expand=True,
+                    alignment=ft.Alignment(0, 0),
+                ),
+                # 闪光灯按钮：左上角绝对定位
+                ft.Container(
+                    content=flash_btn,
+                    left=16,
+                    top=16,
+                    width=48,
+                    height=48,
+                ),
+                # 拍照按钮：底部居中绝对定位
+                ft.Container(
+                    content=take_btn,
+                    left=0,
+                    right=0,
+                    bottom=24,
+                    alignment=ft.Alignment(0, 0),
+                ),
             ],
             expand=True,
             width=page.width,
