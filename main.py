@@ -3000,10 +3000,10 @@ def main(page: ft.Page):
                 cur = conn.cursor()
                 try:
                     cur.execute(
-                        """UPDATE transport SET status=%s, sn_code=%s, trans_date=%s,
+                        """UPDATE transport SET status=%s, trans_date=%s,
                            delivery01_name=%s, delivery02_name=%s, sn_photo=%s
                            WHERE order_no=%s AND out_order_no=%s""",
-                        (new_status, sn_code_input, trans_date,
+                        (new_status, trans_date,
                          delivery01_name_val, delivery02_name_val, sn_mark,
                          current_order["order_no"], current_order["out_order_no"])
                     )
