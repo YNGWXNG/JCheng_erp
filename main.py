@@ -497,15 +497,25 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
             show_snack(page, "相机正在初始化，请稍候...", ft.Colors.ORANGE)
             return
 
+        # 记录拍照前闪光灯是否开启
+        was_flash_on = flash_on
+
         try:
-            if flash_on:
+            # 如果闪光灯开启，先延迟1秒，期间保持灯光亮着
+            if was_flash_on:
+                await asyncio.sleep(1)
+
+            # 拍照时闪光灯保持开启（不提前关闭）
+            img_data = await camera_widget.take_picture()
+
+            # 拍照成功后关闭闪光灯（避免一直亮着）
+            if was_flash_on:
                 await camera_widget.set_flash_mode(fc.FlashMode.OFF)
                 flash_on = False
                 flash_btn.icon = ft.Icons.FLASH_OFF
                 flash_btn.update()
 
-            img_data = await camera_widget.take_picture()
-
+            # 处理图片数据（原有代码保持不变）
             if isinstance(img_data, str):
                 if "," in img_data:
                     _, b64_body = img_data.split(",", 1)
@@ -529,6 +539,15 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
             on_picture_taken(tmp_path)
 
         except Exception as e:
+            # 异常时也要确保闪光灯关闭
+            if was_flash_on:
+                try:
+                    await camera_widget.set_flash_mode(fc.FlashMode.OFF)
+                    flash_on = False
+                    flash_btn.icon = ft.Icons.FLASH_OFF
+                    flash_btn.update()
+                except:
+                    pass
             print(f"[Camera] 拍照异常：{e}")
             show_snack(page, f"拍照失败：{str(e)[:30]}", ft.Colors.RED)
 
@@ -2903,7 +2922,6 @@ def main(page: ft.Page):
                     cur.execute(sql, params)
                     conn.commit()
                     show_alert(page, "成功", "状态更新完成")
-                    page.pop_dialog()
                     load_trans()
                 except Exception as ex:
                     conn.rollback()
@@ -2991,7 +3009,6 @@ def main(page: ft.Page):
                     )
                     conn.commit()
                     show_alert(page, "成功", f"订单 {current_order['order_no']} → {new_status}")
-                    page.pop_dialog()
                     load_trans()
                 except Exception as ex:
                     conn.rollback()
@@ -3016,7 +3033,6 @@ def main(page: ft.Page):
                     )
                     conn.commit()
                     show_alert(page, "成功", f"订单 {current_order['order_no']} → {new_status}")
-                    page.pop_dialog()
                     load_trans()
                 except Exception as ex:
                     conn.rollback()
