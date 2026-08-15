@@ -3915,6 +3915,7 @@ def main(page: ft.Page):
                 model = row[6]
                 qty = row[7]
                 status = row[8]
+                team = f"{row[12]}、{row[13]}" if (row[12] or row[13]) else row[10]
                 install_time = str(row[17])[:5] if row[17] else "--:--"
 
                 if status == "待安装":
@@ -3931,12 +3932,13 @@ def main(page: ft.Page):
                                 ft.Row(
                                     [
                                         ft.Text(f"📦 {order_no}", weight=ft.FontWeight.BOLD, size=14),
+                                        ft.Text(f"安装单位&安装人: {team}", color=color, size=12),
                                         ft.Text(f"状态: {status}", color=color, size=12),
                                     ],
                                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                 ),
                                 ft.Text(f"客户: {cust_name}  |  型号: {model}  |  数量: {qty}", size=12),
-                                ft.Text(f"安装日期: {row[16] or '--'}  {install_time}", size=12),
+                                ft.Text(f"安装&报装日期: {row[16] or '--'}  {install_time}", size=12),
                                 ft.Row(
                                     [
                                         ft.Button(
@@ -3946,7 +3948,7 @@ def main(page: ft.Page):
                                             report_install(rid, st, order, mdl, cust, q),
                                         ),
                                         ft.Button(
-                                            "✅ 确认安装",
+                                            "✅ 确认（安装）",
                                             on_click=lambda e, rid=install_id, st=status: confirm_install(rid, st),
                                         ),
                                     ],
@@ -4014,7 +4016,10 @@ def main(page: ft.Page):
                 if not team or not tel:
                     show_alert(page, "提示", "请选择安装单位")
                     return
-
+                d = date.today()
+                t = datetime.now()
+                date_str = d.strftime("%Y-%m-%d")
+                time_str = t.strftime("%H:%M:%S").lstrip("0").replace("0:", ":")
                 # 下面原有数据库提交逻辑完全不动
                 conn = get_db_conn()
                 if not conn:
@@ -4022,8 +4027,8 @@ def main(page: ft.Page):
                     return
                 cur = conn.cursor()
                 try:
-                    sql = "UPDATE install SET status='已报装', install_team=%s, install_tel=%s, install_fee=%s, fee_remark=%s WHERE id=%s"
-                    params = (team, tel, fee, remark, install_id)
+                    sql = "UPDATE install SET status='已报装',is_report='1', install_team=%s, install_tel=%s, install_fee=%s, fee_remark=%s, install_date=%s,install_time=%s WHERE id=%s"
+                    params = (team, tel, fee, remark, date_str,time_str,install_id)
                     cur.execute(sql, params)
                     rows_affected = cur.rowcount
                     conn.commit()
@@ -4120,15 +4125,18 @@ def main(page: ft.Page):
                 if not installer:
                     show_snack(page, "请填写安装人", ft.Colors.RED)
                     return
-
+                d = date.today()
+                t = datetime.now()
+                date_str = d.strftime("%Y-%m-%d")
+                time_str = t.strftime("%H:%M:%S").lstrip("0").replace("0:", ":")
                 conn = get_db_conn()
                 if not conn:
                     show_snack(page, "数据库连接失败", ft.Colors.RED)
                     return
                 cur = conn.cursor()
                 try:
-                    sql = "UPDATE install SET status='已安装', install_date=%s, installer01=%s, installer02=%s, install_fee=%s, fee_remark=%s WHERE id=%s"
-                    params = (date.today(), installer, co_installer, fee, remark, install_id)
+                    sql = "UPDATE install SET status='已安装',is_report='0', installer01=%s, installer02=%s, install_fee=%s, fee_remark=%s, install_date=%s, install_time=%s WHERE id=%s"
+                    params = (installer, co_installer, fee, remark, date_str, time_str, install_id)
                     cur.execute(sql, params)
                     rows_affected = cur.rowcount
                     conn.commit()
