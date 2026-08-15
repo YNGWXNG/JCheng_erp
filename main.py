@@ -4153,7 +4153,6 @@ def main(page: ft.Page):
                     conn.close()
                     return
                 conn.close()
-                page.pop_dialog()
                 load_install()
 
             dialog = ft.AlertDialog(
