@@ -1171,7 +1171,7 @@ def main(page: ft.Page):
                     [
                         ft.Button("读取主机IPv6", on_click=lambda e: read_ipv6(page), width=260),
                         ft.Button("测试连接", on_click=lambda e: test_conn(), width=260),
-                        ft.Button("保存并重启", on_click=lambda e: save_and_restart(), width=260),
+                        ft.Button("保存并重新登录", on_click=lambda e: save_and_restart(), width=260),
                         ft.OutlinedButton("取消", on_click=lambda e: hide_config(), width=260),
                     ],
                     spacing=12,
@@ -3915,7 +3915,9 @@ def main(page: ft.Page):
                 model = row[6]
                 qty = row[7]
                 status = row[8]
-                team = f"{row[12]}、{row[13]}" if (row[12] or row[13]) else row[10]
+                r12 = str(row[12]).strip() if row[12] else ""
+                r13 = str(row[13]).strip() if row[13] else ""
+                team = row[10] if (not r12 and not r13) else (f"{r12}、{r13}" if (r12 and r13) else r12 or r13)
                 install_time = str(row[17])[:5] if row[17] else "--:--"
 
                 if status == "待安装":
@@ -3932,7 +3934,7 @@ def main(page: ft.Page):
                                 ft.Row(
                                     [
                                         ft.Text(f"📦 {order_no}", weight=ft.FontWeight.BOLD, size=14),
-                                        ft.Text(f"安装单位&安装人: {team}", color=color, size=12),
+                                        ft.Text(f"安装方: {team}", color=color, size=12),
                                         ft.Text(f"状态: {status}", color=color, size=12),
                                     ],
                                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -3942,13 +3944,13 @@ def main(page: ft.Page):
                                 ft.Row(
                                     [
                                         ft.Button(
-                                            "📞 报装（售后）",
+                                            "📞 报装",
                                             on_click=lambda e, rid=install_id, st=status, order=order_no, mdl=model,
                                                             cust=cust_name, q=qty:
                                             report_install(rid, st, order, mdl, cust, q),
                                         ),
                                         ft.Button(
-                                            "✅ 确认（安装）",
+                                            "✅ 安装",
                                             on_click=lambda e, rid=install_id, st=status: confirm_install(rid, st),
                                         ),
                                     ],
