@@ -2038,7 +2038,7 @@ def main(page: ft.Page):
                             """INSERT INTO transport (order_date,order_no,out_order_no,cust_name,phone,full_addr,
                                factory,category,model,spec,t_qty,send_date,status)
                                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                            (date.today(), current_order_no, it["out_order_no"], cust_input.value, phone.value,
+                            (date.today(), current_order_no, f"{current_order_no}{it['out_order_no']}", cust_input.value, phone.value,
                              full_addr, it["factory"], it["category"], it["model"], it["spec"],
                              it["qty"], send_dt, "待派单")
                         )
@@ -2083,7 +2083,7 @@ def main(page: ft.Page):
                     order_remark.value = ""
                     send_date.value = date.today().isoformat()
                     items.clear()
-                                        # 重置外部订单号序号
+                    # 重置外部订单号序号
                     nonlocal next_item_seq  # 如果在 save_order 内需要 nonlocal
                     next_item_seq = 1
                     out_order_no.value = "01"
