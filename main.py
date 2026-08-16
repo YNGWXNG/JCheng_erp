@@ -1818,7 +1818,7 @@ def main(page: ft.Page):
 
         send_date = ft.TextField(label="拟送货日期", hint_text="YYYY-MM-DD", value=date.today().isoformat(), width=w1)
         order_remark = ft.TextField(label="订单备注", width=w1)
-        out_order_no = ft.TextField(label="外部订单号", value="000000", width=w3)
+        out_order_no = ft.TextField(label="外部订单号",value="01", width=w3)
         qty = ft.TextField(label="数量", value="1", width=w3)
         price = ft.TextField(label="单价", width=w3)
         old_discount = ft.TextField(label="旧机折扣(元)", value="0", width=w3)
@@ -1831,6 +1831,7 @@ def main(page: ft.Page):
         items_list = ft.Column(spacing=5)
         total_label = ft.Text("合计: 0.00 元", size=16, weight=ft.FontWeight.BOLD)
         items = []
+        next_item_seq = 1
 
         def on_scan_success(code, prod=None):
             if prod:
@@ -1863,7 +1864,8 @@ def main(page: ft.Page):
                     ft.Row(
                         [
                             ft.Text(
-                                f"{it['model']} x{it['qty']}  ¥{it['total']:.2f}  {'[安装]' if it['need_install'] else ''}"),
+                                f"[{it['out_order_no']}] {it['model']} x{it['qty']}  ¥{it['total']:.2f}  {'[安装]' if it['need_install'] else ''}"
+                            ),
                             ft.IconButton(ft.Icons.DELETE, on_click=lambda e, i=idx: remove_item(i))
                         ],
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN
@@ -1877,6 +1879,7 @@ def main(page: ft.Page):
             refresh_items()
 
         def add_item(e):
+            nonlocal next_item_seq  # 如果是嵌套函数需要声明，否则不需要
             m = model_input.value.strip()
             try:
                 qt = int(qty.value or 0)
@@ -1897,6 +1900,9 @@ def main(page: ft.Page):
                 add_product_from_scan(page, "", lambda m: (setattr(model_input, 'value', m), page.update()))
                 return
 
+            # ===== 自动生成当前商品的外部订单号 =====
+            out_no = f"{next_item_seq:02d}"
+
             after_old = unit_price - old
             after_union = after_old * (1 - union / 100)
             after_store = after_union - store
@@ -1910,7 +1916,7 @@ def main(page: ft.Page):
 
             items.append({
                 "model": m,
-                "out_order_no": out_order_no.value.strip(),
+                "out_order_no": out_no,  # 使用自动序号
                 "qty": qt,
                 "price": unit_price,
                 "old_discount": old,
@@ -1927,9 +1933,15 @@ def main(page: ft.Page):
                 "piece": prod["piece"],
                 "code": prod["code"]
             })
+
+            # ===== 序号递增，并更新输入框显示下一个 =====
+            next_item_seq += 1
+            out_order_no.value = f"{next_item_seq:02d}"
+
             refresh_items()
+
             model_input.value = ""
-            out_order_no.value = ""
+            # 注意：不要清空 out_order_no，它要显示下一个自动序号
             qty.value = "1"
             price.value = ""
             old_discount.value = "0"
@@ -2007,7 +2019,7 @@ def main(page: ft.Page):
                                union_subsidy,gov_subsidy,store_discount,t_price,total,need_install,
                                sale_remark,factory,category,spec,piece)
                                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                            (current_order_no, it["out_order_no"], it["model"], it["qty"], it["price"],
+                            (current_order_no, f"{current_order_no}{it['out_order_no']}", it["model"], it["qty"], it["price"],
                              it["old_discount"], it["union_subsidy"] / 100, it["gov_subsidy"] / 100,
                              it["store_discount"], it["t_price"], it["total"], 1 if it["need_install"] else 0,
                              it["sale_remark"], it["factory"], it["category"], it["spec"], it["piece"])
@@ -2071,6 +2083,10 @@ def main(page: ft.Page):
                     order_remark.value = ""
                     send_date.value = date.today().isoformat()
                     items.clear()
+                                        # 重置外部订单号序号
+                    nonlocal next_item_seq  # 如果在 save_order 内需要 nonlocal
+                    next_item_seq = 1
+                    out_order_no.value = "01"
                     refresh_items()
                     page.update()
                     return  # 成功，退出重试循环
@@ -2359,7 +2375,7 @@ def main(page: ft.Page):
 
                 cur = conn.cursor()
                 cur.execute("""
-                    SELECT out_order_no, model, qty, total, full_out_no, id
+                    SELECT out_order_no, model, qty, total, full_out_no, id, sale_remark
                     FROM sale_items
                     WHERE order_no = %s
                 """, (order_no,))
@@ -2372,7 +2388,7 @@ def main(page: ft.Page):
                     return
 
                 for row in rows:
-                    out_no, model, qty, total, full_out_no, item_id = row
+                    out_no, model, qty, total, full_out_no, item_id, sale_remark = row
                     total_val = float(total) if total else 0.0
 
                     item_card = ft.Card(
@@ -2382,16 +2398,17 @@ def main(page: ft.Page):
                                     ft.Row(
                                         [
                                             ft.Text(f"{model} x {qty}", weight=ft.FontWeight.BOLD),
-                                            ft.Text(f"¥{total_val:.2f}", color=ft.Colors.GREEN),
                                         ],
                                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                     ),
+                                    ft.Text(f"商品金额：¥{total_val:.2f}元", color=ft.Colors.GREEN),
                                     ft.Text(f"外部单号: {out_no}", size=12),
                                     ft.Text(
                                         f"完整外部单号: {full_out_no or '未录入'}",
                                         size=12,
                                         color=ft.Colors.BLUE if full_out_no else ft.Colors.GREY
                                     ),
+                                    ft.Text(f"备注: {sale_remark}", size=12),
                                     ft.Row(
                                         [
                                             ft.IconButton(
@@ -2878,14 +2895,14 @@ def main(page: ft.Page):
             send_textfield = ft.TextField(
                 label="计划送货日期",
                 value=format_date(current_send_date),
-                width=200,
+                width=150,
                 disabled=True,
             )
             trans_checkbox = ft.Checkbox(label="", value=False)
             trans_textfield = ft.TextField(
                 label="实际送货日期",
                 value=format_date(current_trans_date),
-                width=200,
+                width=150,
                 disabled=True,
             )
 
@@ -2930,7 +2947,7 @@ def main(page: ft.Page):
                     conn.close()
 
             dlg = ft.AlertDialog(
-                title=ft.Text("修改状态&送货日期"),
+                title=ft.Text("修改状态&日期"),
                 content=ft.Column(
                     [
                         ft.Text(f"当前状态：{current_st}"),
@@ -2950,6 +2967,27 @@ def main(page: ft.Page):
             page.show_dialog(dlg)
 
         def open_operation_dialog(row):
+            # ========== 优化：重新查询最新数据，确保弹窗显示实时信息 ==========
+            try:
+                conn = get_db_conn()
+                if conn:
+                    cur = conn.cursor()
+                    cur.execute(
+                        """SELECT id, order_date, order_no, out_order_no, cust_name, phone, full_addr,
+                                  factory, category, model, t_qty, trans_remark,
+                                  status, send_date, trans_date,
+                                  COALESCE(delivery01_name,''), COALESCE(delivery02_name,''),
+                                  sn_code, sn_photo, home_photo
+                           FROM transport WHERE order_no=%s AND out_order_no=%s""",
+                        (row[2], row[3])
+                    )
+                    fresh_row = cur.fetchone()
+                    if fresh_row:
+                        row = fresh_row
+                    conn.close()
+            except Exception:
+                pass
+
             trans_id, order_date, order_no, out_order_no, cust_name, phone, full_addr, factory, category, model, t_qty, trans_remark, status_val, send_date_val, trans_date_val, delivery01_name, delivery02_name, sn_code, sn_photo, home_photo = row
 
             current_order = {
@@ -3008,6 +3046,12 @@ def main(page: ft.Page):
                          current_order["order_no"], current_order["out_order_no"])
                     )
                     conn.commit()
+
+                    # ========== 新增：更新弹窗内的状态显示 ==========
+                    current_order["status"] = new_status
+                    status_label.value = f"当前状态: {new_status}"
+                    page.update()
+
                     show_alert(page, "成功", f"订单 {current_order['order_no']} → {new_status}")
                     load_trans()
                 except Exception as ex:
@@ -3032,6 +3076,12 @@ def main(page: ft.Page):
                          current_order["out_order_no"])
                     )
                     conn.commit()
+
+                    # ========== 新增：更新弹窗内的状态显示 ==========
+                    current_order["status"] = new_status
+                    status_label.value = f"当前状态: {new_status}"
+                    page.update()
+
                     show_alert(page, "成功", f"订单 {current_order['order_no']} → {new_status}")
                     load_trans()
                 except Exception as ex:
@@ -3105,37 +3155,28 @@ def main(page: ft.Page):
 
                 def build_menu_view():
                     def go_scan(e):
-                        # 关闭当前菜单弹窗，唤起图片选择（拍照/相册）
                         page.pop_dialog()
 
                         def on_image_selected(path):
                             if not path:
-                                # 用户取消选图，重新打开菜单
                                 open_sn_manage_dialog(None)
                                 return
 
-                            # 异步执行识别+后续流程（定义在回调内部，作用域正确）
                             async def decode_and_process():
-                                # 显示识别动画
                                 await show_upload_loading_async(page, "正在识别条码...")
                                 try:
-                                    # 子线程解码
                                     codes = await asyncio.to_thread(barcode_image_decode, path, timeout=3.0)
                                     hide_upload_loading(page)
-
                                     if not codes:
                                         show_alert(page, "提示", "未识别到条码或二维码",
                                                    on_ok=lambda ev: open_sn_manage_dialog(None))
                                         return
-
                                     if len(codes) == 1:
-                                        # 单条码确认
                                         code = codes[0].strip()
 
                                         def on_confirm(ev):
                                             page.pop_dialog()
 
-                                            # 确认后异步执行保存
                                             async def do_save():
                                                 await save_sn_and_photo(code, path)
 
@@ -3147,13 +3188,12 @@ def main(page: ft.Page):
                                             modal=True,
                                             actions=[
                                                 ft.TextButton("取消", on_click=lambda ev: (
-                                                page.pop_dialog(), open_sn_manage_dialog(None))),
+                                                    page.pop_dialog(), open_sn_manage_dialog(None))),
                                                 ft.TextButton("确认", on_click=on_confirm),
                                             ]
                                         )
                                         page.show_dialog(confirm_dlg)
                                     else:
-                                        # 多条码选择
                                         def handle_select(selected_code):
                                             async def do_save():
                                                 await save_sn_and_photo(selected_code, path)
@@ -3161,15 +3201,12 @@ def main(page: ft.Page):
                                             page.run_task(do_save)
 
                                         await show_code_selector(page, codes, handle_select)
-
                                 except Exception as ex:
                                     hide_upload_loading(page)
                                     show_alert(page, "错误", f"识别失败: {str(ex)[:30]}")
 
-                            # 拿到图片路径后，启动异步识别任务
                             page.run_task(decode_and_process)
 
-                        # 唤起拍照/相册选择界面（补上缺失的步骤）
                         show_image_source_dialog(page, on_image_selected, title="选择条码图片")
 
                     def go_manual(e):
@@ -3202,7 +3239,6 @@ def main(page: ft.Page):
                     await show_upload_loading_async(page, "正在保存并上传...")
                     try:
                         def _background_work():
-                            # 纯后台：传图+更数据
                             success, db_tag, err = upload_image_to_db(
                                 img_path, "sn_photos",
                                 current_order["out_order_no"], "SN", delete_old=True
@@ -3222,27 +3258,19 @@ def main(page: ft.Page):
                             return True, ""
 
                         success, err_msg = await asyncio.to_thread(_background_work)
-                        # 先移除遮罩
                         hide_upload_loading(page)
 
                         if success:
-                            # 更新UI状态
+                            # 更新UI状态（关键：原地更新，不重建弹窗）
                             current_order["sn_code"] = sn_code
                             current_order["sn_photo"] = f"db:sn_photos:{current_order['out_order_no']}"
                             sn_entry.value = sn_code
                             sn_photo_status.value = "SN照片: 已上传"
                             sn_photo_status.color = ft.Colors.GREEN
+                            page.update()
 
-                            def on_ok(ev):
-                                close_all_trans_dialogs()
-
-                                async def reopen():
-                                    await asyncio.sleep(0.1)
-                                    open_operation_dialog(row)
-
-                                page.run_task(reopen)
-
-                            show_alert(page, "成功", "SN码已保存，照片已自动上传", on_ok=on_ok)
+                            # 修改：不再关闭并重新打开操作弹窗，只提示成功
+                            show_alert(page, "成功", "SN码已保存，照片已自动上传")
                         else:
                             show_alert(page, "失败", f"保存失败: {err_msg[:30]}")
                     except Exception as ex:
@@ -3298,8 +3326,7 @@ def main(page: ft.Page):
                             current_order["sn_code"] = sn_code
                             sn_entry.value = sn_code
                             show_alert(page, "成功", "SN码已保存")
-                            close_all_trans_dialogs()
-                            open_operation_dialog(row)
+                            # 原地更新，不关闭操作弹窗
                         except Exception as ex:
                             show_alert(page, "错误", f"保存失败: {str(ex)}")
 
@@ -3341,11 +3368,7 @@ def main(page: ft.Page):
 
             # ---------------------- 送货照片处理（水印逻辑严格拆分） ----------------------
             def load_chinese_font(size: int = 28):
-                """
-                多端兼容加载中文字体，解决PIL水印中文乱码
-                优先级：内置assets字体 > 安卓/鸿蒙系统字体 > 桌面端系统字体
-                """
-                # 1. 优先加载内置打包的字体（最稳妥，推荐）
+                """多端兼容加载中文字体，解决PIL水印中文乱码"""
                 try:
                     font_path = get_asset_path("SIMLI.TTF")
                     if os.path.exists(font_path):
@@ -3353,13 +3376,12 @@ def main(page: ft.Page):
                 except Exception:
                     pass
 
-                # 2. 安卓/鸿蒙系统中文字体兜底（多个路径兼容不同机型）
                 android_font_paths = [
-                    "/system/fonts/NotoSansCJK-Regular.ttc",  # 安卓原生通用
-                    "/system/fonts/DroidSansFallback.ttf",  # 老安卓版本
-                    "/system/fonts/HarmonyOS_Sans_SC_Regular.ttf",  # 鸿蒙系统
-                    "/system/fonts/Miui-Regular.ttf",  # 小米MIUI
-                    "/system/fonts/SourceHanSansCN-Regular.otf",  # 开源思源黑体
+                    "/system/fonts/NotoSansCJK-Regular.ttc",
+                    "/system/fonts/DroidSansFallback.ttf",
+                    "/system/fonts/HarmonyOS_Sans_SC_Regular.ttf",
+                    "/system/fonts/Miui-Regular.ttf",
+                    "/system/fonts/SourceHanSansCN-Regular.otf",
                 ]
                 for path in android_font_paths:
                     try:
@@ -3368,7 +3390,6 @@ def main(page: ft.Page):
                     except Exception:
                         continue
 
-                # 3. 桌面端调试兜底
                 try:
                     if os.name == "nt":
                         return ImageFont.truetype("C:/Windows/Fonts/simhei.ttf", size)
@@ -3377,16 +3398,12 @@ def main(page: ft.Page):
                 except Exception:
                     pass
 
-                # 终极兜底：返回默认字体（会乱码，仅防止崩溃）
                 print("[Font] 所有中文字体均加载失败，水印可能显示乱码")
                 return ImageFont.load_default(size)
+
             def process_image(file_path, add_watermark, order_no, cust_name, full_addr, out_order_no, lat="获取失败",
                               lng="获取失败"):
-                """
-                纯后台图片处理+入库函数，无任何UI/权限/定位操作
-                位置信息由上层主线程获取后传入
-                返回：(是否成功, 成功返回db_tag, 失败返回错误信息)
-                """
+                """纯后台图片处理+入库函数，无任何UI/权限/定位操作"""
                 try:
                     import datetime
                     import io
@@ -3394,7 +3411,6 @@ def main(page: ft.Page):
                     from PIL import Image, ImageDraw, ImageFont
 
                     img = Image.open(file_path)
-                    # 仅拍照模式执行水印绘制
                     if add_watermark:
                         draw = ImageDraw.Draw(img)
                         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -3406,7 +3422,6 @@ def main(page: ft.Page):
                             f"地址:{full_addr}",
                             loc_line
                         ])
-                        # 使用统一的中文字体加载函数
                         font = load_chinese_font(28)
                         bbox = draw.textbbox((0, 0), watermark_text, font=font)
                         tw = bbox[2] - bbox[0]
@@ -3425,7 +3440,6 @@ def main(page: ft.Page):
                     with open(tmp_file, "wb") as f:
                         f.write(buf.getvalue())
                     biz_no, prefix = get_home_photo_biz_info(order_no, out_order_no)
-                    # 调用纯后台入库
                     success, db_tag, err = upload_image_to_db(tmp_file, "home_photos", biz_no, prefix, delete_old=True)
                     try:
                         os.unlink(tmp_file)
@@ -3462,15 +3476,12 @@ def main(page: ft.Page):
                             return
 
                         async def upload_task():
-                            # ========== 主线程先获取位置（含权限申请） ==========
                             loc_success, lat, lng = await get_current_location(page)
                             if not loc_success:
                                 show_snack(page, "位置获取失败，水印将使用粗略定位", ft.Colors.ORANGE)
 
-                            # 显示加载动画
                             await show_upload_loading_async(page, "正在处理并上传照片...")
                             try:
-                                # 纯后台执行图片处理+入库（零UI、零权限）
                                 success, db_tag, err_msg = await asyncio.to_thread(
                                     process_image,
                                     path,
@@ -3482,27 +3493,18 @@ def main(page: ft.Page):
                                     lat=lat,
                                     lng=lng
                                 )
-
                                 hide_upload_loading(page)
 
                                 if success:
+                                    # 原地更新UI（不重建弹窗）
                                     current_order["home_photo"] = db_tag
                                     home_photo_status.value = "送货照片: 已上传"
                                     home_photo_status.color = ft.Colors.GREEN
+                                    page.update()
 
-                                    def on_ok(ev):
-                                        close_all_trans_dialogs()
-
-                                        async def reopen():
-                                            await asyncio.sleep(0.1)
-                                            open_operation_dialog(row)
-
-                                        page.run_task(reopen)
-
-                                    show_alert(page, "成功", "送货照片上传完成", on_ok=on_ok)
+                                    show_alert(page, "成功", "送货照片上传完成")
                                 else:
                                     show_alert(page, "错误", f"上传失败: {err_msg[:50]}")
-
                             except Exception as ex:
                                 hide_upload_loading(page)
                                 show_alert(page, "错误", f"上传异常: {str(ex)[:50]}")
@@ -3519,12 +3521,10 @@ def main(page: ft.Page):
                         if not path:
                             return
 
-                        # ========== 主线程先获取位置（含权限申请） ==========
                         loc_success, lat, lng = await get_current_location(page)
                         if not loc_success:
                             show_snack(page, "位置获取失败，水印将使用粗略定位", ft.Colors.ORANGE)
 
-                        # 显示加载动画
                         await show_upload_loading_async(page, "正在上传照片...")
                         try:
                             success, db_tag, err_msg = await asyncio.to_thread(
@@ -3538,24 +3538,16 @@ def main(page: ft.Page):
                                 lat=lat,
                                 lng=lng
                             )
-
                             hide_upload_loading(page)
 
                             if success:
+                                # 原地更新UI（不重建弹窗）
                                 current_order["home_photo"] = db_tag
                                 home_photo_status.value = "送货照片: 已上传"
                                 home_photo_status.color = ft.Colors.GREEN
+                                page.update()
 
-                                def on_ok(ev):
-                                    close_all_trans_dialogs()
-
-                                    async def reopen():
-                                        await asyncio.sleep(0.1)
-                                        open_operation_dialog(row)
-
-                                    page.run_task(reopen)
-
-                                show_alert(page, "成功", "送货照片上传完成", on_ok=on_ok)
+                                show_alert(page, "成功", "送货照片上传完成")
                             else:
                                 show_alert(page, "错误", f"上传失败: {err_msg[:50]}")
                         except Exception as ex:
@@ -3563,7 +3555,6 @@ def main(page: ft.Page):
                             show_alert(page, "错误", f"上传异常: {str(ex)[:50]}")
 
                     page.run_task(pick_task)
-
 
                 upload_dlg = ft.AlertDialog(
                     title=ft.Text("上传送货照片", weight=ft.FontWeight.BOLD),
