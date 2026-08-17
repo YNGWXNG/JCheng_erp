@@ -3976,13 +3976,15 @@ def main(page: ft.Page):
                                     [
                                         ft.Button(
                                             "📞 报装",
-                                            on_click=lambda e, rid=install_id, st=status, order=order_no, mdl=model,
+                                            on_click=lambda e, st=status, order=order_no, mdl=model,
                                                             cust=cust_name, q=qty:
-                                            report_install(rid, st, order, mdl, cust, q),
+                                            report_install(st, order, mdl, cust, q),
                                         ),
                                         ft.Button(
                                             "✅ 安装",
-                                            on_click=lambda e, rid=install_id, st=status: confirm_install(rid, st),
+                                            on_click=lambda e, st=status, order=order_no, mdl=model,
+                                                            cust=cust_name, q=qty:
+                                            confirm_install(st, order, mdl, cust, q),
                                         ),
                                     ],
                                     alignment=ft.MainAxisAlignment.END,
@@ -3997,7 +3999,7 @@ def main(page: ft.Page):
                 install_list.controls.append(card)
             page.update()
 
-        def report_install(install_id, status, order_no, model, cust_name, qty):
+        def report_install(status, order_no, model, cust_name, qty):
             if status != "待安装":
                 show_alert(page, "提示", "只能报装待安装订单")
                 return
@@ -4007,7 +4009,8 @@ def main(page: ft.Page):
                 "格力售后": "400-836-5315",
                 "海尔售后": "4006-999-999",
                 "美的售后": "400-889-9315",
-                "小天鹅售后": "400-822-8228"
+                "小天鹅售后": "400-822-8228",
+                "老板":"95105855"
             }
 
             tel_field = ft.TextField(
@@ -4060,13 +4063,13 @@ def main(page: ft.Page):
                     return
                 cur = conn.cursor()
                 try:
-                    sql = "UPDATE install SET status='已报装',is_report='1', install_team=%s, install_tel=%s, install_fee=%s, fee_remark=%s, install_date=%s,install_time=%s WHERE id=%s"
-                    params = (team, tel, fee, remark, date_str,time_str,install_id)
+                    sql = "UPDATE install SET status='已报装',is_report='1', install_team=%s, install_tel=%s, install_fee=%s, fee_remark=%s, install_date=%s,install_time=%s WHERE order_no = %s AND model = %s"
+                    params = (team, tel, fee, remark, date_str,time_str,order_no,model)
                     cur.execute(sql, params)
                     rows_affected = cur.rowcount
                     conn.commit()
                     if rows_affected == 0:
-                        show_alert(page, "提示", f"未找到 ID={install_id} 的记录，更新失败")
+                        show_alert(page, "提示", f"未找到 订单号={order_no} 的记录，更新失败")
                         conn.close()
                         return
                 except Exception as ex:
@@ -4140,7 +4143,7 @@ def main(page: ft.Page):
             )
             page.show_dialog(dialog)
 
-        def confirm_install(install_id, status):
+        def confirm_install(status, order_no, model, cust_name, qty):
             if status not in ["待安装", "已报装"]:
                 show_alert(page, "提示", "只能确认待安装或已报装的订单")
                 return
@@ -4168,13 +4171,13 @@ def main(page: ft.Page):
                     return
                 cur = conn.cursor()
                 try:
-                    sql = "UPDATE install SET status='已安装',is_report='0', installer01=%s, installer02=%s, install_fee=%s, fee_remark=%s, install_date=%s, install_time=%s WHERE id=%s"
-                    params = (installer, co_installer, fee, remark, date_str, time_str, install_id)
+                    sql = "UPDATE install SET status='已安装',is_report='0', installer01=%s, installer02=%s, install_fee=%s, fee_remark=%s, install_date=%s, install_time=%s WHERE order_no = %s AND model = %s"
+                    params = (installer, co_installer, fee, remark, date_str, time_str, order_no, model)
                     cur.execute(sql, params)
                     rows_affected = cur.rowcount
                     conn.commit()
                     if rows_affected == 0:
-                        show_alert(page, "提示", f"⚠️ 未找到 ID={install_id} 的记录，更新失败")
+                        show_alert(page, "提示", f"⚠️ 订单号={order_no} 的记录，更新失败")
                         conn.close()
                         return
                     show_alert(page, "提示", "✅ 确认安装成功，状态已更新为'已安装'")
