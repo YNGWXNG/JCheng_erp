@@ -2816,6 +2816,31 @@ def main(page: ft.Page):
         # 上传并发锁：防止重复点击上传
         upload_busy_lock = False
 
+        # ============= 直接拨号、短信 =============
+        def show_phone_dialog(phone_number: str):
+            """弹出拨号/短信选择对话框"""
+            clean_number = phone_number.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+
+            async def make_call(e):
+                dialog.open = False
+                page.update()
+                await ft.UrlLauncher().launch_url(f"tel:{clean_number}")
+
+            async def send_sms(e):
+                dialog.open = False
+                page.update()
+                await ft.UrlLauncher().launch_url(f"sms:{clean_number}")
+
+            dialog = ft.AlertDialog(
+                title=ft.Text("选择操作"),
+                content=ft.Text(f"电话号码：{phone_number}"),
+                actions=[
+                    ft.TextButton("拨打电话", icon=ft.Icons.CALL, on_click=make_call),
+                    ft.TextButton("发送短信", icon=ft.Icons.SMS, on_click=send_sms),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+            page.show_dialog(dialog)
         # ====================== 优化 show_snack 线程安全 ======================
         def show_snack(page: ft.Page, msg, bgcolor=ft.Colors.GREY_800):
             """线程安全的 SnackBar 显示，统一调度到主线程"""
@@ -3007,9 +3032,9 @@ def main(page: ft.Page):
             delivery02 = ft.TextField(label="共同送货人", value=DEFAULT_DELIVER2, expand=True)
             need_delivery_cb = ft.Checkbox(label="送货", value=True)
             status_label = ft.Text(f"当前状态: {status_val}", weight=ft.FontWeight.BOLD)
-            sn_photo_status = ft.Text("SN照片: 已上传" if sn_photo else "SN照片: 未上传",
+            sn_photo_status = ft.Text("SN: 已上传" if sn_photo else "SN: 未上传",
                                       color=ft.Colors.GREEN if sn_photo else ft.Colors.GREY)
-            home_photo_status = ft.Text("送货照片: 已上传" if home_photo else "送货照片: 未上传",
+            home_photo_status = ft.Text("送货: 已上传" if home_photo else "送货: 未上传",
                                         color=ft.Colors.GREEN if home_photo else ft.Colors.GREY)
 
             def on_delivery_check_change(e):
@@ -3573,15 +3598,29 @@ def main(page: ft.Page):
             content = ft.Column(
                 [
                     ft.Text(f"订单: {order_no}", size=16, weight=ft.FontWeight.BOLD),
-                    ft.Text(f"客户: {cust_name}  电话: {phone}", size=13),
+                    ft.Row(
+                        [
+                            ft.Text(f"客户: {cust_name}  电话: ", size=13),
+                            ft.GestureDetector(
+                                content=ft.Text(
+                                    phone,
+                                    size=13,
+                                    color=ft.Colors.BLUE,
+                                    weight=ft.FontWeight.BOLD,
+                                ),
+                                on_tap=lambda e: show_phone_dialog(phone),
+                            ),
+                        ],
+                        spacing=0,
+                    ),
                     ft.Text(f"地址: {full_addr}", size=13),
                     ft.Text(f"型号: {model}  数量: {t_qty}", size=13),
                     status_label,
-                    ft.Row([sn_photo_status, home_photo_status], spacing=10),
+                    ft.Row([sn_photo_status, home_photo_status], spacing=5),
                     ft.Divider(height=8),
                     ft.Text("操作", weight=ft.FontWeight.BOLD),
                     ft.Row([sn_entry], spacing=8),
-                    ft.Row([trans_date_input, need_delivery_cb], spacing=8),
+                    ft.Row([trans_date_input, need_delivery_cb], spacing=5),
                     ft.Row([delivery01], spacing=5),
                     ft.Row([delivery02], spacing=5),
                     ft.Row(
@@ -3591,16 +3630,16 @@ def main(page: ft.Page):
                             ft.IconButton(ft.Icons.PHOTO, tooltip="查看SN照片", on_click=do_view_sn_photo),
                             ft.IconButton(ft.Icons.PHOTO_LIBRARY, tooltip="查看送货照片", on_click=do_view_home_photo),
                         ],
-                        spacing=6,
+                        spacing=4,
                         alignment=ft.MainAxisAlignment.SPACE_EVENLY
                     ),
                     ft.Row(
                         [
-                            ft.Button("确认出库", icon=ft.Icons.CHECK, expand=True, on_click=do_confirm_out),
-                            ft.Button("确认送达", icon=ft.Icons.LOCAL_SHIPPING, expand=True,
+                            ft.Button("出库", icon=ft.Icons.CHECK, expand=True, on_click=do_confirm_out),
+                            ft.Button("送达", icon=ft.Icons.LOCAL_SHIPPING, expand=True,
                                       on_click=do_confirm_delivered),
                         ],
-                        spacing=8,
+                        spacing=5,
                     ),
                 ],
                 spacing=8,
