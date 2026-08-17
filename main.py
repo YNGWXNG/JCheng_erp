@@ -665,6 +665,7 @@ def show_image_source_dialog(page: ft.Page, on_image_selected: Callable[[str], N
 
     async def pick_and_callback():
         path = await pick_image_async(page)
+        print(path)
         if path:
             try:
                 on_image_selected(path)
