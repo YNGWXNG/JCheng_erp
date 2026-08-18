@@ -4879,92 +4879,440 @@ def main(page: ft.Page):
         page.update()
 
     # ---------------------------- 入库记录查询 ----------------------------
+
     def show_inbound_records():
         main_content.controls.clear()
-        w1 = get_field_width(page,ratio=2, subtract=60)
-        start_date = ft.TextField(label="起始日期", hint_text="YYYY-MM-DD", width=w1)
-        end_date = ft.TextField(label="结束日期", hint_text="YYYY-MM-DD", width=w1)
+        w1 = get_field_width(page, ratio=2, subtract=60)
+
+        # 默认显示一个月内
+        default_start = (date.today() - timedelta(days=30)).strftime("%Y-%m-%d")
+        default_end = date.today().strftime("%Y-%m-%d")
+
+        start_date_field = ft.TextField(
+            label="起始日期",
+            width=w1,
+            value=default_start,
+            read_only=True,
+        )
+        end_date_field = ft.TextField(
+            label="结束日期",
+            width=w1,
+            value=default_end,
+            read_only=True,
+        )
+
         brand = ft.TextField(label="品牌", width=w1)
         model = ft.TextField(label="型号", width=w1)
+        price_switch = ft.Switch(label="价格维护模式（仅显示空/0价格）", value=False)
+
         query_btn = ft.Button("查询", icon=ft.Icons.SEARCH)
         results_list = ft.Column(spacing=5)
         total_label = ft.Text("", size=14)
 
+        # 标准日期选择弹窗
+        def pick_date(target_field: ft.TextField):
+            def on_date_selected(e):
+                if e.control.value:
+                    # 补上东八区8小时时差，解决选中日期少一天
+                    local_fix_dt = e.control.value + timedelta(hours=8)
+                    target_field.value = local_fix_dt.strftime("%Y-%m-%d")
+                    page.update()
+                page.pop_dialog()
+
+            picker = ft.DatePicker(on_change=on_date_selected)
+            page.show_dialog(picker)
+
+        start_cal_btn = ft.TextButton("📅", on_click=lambda e: pick_date(start_date_field))
+        end_cal_btn = ft.TextButton("📅", on_click=lambda e: pick_date(end_date_field))
+
+        def show_snack(msg):
+            page.snack_bar = ft.SnackBar(ft.Text(msg))
+            page.snack_bar.open = True
+            page.update()
+
+        def open_edit_dialog(row):
+            # 只读信息输入框（背景灰色）
+            id_field = ft.TextField(
+                label="ID",
+                value=str(row[0]),  # row[0] 为 id
+                read_only=True,
+                width=250,
+                bgcolor=ft.Colors.GREY_200,
+            )
+            factory_field = ft.TextField(
+                label="品牌",
+                value=row[1],
+                read_only=True,
+                width=250,
+                bgcolor=ft.Colors.GREY_200,
+            )
+            category_field = ft.TextField(
+                label="品类",
+                value=row[2],
+                read_only=True,
+                width=250,
+                bgcolor=ft.Colors.GREY_200,
+            )
+            model_field = ft.TextField(
+                label="型号",
+                value=row[3],
+                read_only=True,
+                width=250,
+                bgcolor=ft.Colors.GREY_200,
+            )
+            in_date_field = ft.TextField(
+                label="入库日期",
+                value=str(row[6]),  # row[6] 为 in_date
+                read_only=True,
+                width=250,
+                bgcolor=ft.Colors.GREY_200,
+            )
+
+            # 可编辑字段（默认白色背景）
+            qty_field = ft.TextField(label="数量", value=str(row[4]), width=250)
+            price_field = ft.TextField(
+                label="入库价格",
+                value="" if row[5] is None else str(row[5]),
+                width=250,
+            )
+
+            edit_dialog = ft.AlertDialog(
+                title=ft.Text("修改入库记录"),
+                content=ft.Column(
+                    [
+                        id_field,  # ID 放在最上面
+                        factory_field,
+                        category_field,
+                        model_field,
+                        in_date_field,
+                        qty_field,
+                        price_field,
+                    ],
+                    spacing=10,
+                ),
+                actions=[],
+            )
+
+            def close_edit(e=None):
+                edit_dialog.open = False
+                safe_remove_dialog(page, edit_dialog)
+                page.update()
+
+            def save(e):
+                qty_text = qty_field.value.strip()
+                price_text = price_field.value.strip()
+
+                if not qty_text:
+                    show_snack("数量不能为空")
+                    return
+
+                try:
+                    qty_val = int(qty_text)
+                    price_val = float(price_text) if price_text else 0.0
+                except ValueError:
+                    show_snack("请输入有效数字")
+                    return
+
+                conn = get_db_conn()
+                if not conn:
+                    return
+                try:
+                    cur = conn.cursor()
+                    cur.execute(
+                        "UPDATE stock_in SET qty=%s, in_price=%s WHERE id=%s",
+                        (qty_val, price_val, row[0]),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+                close_edit()
+                do_query(None)
+                show_snack("修改已保存")
+
+            def delete(e):
+                def do_delete(e):
+                    conn = get_db_conn()
+                    if not conn:
+                        return
+                    try:
+                        cur = conn.cursor()
+                        cur.execute("DELETE FROM stock_in WHERE id=%s", (row[0],))
+                        conn.commit()
+                    finally:
+                        conn.close()
+
+                    confirm_dialog.open = False
+                    safe_remove_dialog(page, confirm_dialog)
+                    close_edit()
+                    do_query(None)
+                    show_snack("记录已删除")
+
+                confirm_dialog = ft.AlertDialog(
+                    title=ft.Text("确认删除"),
+                    content=ft.Text(f"确定要删除记录 ID:{row[0]} 吗？此操作不可恢复。"),
+                    actions=[
+                        ft.TextButton(
+                            "取消",
+                            on_click=lambda e: (
+                                setattr(confirm_dialog, "open", False),
+                                safe_remove_dialog(page, confirm_dialog),
+                                page.update(),
+                            ),
+                        ),
+                        ft.TextButton("删除", on_click=do_delete),
+                    ],
+                )
+                page.overlay.append(confirm_dialog)
+                confirm_dialog.open = True
+                page.update()
+
+            edit_dialog.actions = [
+                ft.TextButton("保存", on_click=save),
+                ft.TextButton("删除", on_click=delete),
+                ft.TextButton("取消", on_click=close_edit),
+            ]
+
+            page.overlay.append(edit_dialog)
+            edit_dialog.open = True
+            page.update()
+
         def show_detail(row):
             detail_text = f"""入库详情
-ID: {row[0]}
-品牌: {row[1]}
-品类: {row[2]}
-型号: {row[3]}
-数量: {row[4]}
-单价: {row[5]}
-日期: {row[6]}"""
-            dialog = ft.AlertDialog(
+    ID: {row[0]}
+    品牌: {row[1]}
+    品类: {row[2]}
+    型号: {row[3]}
+    数量: {row[4]}
+    单价: {row[5] if row[5] is not None else '未维护'}
+    日期: {row[6]}"""
+
+            detail_dialog = ft.AlertDialog(
                 title=ft.Text("入库明细"),
                 content=ft.Text(detail_text),
-                actions=[ft.TextButton("关闭", on_click=lambda e: (setattr(dialog, 'open', False), safe_remove_dialog(page, dialog)))]
+                actions=[],
             )
-            page.overlay.append(dialog)
-            dialog.open = True
+
+            def close_detail(e=None):
+                detail_dialog.open = False
+                safe_remove_dialog(page, detail_dialog)
+                page.update()
+
+            def go_edit(e):
+                close_detail()
+                open_edit_dialog(row)
+
+            detail_dialog.actions = [
+                ft.TextButton("修改", on_click=go_edit),
+                ft.TextButton("关闭", on_click=close_detail),
+            ]
+
+            page.overlay.append(detail_dialog)
+            detail_dialog.open = True
             page.update()
 
         def do_query(e):
             results_list.controls.clear()
+
             conn = get_db_conn()
-            if not conn: return
+            if not conn:
+                return
             cur = conn.cursor()
+
             sql = "SELECT id, factory, category, model, qty, in_price, in_date FROM stock_in WHERE 1=1"
             params = []
-            if start_date.value:
-                sql += " AND in_date >= %s"
-                params.append(start_date.value)
-            if end_date.value:
-                sql += " AND in_date <= %s"
-                params.append(end_date.value)
+
+            if price_switch.value:
+                # 价格维护模式：忽略日期，查询所有空价格或 0 价格记录
+                sql += " AND (in_price IS NULL OR in_price = 0)"
+            else:
+                if start_date_field.value:
+                    sql += " AND in_date >= %s"
+                    params.append(start_date_field.value)
+                if end_date_field.value:
+                    sql += " AND in_date <= %s"
+                    params.append(end_date_field.value)
+
             if brand.value:
                 sql += " AND factory LIKE %s"
                 params.append(f"%{brand.value}%")
             if model.value:
                 sql += " AND model LIKE %s"
                 params.append(f"%{model.value}%")
+
             sql += " ORDER BY in_date DESC"
             cur.execute(sql, params)
             rows = cur.fetchall()
             conn.close()
+
             total_qty = 0
-            total_amt = 0
+            total_amt = 0.0
             for row in rows:
-                total_qty += row[4]
-                total_amt += row[4] * (row[5] or 0)
+                qty = int(row[4])
+                price = float(row[5]) if row[5] is not None else 0.0
+                total_qty += qty
+                total_amt += qty * price
+
+                price_display = row[5] if row[5] is not None else "未维护"
                 results_list.controls.append(
-                    ft.Card(content=ft.Container(
-                        content=ft.Column([
-                            ft.Text(f"{row[2]} | {row[1]}  {row[3]}", weight=ft.FontWeight.BOLD),
-                            ft.Text(f"数量: {row[4]}  单价: {row[5]}  日期: {row[6]}")
-                        ], spacing=2),
-                        padding=8,
-                        on_click=lambda e, r=row: show_detail(r)
-                    ))
+                    ft.Card(
+                        content=ft.Container(
+                            content=ft.Column(
+                                [
+                                    ft.Text(
+                                        f"{row[2]} | {row[1]}  {row[3]}",
+                                        weight=ft.FontWeight.BOLD,
+                                    ),
+                                    ft.Text(
+                                        f"数量: {row[4]}  单价: {price_display}  日期: {row[6]}"
+                                    ),
+                                ],
+                                spacing=2,
+                            ),
+                            padding=8,
+                            # 关键修改：价格维护模式下直接打开编辑弹窗
+                            on_click=lambda e, r=row: (
+                                open_edit_dialog(r) if price_switch.value else show_detail(r)
+                            ),
+                        )
+                    )
                 )
-            total_label.value = f"总数量: {total_qty}  总金额: {total_amt:.2f}"
+
+            mode_tip = "（价格维护模式）" if price_switch.value else ""
+            total_label.value = f"总数量: {total_qty}  总金额: {total_amt:.2f} {mode_tip}"
             page.update()
 
         query_btn.on_click = do_query
+
         main_content.controls.append(
-            ft.Column([
-                ft.Text("入库记录查询", size=20, weight=ft.FontWeight.BOLD),
-                ft.Row([start_date, end_date], alignment=ft.MainAxisAlignment.START),
-                ft.Row([brand, model], alignment=ft.MainAxisAlignment.START),
-                query_btn,
-                total_label,
-                results_list
-            ], spacing=12, scroll=ft.ScrollMode.AUTO))
+            ft.Column(
+                [
+                    ft.Text("入库记录查询", size=20, weight=ft.FontWeight.BOLD),
+                    ft.Row([start_date_field, start_cal_btn], alignment=ft.MainAxisAlignment.START),
+                    ft.Row([end_date_field, end_cal_btn], alignment=ft.MainAxisAlignment.START),
+                    ft.Row([brand, model], alignment=ft.MainAxisAlignment.START),
+                    ft.Row([price_switch], alignment=ft.MainAxisAlignment.START),
+                    query_btn,
+                    total_label,
+                    results_list,
+                ],
+                spacing=12,
+                scroll=ft.ScrollMode.AUTO,
+            )
+        )
         page.update()
 
+        # 自动执行一次默认查询
+        do_query(None)
+
     # ---------------------------- 销售订单查询（简版） ----------------------------
+    # ========== 电话操作弹窗 ==========
+    def show_phone_dialog(phone_number: str):
+        """弹出拨号/短信选择对话框"""
+        clean_number = phone_number.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+
+        async def make_call(e):
+            dialog.open = False
+            page.update()
+            await ft.UrlLauncher().launch_url(f"tel:{clean_number}")
+
+        async def send_sms(e):
+            dialog.open = False
+            page.update()
+            await ft.UrlLauncher().launch_url(f"sms:{clean_number}")
+
+        def close_dialog(e):
+            dialog.open = False
+            page.update()
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("选择操作"),
+            content=ft.Text(f"电话号码：{phone_number}"),
+            actions=[
+                ft.TextButton("拨打电话", icon=ft.Icons.CALL, on_click=make_call),
+                ft.TextButton("发送短信", icon=ft.Icons.SMS, on_click=send_sms),
+                ft.TextButton("取消", on_click=close_dialog),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        page.show_dialog(dialog)
+
+    # ========== 订单明细展示 ==========
+    def show_order_detail(order_no):
+        conn = get_db_conn()
+        if not conn:
+            return
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT m.order_no, m.order_date, m.cust_name, m.phone, m.full_addr, i.model, i.qty, i.total 
+            FROM sale_main m JOIN sale_items i ON m.order_no=i.order_no 
+            WHERE m.order_no=%s
+        """, (order_no,))
+        rows = cur.fetchall()
+        conn.close()
+        if not rows:
+            show_alert(page, "提示", "未找到明细")
+            page.update()
+            return
+
+        order_info = rows[0]
+        phone = order_info[3]
+
+        # 构建详情内容列，支持滚动
+        content_column = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO)
+
+        content_column.controls.append(ft.Text(f"订单号: {order_info[0]}", weight=ft.FontWeight.BOLD))
+        content_column.controls.append(ft.Text(f"日期: {order_info[1]}"))
+        content_column.controls.append(ft.Text(f"客户: {order_info[2]}"))
+
+        # 可点击的电话号码
+        phone_button = ft.TextButton(
+            content=ft.Text(
+                f"电话: {phone}" if phone else "电话: 无",
+                color=ft.Colors.BLUE,
+                weight=ft.FontWeight.BOLD,
+            ),
+            on_click=lambda e: show_phone_dialog(phone) if phone else None,
+        )
+        content_column.controls.append(phone_button)
+
+        content_column.controls.append(ft.Text(f"地址: {order_info[4]}"))
+        content_column.controls.append(ft.Text("商品明细:", weight=ft.FontWeight.BOLD))
+
+        for r in rows:
+            content_column.controls.append(
+                ft.Text(f"型号: {r[5]}  数量: {r[6]}  金额: {r[7]:.2f}")
+            )
+
+        # 固定高度容器，实现滚动
+        scrollable_content = ft.Container(
+            content=content_column,
+            height=400,
+            width=450,
+            padding=10,
+        )
+
+        def close_detail(e=None):
+            dialog.open = False
+            safe_remove_dialog(page, dialog)
+            page.update()
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("订单明细"),
+            content=scrollable_content,
+            actions=[
+                ft.TextButton("关闭", on_click=close_detail),
+            ],
+        )
+
+        page.overlay.append(dialog)
+        dialog.open = True
+        page.update()
+
+    # ========== 销售订单查询主界面 ==========
     def show_sale_orders():
         main_content.controls.clear()
-        w1 = get_field_width(page,ratio=2, subtract=60)
+        w1 = get_field_width(page, ratio=2, subtract=60)
         start_date = ft.TextField(label="起始日期", width=w1)
         end_date = ft.TextField(label="结束日期", width=w1)
         order_no = ft.TextField(label="订单号", width=w1)
@@ -4973,38 +5321,11 @@ ID: {row[0]}
         query_btn = ft.Button("查询", icon=ft.Icons.SEARCH)
         orders_list = ft.Column(spacing=5)
 
-        def show_order_detail(order_no):
-            conn = get_db_conn()
-            if not conn:
-                return
-            cur = conn.cursor()
-            cur.execute("""
-                SELECT m.order_no, m.order_date, m.cust_name, m.phone, m.full_addr, i.model, i.qty, i.total 
-                FROM sale_main m JOIN sale_items i ON m.order_no=i.order_no 
-                WHERE m.order_no=%s
-            """, (order_no,))
-            rows = cur.fetchall()
-            conn.close()
-            if not rows:
-                show_alert(page, "提示", "未找到明细")
-                page.update()
-                return
-            detail_text = f"订单号: {rows[0][0]}\n日期: {rows[0][1]}\n客户: {rows[0][2]}\n电话: {rows[0][3]}\n地址: {rows[0][4]}\n\n商品明细:\n"
-            for r in rows:
-                detail_text += f"型号: {r[5]}  数量: {r[6]}  金额: {r[7]:.2f}\n"
-            dialog = ft.AlertDialog(
-                title=ft.Text("订单明细"),
-                content=ft.Text(detail_text),
-                actions=[ft.TextButton("关闭", on_click=lambda e: (setattr(dialog, 'open', False), safe_remove_dialog(page, dialog)))]
-            )
-            page.overlay.append(dialog)
-            dialog.open = True
-            page.update()
-
         def do_query(e):
             orders_list.controls.clear()
             conn = get_db_conn()
-            if not conn: return
+            if not conn:
+                return
             cur = conn.cursor()
             sql = """SELECT m.order_no, m.order_date, m.cust_name, m.phone, SUM(i.total) as total
                      FROM sale_main m JOIN sale_items i ON m.order_no=i.order_no WHERE 1=1"""
@@ -5030,27 +5351,38 @@ ID: {row[0]}
             conn.close()
             for row in rows:
                 orders_list.controls.append(
-                    ft.Card(content=ft.Container(
-                        content=ft.Column([
-                            ft.Text(f"订单号: {row[0]}  日期: {row[1]}", weight=ft.FontWeight.BOLD),
-                            ft.Text(f"客户: {row[2]}  电话: {row[3]}  金额: {row[4]:.2f}")
-                        ], spacing=2),
-                        padding=8,
-                        on_click=lambda e, order=row[0]: show_order_detail(order)
-                    ))
+                    ft.Card(
+                        content=ft.Container(
+                            content=ft.Column(
+                                [
+                                    ft.Text(f"订单号: {row[0]}  日期: {row[1]}", weight=ft.FontWeight.BOLD),
+                                    ft.Text(f"客户: {row[2]}  电话: {row[3]}  金额: {row[4]:.2f}")
+                                ],
+                                spacing=2,
+                            ),
+                            padding=8,
+                            on_click=lambda e, order=row[0]: show_order_detail(order)
+                        )
+                    )
                 )
             page.update()
 
         query_btn.on_click = do_query
+
         main_content.controls.append(
-            ft.Column([
-                ft.Text("销售订单查询", size=20, weight=ft.FontWeight.BOLD),
-                ft.Row([start_date, end_date], alignment=ft.MainAxisAlignment.START),
-                ft.Row([order_no, cust_name], alignment=ft.MainAxisAlignment.START),
-                ft.Row([model], alignment=ft.MainAxisAlignment.START),
-                query_btn,
-                orders_list
-            ], spacing=12, scroll=ft.ScrollMode.AUTO))
+            ft.Column(
+                [
+                    ft.Text("销售订单查询", size=20, weight=ft.FontWeight.BOLD),
+                    ft.Row([start_date, end_date], alignment=ft.MainAxisAlignment.START),
+                    ft.Row([order_no, cust_name], alignment=ft.MainAxisAlignment.START),
+                    ft.Row([model], alignment=ft.MainAxisAlignment.START),
+                    query_btn,
+                    orders_list
+                ],
+                spacing=12,
+                scroll=ft.ScrollMode.AUTO,
+            )
+        )
         page.update()
 
     # ---------------------------- 展台样机 ----------------------------
