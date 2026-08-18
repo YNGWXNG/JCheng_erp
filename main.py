@@ -2159,14 +2159,42 @@ def main(page: ft.Page):
         field_width = get_field_width(page, ratio=2, subtract=60)
         btn_width = field_width / 2
 
-        order_no_input = ft.TextField(label="订单号", width=field_width)
-        out_order_no_input = ft.TextField(label="外部订单号", width=field_width)
+        order_no_input = ft.TextField(label="订单号", width=field_width*2 + 10)
         cust_name_input = ft.TextField(label="客户姓名", width=field_width)
         phone_input = ft.TextField(label="联系方式", width=field_width)
         address_input = ft.TextField(label="地址", width=field_width)
         brand_input = ft.TextField(label="品牌", width=field_width)
         category_input = ft.TextField(label="品类", width=field_width)
         model_input = ft.TextField(label="型号", width=field_width)
+
+        # ========== 新增三个互斥复选框 ==========
+        all_check = ft.Checkbox(label="全部", value=True)  # 默认勾选“全部”
+        single_no_check = ft.Checkbox(label="单号录入", value=False)
+        gov_subsidy_check = ft.Checkbox(label="国补", value=False)
+
+        def on_check_changed(e):
+            """处理三个复选框的互斥逻辑"""
+            if e.control == all_check:
+                if all_check.value:
+                    # 勾选“全部”，取消另外两个
+                    single_no_check.value = False
+                    gov_subsidy_check.value = False
+                    single_no_check.update()
+                    gov_subsidy_check.update()
+            elif e.control == single_no_check:
+                if single_no_check.value:
+                    # 勾选“单号录入”，取消“全部”
+                    all_check.value = False
+                    all_check.update()
+            elif e.control == gov_subsidy_check:
+                if gov_subsidy_check.value:
+                    # 勾选“国补”，取消“全部”
+                    all_check.value = False
+                    all_check.update()
+
+        all_check.on_change = on_check_changed
+        single_no_check.on_change = on_check_changed
+        gov_subsidy_check.on_change = on_check_changed
 
         selected_date_str = None
         date_display = ft.Text("选择日期", size=14, color=ft.Colors.GREY_700)
@@ -2211,11 +2239,7 @@ def main(page: ft.Page):
 
         result_list = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO)
 
-
-        # ====================== 优化 show_snack 线程安全 ======================
         def show_snack(page: ft.Page, msg, bgcolor=ft.Colors.GREY_800):
-            """线程安全的 SnackBar 显示，统一调度到主线程"""
-
             def _show():
                 snack = ft.SnackBar(
                     ft.Text(msg),
@@ -2227,18 +2251,23 @@ def main(page: ft.Page):
                 page.update()
 
             run_ui_task(page, _show)
-        # ------------------------------------------------------------
 
         def load_orders(is_default=False):
             result_list.controls.clear()
             order_no = order_no_input.value.strip() if order_no_input.value else None
-            out_order_no = out_order_no_input.value.strip() if out_order_no_input.value else None
             cust_name = cust_name_input.value.strip() if cust_name_input.value else None
             phone = phone_input.value.strip() if phone_input.value else None
             address = address_input.value.strip() if address_input.value else None
             brand = brand_input.value.strip() if brand_input.value else None
             category = category_input.value.strip() if category_input.value else None
             model = model_input.value.strip() if model_input.value else None
+
+            # 读取复选框状态
+            is_all = all_check.value
+            only_full_out_no = single_no_check.value and not is_all
+            only_empty_full_out_no = (not single_no_check.value) and (not is_all)
+            only_gov_subsidy = gov_subsidy_check.value and not is_all
+            only_no_gov_subsidy = (not gov_subsidy_check.value) and (not is_all)
 
             if is_default:
                 date_val = datetime.now().strftime("%Y-%m-%d")
@@ -2264,9 +2293,6 @@ def main(page: ft.Page):
             if order_no:
                 sql += " AND m.order_no LIKE %s"
                 params.append(f"%{order_no}%")
-            if out_order_no:
-                sql += " AND i.out_order_no LIKE %s"
-                params.append(f"%{out_order_no}%")
             if cust_name:
                 sql += " AND m.cust_name LIKE %s"
                 params.append(f"%{cust_name}%")
@@ -2285,9 +2311,24 @@ def main(page: ft.Page):
             if model:
                 sql += " AND i.model LIKE %s"
                 params.append(f"%{model}%")
+
+            # ========== 单号录入条件 ==========
+            if only_full_out_no:
+                sql += " AND i.full_out_no IS NOT NULL AND i.full_out_no <> ''"
+            elif only_empty_full_out_no:
+                sql += " AND (i.full_out_no IS NULL OR i.full_out_no = '')"
+
+            # ========== 国补条件 ==========
+            if only_gov_subsidy:
+                sql += " AND i.gov_subsidy = %s"
+                params.append(0.15)
+            elif only_no_gov_subsidy:
+                sql += " AND (i.gov_subsidy IS NULL OR i.gov_subsidy = 0)"
+
             if date_val:
                 sql += " AND DATE(m.order_date) = %s"
                 params.append(date_val)
+
             sql += " GROUP BY m.order_no, m.order_date, m.cust_name, m.phone, m.full_addr ORDER BY m.order_date DESC"
 
             try:
@@ -2331,7 +2372,6 @@ def main(page: ft.Page):
         def reset_search():
             nonlocal selected_date_str
             order_no_input.value = ""
-            out_order_no_input.value = ""
             cust_name_input.value = ""
             phone_input.value = ""
             address_input.value = ""
@@ -2342,10 +2382,19 @@ def main(page: ft.Page):
             date_display.value = "选择日期"
             date_display.color = ft.Colors.GREY_700
             date_display.update()
+
+            # 重置复选框：默认勾选“全部”，取消其他
+            all_check.value = True
+            single_no_check.value = False
+            gov_subsidy_check.value = False
+            all_check.update()
+            single_no_check.update()
+            gov_subsidy_check.update()
+
             load_orders(is_default=True)
 
         def show_order_detail(order_no):
-            # 主订单详情弹窗
+            # 主订单详情弹窗（原逻辑保持不变）
             detail_dlg = ft.AlertDialog(
                 title=ft.Text(f"订单详情 - {order_no}"),
                 modal=True,
@@ -2435,12 +2484,11 @@ def main(page: ft.Page):
                 page.update()
 
             def capture_payment_voucher(biz_order_no, out_order_no, item_id):
-                # 关闭当前详情弹窗，唤起图片选择
                 page.pop_dialog()
                 payment_voucher = f"db:payment_vouchers:{out_order_no}"
+
                 def on_image_selected(path):
                     if not path:
-                        # 用户取消选择，重新打开订单详情弹窗
                         page.show_dialog(detail_dlg)
                         return
 
@@ -2459,7 +2507,6 @@ def main(page: ft.Page):
                         await show_upload_loading_async(page, "正在上传支付凭证...")
                         try:
                             def _background_work():
-                                # 1. 纯后台上传图片
                                 success, upload_result, err_msg = upload_image_to_db(
                                     file_path=path,
                                     file_type="payment_vouchers",
@@ -2467,14 +2514,13 @@ def main(page: ft.Page):
                                     prefix="PV",
                                     delete_old=True
                                 )
-                                # 2. 纯后台更新单号
                                 if success and scan_code:
                                     conn = get_db_conn()
                                     if conn:
                                         cur = conn.cursor()
                                         cur.execute(
                                             "UPDATE sale_items SET full_out_no = %s, payment_voucher = %s WHERE id = %s",
-                                            (scan_code,payment_voucher, item_id)
+                                            (scan_code, payment_voucher, item_id)
                                         )
                                         conn.commit()
                                         conn.close()
@@ -2499,12 +2545,10 @@ def main(page: ft.Page):
 
                     def btn_retake(ev):
                         page.pop_dialog()
-                        # 延时重新进入拍照选择流程
                         import threading
                         threading.Timer(0.1,
                                         lambda: capture_payment_voucher(biz_order_no, out_order_no, item_id)).start()
 
-                    # 凭证预览弹窗
                     preview_dlg = ft.AlertDialog(
                         title=ft.Text("预览支付凭证", weight=ft.FontWeight.BOLD),
                         modal=True,
@@ -2521,12 +2565,9 @@ def main(page: ft.Page):
                     )
                     page.show_dialog(preview_dlg)
 
-                # 唤起拍照/相册选择
                 show_image_source_dialog(page, on_image_selected, title="扫码识别凭证")
 
-            # 初次加载商品数据
             load_items()
-            # 弹出主订单详情弹窗
             page.show_dialog(detail_dlg)
             page.update()
 
@@ -2541,13 +2582,21 @@ def main(page: ft.Page):
             ],
             spacing=10,
         )
+
+        # 复选框行：全部、单号录入、国补
+        check_row = ft.Row(
+            [all_check, single_no_check, gov_subsidy_check],
+            spacing=20,
+        )
+
         query_panel = ft.Column(
             [
                 ft.Text("订单查询", size=20, weight=ft.FontWeight.BOLD),
-                ft.Row([order_no_input, out_order_no_input], spacing=10),
+                order_no_input,
                 ft.Row([cust_name_input, phone_input], spacing=10),
                 ft.Row([address_input, brand_input], spacing=10),
                 ft.Row([category_input, model_input], spacing=10),
+                check_row,  # 新增复选框行
                 action_row,
                 ft.Divider(height=10),
                 result_list,
