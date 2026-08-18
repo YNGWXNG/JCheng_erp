@@ -4983,44 +4983,44 @@ def main(page: ft.Page):
                 label="品牌",
                 value=row[1],
                 read_only=True,
-                width=120,
+                width=85,
                 bgcolor=ft.Colors.GREY_200,
             )
             category_field = ft.TextField(
                 label="品类",
                 value=row[2],
                 read_only=True,
-                width=120,
+                width=85,
                 bgcolor=ft.Colors.GREY_200,
             )
             model_field = ft.TextField(
                 label="型号",
                 value=row[3],
                 read_only=True,
-                width=250,
+                width=180,
                 bgcolor=ft.Colors.GREY_200,
             )
             in_date_field = ft.TextField(
                 label="入库日期",
                 value=str(row[6]),  # row[6] 为 in_date
                 read_only=True,
-                width=250,
+                width=180,
                 bgcolor=ft.Colors.GREY_200,
             )
 
             # 可编辑字段（默认白色背景）
-            qty_field = ft.TextField(label="数量", value=str(row[4]), width=120)
+            qty_field = ft.TextField(label="数量", value=str(row[4]), width=85)
             price_field = ft.TextField(
                 label="入库价格",
                 value="" if row[5] is None else str(row[5]),
-                width=120,
+                width=85,
             )
 
             edit_dialog = ft.AlertDialog(
                 title=ft.Text("修改入库记录"),
                 content=ft.Container(
                     width=260,  # 固定宽度，与单列字段宽度基本一致
-                    height=260,  # 固定高度，约为原来的一半
+                    height=240,  # 固定高度，约为原来的一半
                     content=ft.Column(
                         [
                             ft.Row([factory_field, category_field], spacing=10),
@@ -5112,9 +5112,15 @@ def main(page: ft.Page):
                 page.update()
 
             edit_dialog.actions = [
-                ft.TextButton("保存", on_click=save),
-                ft.TextButton("删除", on_click=delete),
-                ft.TextButton("取消", on_click=close_edit),
+                ft.Row(
+                    controls=[
+                        ft.TextButton("保存", on_click=save),
+                        ft.TextButton("删除", on_click=delete),
+                        ft.TextButton("取消", on_click=close_edit),
+                    ],
+                    alignment=ft.MainAxisAlignment.END,  # 靠右显示
+                    spacing=8,
+                )
             ]
 
             page.overlay.append(edit_dialog)
