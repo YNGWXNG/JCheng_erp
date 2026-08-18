@@ -4974,32 +4974,23 @@ def main(page: ft.Page):
         start_cal_btn = ft.TextButton("📅", on_click=lambda e: pick_date(start_date_field))
         end_cal_btn = ft.TextButton("📅", on_click=lambda e: pick_date(end_date_field))
 
-        def show_snack(msg):
-            page.snack_bar = ft.SnackBar(ft.Text(msg))
-            page.snack_bar.open = True
-            page.update()
-
         def open_edit_dialog(row):
-            # 只读信息输入框（背景灰色）
-            id_field = ft.TextField(
-                label="ID",
-                value=str(row[0]),  # row[0] 为 id
-                read_only=True,
-                width=250,
-                bgcolor=ft.Colors.GREY_200,
-            )
+            # ========== 优化开始 ==========
+            # 1. 移除 ID 字段（不再显示）
+            # 2. 品牌和品类一行，型号单独一行，入库日期单独一行，数量和价格一行
+            # 3. 控制弹窗宽度（约260）和高度（约260），高度减半
             factory_field = ft.TextField(
                 label="品牌",
                 value=row[1],
                 read_only=True,
-                width=250,
+                width=120,
                 bgcolor=ft.Colors.GREY_200,
             )
             category_field = ft.TextField(
                 label="品类",
                 value=row[2],
                 read_only=True,
-                width=250,
+                width=120,
                 bgcolor=ft.Colors.GREY_200,
             )
             model_field = ft.TextField(
@@ -5018,29 +5009,33 @@ def main(page: ft.Page):
             )
 
             # 可编辑字段（默认白色背景）
-            qty_field = ft.TextField(label="数量", value=str(row[4]), width=250)
+            qty_field = ft.TextField(label="数量", value=str(row[4]), width=120)
             price_field = ft.TextField(
                 label="入库价格",
                 value="" if row[5] is None else str(row[5]),
-                width=250,
+                width=120,
             )
 
             edit_dialog = ft.AlertDialog(
                 title=ft.Text("修改入库记录"),
-                content=ft.Column(
-                    [
-                        id_field,  # ID 放在最上面
-                        factory_field,
-                        category_field,
-                        model_field,
-                        in_date_field,
-                        qty_field,
-                        price_field,
-                    ],
-                    spacing=10,
+                content=ft.Container(
+                    width=260,  # 固定宽度，与单列字段宽度基本一致
+                    height=260,  # 固定高度，约为原来的一半
+                    content=ft.Column(
+                        [
+                            ft.Row([factory_field, category_field], spacing=10),
+                            model_field,
+                            in_date_field,
+                            ft.Row([qty_field, price_field], spacing=10),
+                        ],
+                        spacing=10,
+                        scroll=ft.ScrollMode.AUTO,  # 防止内容溢出时无法操作
+                    ),
                 ),
                 actions=[],
             )
+
+            # ========== 优化结束 ==========
 
             def close_edit(e=None):
                 edit_dialog.open = False
@@ -5052,14 +5047,14 @@ def main(page: ft.Page):
                 price_text = price_field.value.strip()
 
                 if not qty_text:
-                    show_snack("数量不能为空")
+                    show_snack(page,"数量不能为空",ft.Colors.RED)
                     return
 
                 try:
                     qty_val = int(qty_text)
                     price_val = float(price_text) if price_text else 0.0
                 except ValueError:
-                    show_snack("请输入有效数字")
+                    show_snack(page,"请输入有效数字",ft.Colors.RED)
                     return
 
                 conn = get_db_conn()
@@ -5076,8 +5071,8 @@ def main(page: ft.Page):
                     conn.close()
 
                 close_edit()
+                show_snack(page,"修改已保存",ft.Colors.RED)
                 do_query(None)
-                show_snack("修改已保存")
 
             def delete(e):
                 def do_delete(e):
@@ -5094,8 +5089,8 @@ def main(page: ft.Page):
                     confirm_dialog.open = False
                     safe_remove_dialog(page, confirm_dialog)
                     close_edit()
+                    show_snack(page,"记录已删除",ft.Colors.RED)
                     do_query(None)
-                    show_snack("记录已删除")
 
                 confirm_dialog = ft.AlertDialog(
                     title=ft.Text("确认删除"),
