@@ -1381,25 +1381,67 @@ def main(page: ft.Page):
         else:
             clear_credentials()
 
-        conn = get_db_conn()
-        if not conn:
-            show_alert(page, "提示", "数据库连接失败，请检查服务器配置")
-            return
-        cur = conn.cursor(dictionary=True)
-        cur.execute("SELECT id,username,real_name,role,permissions,expire_date FROM users WHERE username=%s AND password=%s",
-                    (uname, md5_pwd(pwd)))
-        user = cur.fetchone()
-        conn.close()
+        # 显示登录加载动画
+        loading_dlg = ft.AlertDialog(
+            content=ft.Column(
+                [
+                    ft.ProgressRing(),
+                    ft.Text("正在登录，服务器连接中，请稍后…"),
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=20,
+                tight=True,
+            ),
+            modal=True,
+        )
+        page.show_dialog(loading_dlg)
+        page.update()
 
-        if user:
-            expire = user.get("expire_date")
-            if expire and expire < date.today():
-                show_alert(page, "提示", "用户权限已过期，请联系管理员")
-                return
-            current_user = user
-            build_main_ui()
-        else:
-            show_alert(page, "提示", "用户名或密码错误")
+        # 辅助函数：关闭当前对话框
+        def close_dialog():
+            page.pop_dialog()
+
+        async def do_login_async():
+            nonlocal current_user
+            try:
+                # 将阻塞的数据库连接操作放到线程中执行
+                conn = await asyncio.to_thread(get_db_conn)
+                if not conn:
+                    close_dialog()
+                    show_alert(page, "提示", "数据库连接失败，请检查服务器配置")
+                    return
+
+                cur = conn.cursor(dictionary=True)
+
+                # 查询操作也放入线程，避免阻塞 UI
+                def query_user():
+                    cur.execute(
+                        "SELECT id,username,real_name,role,permissions,expire_date FROM users WHERE username=%s AND password=%s",
+                        (uname, md5_pwd(pwd))
+                    )
+                    return cur.fetchone()
+
+                user = await asyncio.to_thread(query_user)
+                conn.close()
+
+                if user:
+                    expire = user.get("expire_date")
+                    if expire and expire < date.today():
+                        close_dialog()
+                        show_alert(page, "提示", "用户权限已过期，请联系管理员")
+                        return
+                    current_user = user
+                    close_dialog()
+                    build_main_ui()
+                else:
+                    close_dialog()
+                    show_alert(page, "提示", "用户名或密码错误")
+            except Exception as ex:
+                close_dialog()
+                show_alert(page, "错误", f"登录异常: {str(ex)[:50]}")
+
+        # 启动异步登录任务
+        page.run_task(do_login_async)
 
     def do_login(e):
         login_action()
@@ -3584,7 +3626,7 @@ def main(page: ft.Page):
                     height=min(get_window_width(page) * 0.85, 800),
                 )
 
-                # ---------- 下载（不变） ----------
+                # ---------- 下载照片 ----------
                 async def do_download_home_photo(e):
                     try:
                         page.pop_dialog()
@@ -3594,7 +3636,11 @@ def main(page: ft.Page):
                     await asyncio.sleep(0.1)
 
                     try:
-                        path = await ft.FilePicker().save_file(...)
+                        path = await ft.FilePicker().save_file(
+                            dialog_title="保存送货照片",
+                            file_name=f"送货照片_{biz_no}.jpg",
+                            allowed_extensions=["jpg", "jpeg"]
+                        )
                         if path:
                             with open(path, "wb") as f:
                                 f.write(file_data)
@@ -3705,13 +3751,13 @@ def main(page: ft.Page):
                     actions=[
                         ft.Row(
                             [
-                                ft.TextButton("修改", icon=ft.Icons.EDIT, on_click=do_edit_home_photo),
-                                ft.TextButton("下载", icon=ft.Icons.DOWNLOAD, on_click=do_download_home_photo),
-                                ft.TextButton("关闭", on_click=lambda _: page.pop_dialog()),
+                                ft.IconButton(icon=ft.Icons.EDIT, tooltip="修改",on_click=do_edit_home_photo),
+                                ft.IconButton(icon=ft.Icons.DOWNLOAD, tooltip="下载",on_click=do_download_home_photo),
+                                ft.IconButton(icon=ft.Icons.CLOSE,tooltip="关闭",on_click=lambda _: page.pop_dialog()),
                             ],
-                            spacing=5,
+                            spacing=20,
                             wrap=False,
-                            alignment=ft.MainAxisAlignment.END,
+                            alignment=ft.MainAxisAlignment.CENTER,
                         )
                     ],
                     modal=True,
@@ -4052,45 +4098,88 @@ def main(page: ft.Page):
                 def on_camera_click(e):
                     page.pop_dialog()
 
+                    # 定义上传逻辑（从原 camera_callback 中提取）
+                    async def do_upload_photo(path, add_watermark):
+                        loc_success, lat, lng = await get_current_location(page)
+                        if not loc_success:
+                            show_snack(page, "位置获取失败，水印将使用粗略定位", ft.Colors.ORANGE)
+
+                        await show_upload_loading_async(page, "正在处理并上传照片...")
+                        try:
+                            success, db_tag, err_msg = await asyncio.to_thread(
+                                process_image,
+                                path,
+                                add_watermark=add_watermark,
+                                order_no=order_no,
+                                cust_name=cust_name,
+                                full_addr=full_addr,
+                                out_order_no=out_order_no,
+                                lat=lat,
+                                lng=lng
+                            )
+                            hide_upload_loading(page)
+
+                            if success:
+                                # 原地更新UI（不重建弹窗）
+                                current_order["home_photo"] = db_tag
+                                home_photo_status.value = "送货照片: 已上传"
+                                home_photo_status.color = ft.Colors.GREEN
+                                page.update()
+                                show_alert(page, "成功", "送货照片上传完成")
+                            else:
+                                show_alert(page, "错误", f"上传失败: {err_msg[:50]}")
+                        except Exception as ex:
+                            hide_upload_loading(page)
+                            show_alert(page, "错误", f"上传异常: {str(ex)[:50]}")
+
+                    # 预览对话框构建
+                    def show_preview_dialog(path):
+                        # 预览图片
+                        preview_image = ft.Image(
+                            src=path,
+                            fit="contain",
+                            expand=True,
+                        )
+
+                        # 三个操作按钮
+                        def on_confirm(e):
+                            page.pop_dialog()  # 关闭预览
+                            page.run_task(do_upload_photo, path, True)  # 上传（拍照带水印）
+
+                        def on_retake(e):
+                            page.pop_dialog()  # 关闭预览
+                            show_camera_view(page, camera_callback)  # 重新打开相机
+
+                        def on_close(e):
+                            page.pop_dialog()  # 仅关闭预览
+
+                        preview_dlg = ft.AlertDialog(
+                            title=ft.Text("照片预览"),
+                            content=ft.Column(
+                                [
+                                    preview_image,
+                                    ft.Row(
+                                        [
+                                            ft.Button("确定上传", on_click=on_confirm),
+                                            ft.Button("返回重拍", on_click=on_retake),
+                                            ft.TextButton("关闭", on_click=on_close),
+                                        ],
+                                        alignment=ft.MainAxisAlignment.CENTER,
+                                        spacing=10,
+                                    ),
+                                ],
+                                spacing=10,
+                                tight=True,
+                            ),
+                            modal=True,
+                        )
+                        page.show_dialog(preview_dlg)
+
+                    # 相机回调：拍照完成后显示预览，不再直接上传
                     def camera_callback(path):
                         if not path:
-                            return
-
-                        async def upload_task():
-                            loc_success, lat, lng = await get_current_location(page)
-                            if not loc_success:
-                                show_snack(page, "位置获取失败，水印将使用粗略定位", ft.Colors.ORANGE)
-
-                            await show_upload_loading_async(page, "正在处理并上传照片...")
-                            try:
-                                success, db_tag, err_msg = await asyncio.to_thread(
-                                    process_image,
-                                    path,
-                                    add_watermark=True,
-                                    order_no=order_no,
-                                    cust_name=cust_name,
-                                    full_addr=full_addr,
-                                    out_order_no=out_order_no,
-                                    lat=lat,
-                                    lng=lng
-                                )
-                                hide_upload_loading(page)
-
-                                if success:
-                                    # 原地更新UI（不重建弹窗）
-                                    current_order["home_photo"] = db_tag
-                                    home_photo_status.value = "送货照片: 已上传"
-                                    home_photo_status.color = ft.Colors.GREEN
-                                    page.update()
-
-                                    show_alert(page, "成功", "送货照片上传完成")
-                                else:
-                                    show_alert(page, "错误", f"上传失败: {err_msg[:50]}")
-                            except Exception as ex:
-                                hide_upload_loading(page)
-                                show_alert(page, "错误", f"上传异常: {str(ex)[:50]}")
-
-                        page.run_task(upload_task)
+                            return  # 用户取消拍照
+                        show_preview_dialog(path)
 
                     show_camera_view(page, camera_callback)
 
@@ -4200,7 +4289,7 @@ def main(page: ft.Page):
                 ],
                 spacing=8,
                 scroll=ft.ScrollMode.AUTO,
-                width=min(get_window_width(page) - 20, 420) if (get_window_width(page) or 480) else 400,
+                width=min(get_window_width(page) + 20, 520) if (get_window_width(page) or 520) else 500,
                 height=min(get_window_width(page) - 50, 600) if (get_window_width(page) or 480) else 500,
             )
 
