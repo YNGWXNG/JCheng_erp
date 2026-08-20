@@ -1623,12 +1623,12 @@ def main(page: ft.Page):
         else:
             return 'image/png'  # 默认
 
-    def show_large_image(base64_str, cust_name, upload_time_str, mime='image/png'):
+    def show_large_image(base64_str, cust_name, upload_time_str, model, mime='image/png'):
         """点击缩略图后弹出大图对话框"""
         print(f"正在打开大图: {cust_name}, 时间: {upload_time_str}")  # 调试用
         dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Text(f"{cust_name or '未知客户'} "),
+            title=ft.Text(f"{cust_name or '未知客户'}---{model}"),
             content=ft.Container(
                 content=ft.Image(
                     src=f"data:{mime};base64,{base64_str}",
@@ -1643,6 +1643,113 @@ def main(page: ft.Page):
         page.show_dialog(dlg)
 
     # ==================== 主页面函数 ====================
+    # ==================== 新增：异步刷新函数 ====================
+    async def refresh_home(e):
+        """点击刷新按钮：检查数据库新照片，有则更新缓存并重新渲染首页"""
+        # 显示“正在检查”对话框
+        checking_dlg = ft.AlertDialog(
+            modal=True,
+            content=ft.Column(
+                [
+                    ft.ProgressRing(),
+                    ft.Text("正在检查新照片...")
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                tight=True,
+            ),
+        )
+        page.show_dialog(checking_dlg)
+        page.update()
+
+        try:
+            # 在后台线程中执行数据库查询和缓存更新（避免阻塞UI）
+            has_new = await asyncio.to_thread(check_and_update_photos)
+
+            if has_new:
+                # 更新对话框文本为“发现新照片，正在加载...”
+                checking_dlg.content = ft.Column(
+                    [
+                        ft.ProgressRing(),
+                        ft.Text("发现新上传照片，正在加载……")
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    tight=True,
+                )
+                page.update()
+                await asyncio.sleep(0.5)  # 短暂停留，让用户看到动画
+
+                # 关闭对话框，重新构建首页（显示新照片）
+                page.pop_dialog()
+                page.update()
+                show_home()  # 重新加载整个首页（统计和照片区域都会刷新）
+            else:
+                # 没有新照片，直接关闭对话框
+                page.pop_dialog()
+                page.update()
+                # 可选：提示没有新照片（这里暂不提示，保持安静）
+        except Exception as ex:
+            # 异常时关闭对话框并提示错误
+            page.pop_dialog()
+            page.update()
+            show_alert(page, "错误", f"刷新失败: {str(ex)}")
+
+    def check_and_update_photos():
+        """
+        同步函数（运行在后台线程）：
+        查询当天所有照片，与缓存比较，如有新增则更新缓存，返回是否有新增。
+        """
+        conn = get_db_conn()
+        if not conn:
+            raise Exception("无法连接数据库")
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                SELECT ef.file_data, ef.upload_time, t.cust_name, t.model
+                FROM erp_files ef
+                LEFT JOIN transport t ON ef.biz_no = t.out_order_no
+                WHERE DATE(ef.upload_time) = CURDATE()
+                ORDER BY ef.upload_time DESC
+            """)
+            rows = cur.fetchall()
+
+            # 构建最新的照片列表
+            new_photos = []
+            for file_data, upload_time, cust_name, model in rows:
+                if file_data:
+                    mime = detect_image_mime(file_data)
+                    base64_str = base64.b64encode(file_data).decode('utf-8')
+                    upload_time_str = upload_time.strftime('%Y-%m-%d %H:%M:%S') if upload_time else ''
+                    new_photos.append({
+                        "base64": base64_str,
+                        "mime": mime,
+                        "cust_name": cust_name,
+                        "upload_time_str": upload_time_str,
+                        "model": model
+                    })
+
+            # 与现有缓存比较（主要判断数量是否增加，或最新时间是否更新）
+            old_photos = _photo_cache["photos"]
+            has_new = False
+            if len(new_photos) > len(old_photos):
+                has_new = True
+            elif new_photos and old_photos:
+                # 如果数量相同但最新时间不同，也视为有新照片（应对同秒多传但数量未变的情况）
+                new_latest = max(p["upload_time_str"] for p in new_photos)
+                old_latest = max(p["upload_time_str"] for p in old_photos)
+                if new_latest > old_latest:
+                    has_new = True
+            elif new_photos and not old_photos:
+                has_new = True
+
+            # 如有新增，更新缓存
+            if has_new:
+                _photo_cache["photos"] = new_photos
+                _photo_cache["date"] = date.today().isoformat()
+            return has_new
+        finally:
+            conn.close()
+
+    # ==================== 修改后的 show_home 函数 ====================
     def show_home():
         main_content.controls.clear()
         conn = get_db_conn()
@@ -1670,14 +1777,14 @@ def main(page: ft.Page):
 
             # 查询当天上传的照片，关联客户姓名
             cur.execute("""
-                SELECT ef.file_data, ef.upload_time, t.cust_name
+                SELECT ef.file_data, ef.upload_time, t.cust_name, t.model
                 FROM erp_files ef
                 LEFT JOIN transport t ON ef.biz_no = t.out_order_no
                 WHERE DATE(ef.upload_time) = CURDATE()
                 ORDER BY ef.upload_time DESC
             """)
             rows = cur.fetchall()
-            for file_data, upload_time, cust_name in rows:
+            for file_data, upload_time, cust_name, model in rows:
                 if file_data:
                     mime = detect_image_mime(file_data)
                     base64_str = base64.b64encode(file_data).decode('utf-8')
@@ -1686,7 +1793,8 @@ def main(page: ft.Page):
                         "base64": base64_str,
                         "mime": mime,
                         "cust_name": cust_name,
-                        "upload_time_str": upload_time_str
+                        "upload_time_str": upload_time_str,
+                        "model": model
                     })
         conn.close()
 
@@ -1743,7 +1851,6 @@ def main(page: ft.Page):
                 vertical_alignment=ft.CrossAxisAlignment.START
             )
             for photo in _photo_cache["photos"]:
-                # 缩略图
                 thumb = ft.Image(
                     src=f"data:{photo['mime']};base64,{photo['base64']}",
                     width=130,
@@ -1751,7 +1858,6 @@ def main(page: ft.Page):
                     fit="cover",
                     border_radius=10,
                 )
-                # 显示时间（去掉年份，例如 "08-19 18:46"）
                 display_time = photo["upload_time_str"][5:16] if len(photo["upload_time_str"]) >= 16 else photo[
                     "upload_time_str"]
                 text = ft.Text(
@@ -1768,11 +1874,11 @@ def main(page: ft.Page):
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                     spacing=5
                 )
-                # 可点击容器（Image 不支持 on_click，故包在 Container 中）
                 clickable = ft.Container(
                     content=item,
                     on_click=lambda e, b64=photo["base64"], cn=photo["cust_name"], ut=photo["upload_time_str"],
-                                    mime=photo['mime']: show_large_image(b64, cn, ut, mime),
+                                    md=photo["model"],
+                                    mime=photo['mime']: show_large_image(b64, cn, ut, md, mime),
                     ink=True,
                     border_radius=10,
                     padding=5,
@@ -1790,7 +1896,7 @@ def main(page: ft.Page):
                 cards_row,
                 ft.Container(height=20),
                 ft.Row(
-                    [ft.Button("刷新数据", icon=ft.Icons.REFRESH, on_click=lambda e: show_home(), width=200)],
+                    [ft.Button("刷新数据", icon=ft.Icons.REFRESH, on_click=refresh_home, width=200)],
                     alignment=ft.MainAxisAlignment.CENTER
                 ),
                 *photo_section
@@ -3639,11 +3745,10 @@ def main(page: ft.Page):
                         path = await ft.FilePicker().save_file(
                             dialog_title="保存送货照片",
                             file_name=f"送货照片_{biz_no}.jpg",
-                            allowed_extensions=["jpg", "jpeg"]
+                            allowed_extensions=["jpg", "jpeg"],
+                            src_bytes=file_data  # 关键：移动端必须传入字节数据
                         )
                         if path:
-                            with open(path, "wb") as f:
-                                f.write(file_data)
                             show_alert(page, "成功", "照片已保存")
                     except Exception as ex:
                         show_alert(page, "错误", f"下载失败: {str(ex)}")
@@ -4158,7 +4263,7 @@ def main(page: ft.Page):
                             content=ft.Column(
                                 [
                                     preview_image,
-                                    ft.Row(
+                                    ft.Column(
                                         [
                                             ft.Button("确定上传", on_click=on_confirm),
                                             ft.Button("返回重拍", on_click=on_retake),
