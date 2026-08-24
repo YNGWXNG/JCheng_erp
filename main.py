@@ -2755,30 +2755,49 @@ def main(page: ft.Page):
 
             async def share_pdf(e):
                 try:
-                    share_file = ft.ShareFile.from_path(pdf_path)
-                    result = await share.share_files([share_file], text="电子订单", title="分享电子订单")
+                    share = ft.Share()
+                    if page.web:
+                        # Web 平台不支持路径分享，改用字节分享
+                        with open(pdf_path, "rb") as f:
+                            file_bytes = f.read()
+                        share_file = ft.ShareFile.from_bytes(
+                            file_bytes,
+                            mime_type="application/pdf",
+                            name=f"电子订单_{order_no}.pdf",
+                        )
+                    else:
+                        share_file = ft.ShareFile.from_path(pdf_path)
+
+                    result = await share.share_files(
+                        [share_file],
+                        text="电子订单",
+                        title="分享电子订单",
+                    )
                     show_alert(page, "提示", f"分享状态：{result.status}")
                 except Exception as ex:
                     show_alert(page, "错误", f"分享失败: {str(ex)[:50]}")
 
             def save_pdf(e):
-                page.pop_dialog()
-                page.update()
+                try:
+                    page.pop_dialog()
+                    page.update()
 
-                async def do_save():
-                    if page.platform in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS):
-                        show_alert(page, "保存成功", f"文件已保存至应用目录：\n{os.path.basename(pdf_path)}")
-                    else:
-                        path = await ft.FilePicker().save_file(
-                            dialog_title="保存电子订单",
-                            file_name=f"电子订单_{order_no}.pdf",
-                            allowed_extensions=["pdf"],
-                            src_bytes=open(pdf_path, "rb").read()
-                        )
-                        if path:
-                            show_alert(page, "成功", "PDF已保存")
+                    async def do_save():
+                        try:
+                            path = await ft.FilePicker().save_file(
+                                dialog_title="保存电子订单",
+                                file_name=f"电子订单_{order_no}.pdf",
+                                allowed_extensions=["pdf"],
+                                src_bytes=open(pdf_path, "rb").read()
+                            )
+                            if path:
+                                show_alert(page, "成功", "PDF已保存")
+                        except Exception as ex:
+                            show_alert(page, "错误", f"保存失败: {str(ex)[:50]}")
 
-                page.run_task(do_save)
+                    page.run_task(do_save)
+                except Exception as ex:
+                    show_alert(page, "错误", f"操作异常: {str(ex)[:50]}")
 
             dlg = ft.AlertDialog(
                 title=ft.Text("电子订单已生成"),
@@ -3760,30 +3779,49 @@ def main(page: ft.Page):
 
             async def share_pdf(e):
                 try:
-                    share_file = ft.ShareFile.from_path(pdf_path)
-                    result = await share.share_files([share_file], text="电子订单", title="分享电子订单")
+                    share = ft.Share()
+                    if page.web:
+                        # Web 平台不支持路径分享，改用字节分享
+                        with open(pdf_path, "rb") as f:
+                            file_bytes = f.read()
+                        share_file = ft.ShareFile.from_bytes(
+                            file_bytes,
+                            mime_type="application/pdf",
+                            name=f"电子订单_{order_no}.pdf",
+                        )
+                    else:
+                        share_file = ft.ShareFile.from_path(pdf_path)
+
+                    result = await share.share_files(
+                        [share_file],
+                        text="电子订单",
+                        title="分享电子订单",
+                    )
                     show_alert(page, "提示", f"分享状态：{result.status}")
                 except Exception as ex:
                     show_alert(page, "错误", f"分享失败: {str(ex)[:50]}")
 
             def save_pdf(e):
-                page.pop_dialog()
-                page.update()
+                try:
+                    page.pop_dialog()
+                    page.update()
 
-                async def do_save():
-                    if page.platform in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS):
-                        show_alert(page, "保存成功", f"文件已保存至应用目录：\n{os.path.basename(pdf_path)}")
-                    else:
-                        path = await ft.FilePicker().save_file(
-                            dialog_title="保存电子订单",
-                            file_name=f"电子订单_{order_no}.pdf",
-                            allowed_extensions=["pdf"],
-                            src_bytes=open(pdf_path, "rb").read()
-                        )
-                        if path:
-                            show_alert(page, "成功", "PDF已保存")
+                    async def do_save():
+                        try:
+                            path = await ft.FilePicker().save_file(
+                                dialog_title="保存电子订单",
+                                file_name=f"电子订单_{order_no}.pdf",
+                                allowed_extensions=["pdf"],
+                                src_bytes=open(pdf_path, "rb").read()
+                            )
+                            if path:
+                                show_alert(page, "成功", "PDF已保存")
+                        except Exception as ex:
+                            show_alert(page, "错误", f"保存失败: {str(ex)[:50]}")
 
-                page.run_task(do_save)
+                    page.run_task(do_save)
+                except Exception as ex:
+                    show_alert(page, "错误", f"操作异常: {str(ex)[:50]}")
 
             dlg = ft.AlertDialog(
                 title=ft.Text("电子订单已生成"),
@@ -6745,78 +6783,83 @@ def main(page: ft.Page):
         )
 
         def load_detail_data(model, start, end):
-            in_table.rows.clear()
-            sale_table.rows.clear()
-            conn = get_db_conn()
-            if not conn:
-                return
-            cur = conn.cursor()
+            try:
+                in_table.rows.clear()
+                sale_table.rows.clear()
+                conn = get_db_conn()
+                if not conn:
+                    show_alert(page, "错误", "数据库连接失败")
+                    return
+                cur = conn.cursor()
 
-            # 入库数据读取
-            cur.execute("""
-                SELECT in_date, qty, location
-                FROM stock_in
-                WHERE model=%s AND in_date BETWEEN %s AND %s
-                ORDER BY in_date DESC
-            """, (model, start, end))
-            in_total_qty = 0
-            for r in cur.fetchall():
-                in_date, qty, location = r
-                in_total_qty += qty
-                display_date = ""
-                if in_date:
-                    if isinstance(in_date, str):
-                        display_date = datetime.strptime(in_date, "%Y-%m-%d").strftime("%m-%d")
-                    else:
-                        display_date = in_date.strftime("%m-%d")
+                # 入库数据读取
+                cur.execute("""
+                    SELECT in_date, qty, location
+                    FROM stock_in
+                    WHERE model=%s AND in_date BETWEEN %s AND %s
+                    ORDER BY in_date DESC
+                """, (model, start, end))
+                in_total_qty = 0
+                for r in cur.fetchall():
+                    in_date, qty, location = r
+                    in_total_qty += qty
+                    display_date = ""
+                    if in_date:
+                        if isinstance(in_date, str):
+                            display_date = datetime.strptime(in_date, "%Y-%m-%d").strftime("%m-%d")
+                        else:
+                            display_date = in_date.strftime("%m-%d")
 
-                in_table.rows.append(
-                    ft.DataRow(cells=[
-                        ft.DataCell(ft.Text(display_date, size=12)),
-                        ft.DataCell(ft.Text(str(qty), size=12)),
-                        ft.DataCell(ft.Text(location or "", size=12)),
-                    ])
-                )
+                    in_table.rows.append(
+                        ft.DataRow(cells=[
+                            ft.DataCell(ft.Text(display_date, size=12)),
+                            ft.DataCell(ft.Text(str(qty), size=12)),
+                            ft.DataCell(ft.Text(location or "", size=12)),
+                        ])
+                    )
 
-            # 销售数据读取
-            cur.execute("""
-                SELECT DISTINCT
-                    IFNULL(t.status, '未配送'),
-                    si.order_no,
-                    m.order_date,
-                    m.cust_name,
-                    si.qty
-                FROM sale_items si
-                LEFT JOIN sale_main m ON si.order_no = m.order_no
-                LEFT JOIN transport t ON si.order_no = t.order_no AND si.model = t.model
-                WHERE si.model=%s AND m.order_date BETWEEN %s AND %s
-                ORDER BY m.order_date DESC
-            """, (model, start, end))
-            sale_total_qty = 0
-            for r in cur.fetchall():
-                status, order_no, order_date, cust_name, qty = r
-                sale_total_qty += qty
-                display_sale_date = ""
-                if order_date:
-                    if isinstance(order_date, str):
-                        display_sale_date = datetime.strptime(order_date, "%Y-%m-%d").strftime("%m-%d")
-                    else:
-                        display_sale_date = order_date.strftime("%m-%d")
+                # 销售数据读取
+                cur.execute("""
+                    SELECT DISTINCT
+                        IFNULL(t.status, '未配送'),
+                        si.order_no,
+                        m.order_date,
+                        m.cust_name,
+                        si.qty
+                    FROM sale_items si
+                    LEFT JOIN sale_main m ON si.order_no = m.order_no
+                    LEFT JOIN transport t ON si.order_no = t.order_no AND si.model = t.model
+                    WHERE si.model=%s AND m.order_date BETWEEN %s AND %s
+                    ORDER BY m.order_date DESC
+                """, (model, start, end))
+                sale_total_qty = 0
+                for r in cur.fetchall():
+                    status, order_no, order_date, cust_name, qty = r
+                    sale_total_qty += qty
+                    display_sale_date = ""
+                    if order_date:
+                        if isinstance(order_date, str):
+                            display_sale_date = datetime.strptime(order_date, "%Y-%m-%d").strftime("%m-%d")
+                        else:
+                            display_sale_date = order_date.strftime("%m-%d")
 
-                sale_table.rows.append(
-                    ft.DataRow(cells=[
-                        ft.DataCell(ft.Text(status or "", size=11)),
-                        ft.DataCell(ft.Text(order_no or "", size=11)),
-                        ft.DataCell(ft.Text(display_sale_date, size=11)),
-                        ft.DataCell(ft.Text(cust_name or "", size=11)),
-                        ft.DataCell(ft.Text(str(qty), size=11)),
-                    ])
-                )
-            conn.close()
+                    sale_table.rows.append(
+                        ft.DataRow(cells=[
+                            ft.DataCell(ft.Text(status or "", size=11)),
+                            ft.DataCell(ft.Text(order_no or "", size=11)),
+                            ft.DataCell(ft.Text(display_sale_date, size=11)),
+                            ft.DataCell(ft.Text(cust_name or "", size=11)),
+                            ft.DataCell(ft.Text(str(qty), size=11)),
+                        ])
+                    )
+                conn.close()
 
-            stat_label.value = f"入库合计：{in_total_qty} 件 | 销售合计：{sale_total_qty} 件"
-            page.update()
+                stat_label.value = f"入库合计：{in_total_qty} 件 | 销售合计：{sale_total_qty} 件"
+                page.update()
+            except Exception as ex:
+                show_alert(page, "错误", f"数据加载失败: {str(ex)[:50]}")
 
+        # 初始加载数据（使用默认日期范围）
         load_detail_data(model, start_date_field.value, end_date_field.value)
 
         # 查询条件竖向排布
@@ -6825,7 +6868,17 @@ def main(page: ft.Page):
                 ft.Row([start_date_field, start_icon], spacing=3),
                 ft.Row([end_date_field, end_icon], spacing=3),
                 ft.Row(
-                    [ft.Button("查询", expand=True)],
+                    [
+                        ft.Button(
+                            "查询",
+                            expand=True,
+                            on_click=lambda e: load_detail_data(
+                                model,
+                                start_date_field.value,
+                                end_date_field.value
+                            )
+                        )
+                    ],
                     alignment=ft.MainAxisAlignment.CENTER
                 )
             ],
