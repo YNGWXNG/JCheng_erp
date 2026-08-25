@@ -909,7 +909,7 @@ def query_product_by_code(code):
     conn.close()
     return row
 
-def add_product_from_scan(page, code, callback):
+def add_product_from_scan(page, code, m, callback):
     def save_product(e):
         model = model_input.value.strip()
         if not model:
@@ -945,8 +945,8 @@ def add_product_from_scan(page, code, callback):
         finally:
             conn.close()
 
-    model_input = ft.TextField(label="型号*", width=250)
-    code_input = ft.TextField(label="69码", value=code, width=250, read_only=True)
+    model_input = ft.TextField(label="型号*",value=m, width=250)
+    code_input = ft.TextField(label="69码", value=code, width=250)
     factory_input = ft.TextField(label="品牌", width=250)
     category_input = ft.TextField(label="品类", width=250)
     spec_input = ft.TextField(label="规格", width=250)
@@ -2144,7 +2144,7 @@ def main(page: ft.Page):
                     page.update()
                     page.run_task(show_alert_async, page, "成功", f"已加载产品: {prod['model']}")
                 else:
-                    add_product_from_scan(page, code, lambda m: (setattr(model_input, 'value', m), page.update()))
+                    add_product_from_scan(page, code,"",lambda m: (setattr(model_input, 'value', m), page.update()))
 
         # ---------- 商品清单管理 ----------
         def refresh_items():
@@ -2192,7 +2192,7 @@ def main(page: ft.Page):
                 def on_add_product_click(e):
                     page.pop_dialog()
                     # 复用已有的添加商品函数（自动弹出扫描或手动录入界面）
-                    add_product_from_scan(page, "", lambda m: (setattr(model_input, 'value', m), page.update()))
+                    add_product_from_scan(page, "",m, lambda m: (setattr(model_input, 'value', m), page.update()))
 
                 def on_back_click(e):
                     page.pop_dialog()
@@ -2718,7 +2718,7 @@ def main(page: ft.Page):
                     story.append(PageBreak())
 
             # 公章
-            seal_path = get_asset_path("icon.png")
+            seal_path = get_asset_path("gongzhang.png")
 
             def add_seal(canvas, doc):
                 if os.path.exists(seal_path):
@@ -3609,7 +3609,7 @@ def main(page: ft.Page):
                 if photo_page_idx < photo_pages - 1:
                     story.append(PageBreak())
 
-            seal_path = get_asset_path("icon.png")
+            seal_path = get_asset_path("gongzhang.png")
 
             def add_seal(canvas, doc):
                 if os.path.exists(seal_path):
@@ -4521,7 +4521,7 @@ def main(page: ft.Page):
                         model_suggestions.visible = False
                         model_suggestions.update()
                         page.update()
-                    add_product_from_scan(page, code, after_add)
+                    add_product_from_scan(page, code,"", after_add)
 
         qty = ft.TextField(label="入库数量", width=input_width, height=input_height)
         in_price = ft.TextField(label="入库价格", value="0", width=input_width, height=input_height)
@@ -7952,7 +7952,7 @@ def main(page: ft.Page):
                         def after_add(m):
                             model_input.value = m
                             page.update()
-                        add_product_from_scan(page, code, after_add)
+                        add_product_from_scan(page, code,"", after_add)
 
             def save_new(e):
                 model = model_input.value.strip()
