@@ -2490,7 +2490,7 @@ def main(page: ft.Page):
 
             # ========== 创建文档 ==========
             pdf_dir = tempfile.gettempdir()
-            pdf_path = os.path.join(pdf_dir, f"电子订单_{order_no}.pdf")
+            pdf_path = os.path.join(pdf_dir, f"电子订单_{order_no}-{cust_name}-{today_str}.pdf")
             doc = SimpleDocTemplate(pdf_path, pagesize=landscape(A4),
                                     topMargin=15, bottomMargin=12, leftMargin=12, rightMargin=12)
             story = []
@@ -2743,14 +2743,14 @@ def main(page: ft.Page):
                 print("\n========== 调用 generate_electronic_order ==========")
                 pdf_path = generate_pdf_by_template(order_no, items, full_addr, cust_name, phone, send_date,
                                                     payment_dict)
-                show_pdf_preview(pdf_path, order_no)
+                show_pdf_preview(pdf_path, order_no, cust_name)
             except Exception as e:
                 import traceback
                 traceback.print_exc()
                 show_alert(page, "错误", f"生成电子订单失败：{str(e)}")
 
         # ========== PDF预览与分享 ==========
-        def show_pdf_preview(pdf_path, order_no):
+        def show_pdf_preview(pdf_path, order_no, cust_name, order_dt):
             share = ft.Share()
 
             async def share_pdf(e):
@@ -2763,7 +2763,7 @@ def main(page: ft.Page):
                         share_file = ft.ShareFile.from_bytes(
                             file_bytes,
                             mime_type="application/pdf",
-                            name=f"电子订单_{order_no}.pdf",
+                            name=f"电子订单_{order_no}-{cust_name}-{order_dt}.pdf",
                         )
                     else:
                         share_file = ft.ShareFile.from_path(pdf_path)
@@ -2786,7 +2786,7 @@ def main(page: ft.Page):
                         try:
                             path = await ft.FilePicker().save_file(
                                 dialog_title="保存电子订单",
-                                file_name=f"电子订单_{order_no}.pdf",
+                                file_name=f"电子订单_{order_no}-{cust_name}-{order_dt}.pdf",
                                 allowed_extensions=["pdf"],
                                 src_bytes=open(pdf_path, "rb").read()
                             )
@@ -2803,7 +2803,7 @@ def main(page: ft.Page):
                 title=ft.Text("电子订单已生成"),
                 content=ft.Column(
                     [
-                        ft.Text(f"订单文件：电子订单_{order_no}.pdf", size=14),
+                        ft.Text(f"订单文件：电子订单_{order_no}-{cust_name}-{order_dt}.pdf", size=14),
                         ft.Text("可分享到微信、钉钉，或保存到本地", size=12, color=ft.Colors.GREY),
                     ],
                     tight=True,
@@ -2944,8 +2944,8 @@ def main(page: ft.Page):
                                             (it["qty"], it["qty"], it["model"]))
                             else:
                                 cur.execute(
-                                    "INSERT INTO stock_now (factory,model,spec,qty,s_qty) VALUES (%s,%s,%s,%s,%s)",
-                                    (it["factory"], it["model"], it["spec"], -it["qty"], -it["qty"]))
+                                    "INSERT INTO stock_now (factory,category,model,spec,qty,s_qty) VALUES (%s,%s,%s,%s,%s,%s)",
+                                    (it["factory"], it["category"], it["model"], it["spec"], -it["qty"], -it["qty"]))
 
                             cur.execute(
                                 """INSERT INTO transport (order_date,order_no,out_order_no,cust_name,phone,full_addr,
@@ -3337,7 +3337,7 @@ def main(page: ft.Page):
             today_str = date.today().isoformat()
 
             pdf_dir = tempfile.gettempdir()
-            pdf_path = os.path.join(pdf_dir, f"电子订单_{order_no}.pdf")
+            pdf_path = os.path.join(pdf_dir, f"电子订单_{order_no}-{cust_name}-{order_date}.pdf")
             doc = SimpleDocTemplate(pdf_path, pagesize=landscape(A4),
                                     topMargin=15, bottomMargin=12, leftMargin=12, rightMargin=12)
             story = []
@@ -3735,7 +3735,7 @@ def main(page: ft.Page):
                             order_no, items, full_addr, cust_name, phone, send_dt, order_dt, payment_dict,
                             card_holder or "", card_no or "", remark or "", photo_files
                         )
-                        show_pdf_preview(pdf_path, order_no)
+                        show_pdf_preview(pdf_path, order_no, cust_name, order_dt)
                     except Exception as ex:
                         traceback.print_exc()
                         show_alert(page, "错误", f"生成电子订单失败：{str(ex)}")
@@ -3755,7 +3755,7 @@ def main(page: ft.Page):
                             order_no, items, full_addr, cust_name, phone, send_dt, order_dt, payment_dict,
                             card_holder or "", card_no or "", remark or "", []
                         )
-                        show_pdf_preview(pdf_path, order_no)
+                        show_pdf_preview(pdf_path, order_no, cust_name, order_dt)
                     except Exception as ex:
                         traceback.print_exc()
                         show_alert(page, "错误", f"生成电子订单失败：{str(ex)}")
@@ -3774,7 +3774,7 @@ def main(page: ft.Page):
             page.show_dialog(ask_dialog)
 
         # ========== PDF预览与分享 ==========
-        def show_pdf_preview(pdf_path, order_no):
+        def show_pdf_preview(pdf_path, order_no, cust_name, order_dt):
             share = ft.Share()
 
             async def share_pdf(e):
@@ -3787,7 +3787,7 @@ def main(page: ft.Page):
                         share_file = ft.ShareFile.from_bytes(
                             file_bytes,
                             mime_type="application/pdf",
-                            name=f"电子订单_{order_no}.pdf",
+                            name=f"电子订单_{order_no}-{cust_name}-{order_dt}.pdf",
                         )
                     else:
                         share_file = ft.ShareFile.from_path(pdf_path)
@@ -3826,7 +3826,7 @@ def main(page: ft.Page):
             dlg = ft.AlertDialog(
                 title=ft.Text("电子订单已生成"),
                 content=ft.Column([
-                    ft.Text(f"订单文件：电子订单_{order_no}.pdf", size=14),
+                    ft.Text(f"订单文件：电子订单_{order_no}-{cust_name}-{order_dt}.pdf", size=14),
                     ft.Text("可分享到微信、钉钉，或保存到本地", size=12, color=ft.Colors.GREY),
                 ], tight=True),
                 actions=[
@@ -4577,10 +4577,10 @@ def main(page: ft.Page):
                             (inbound_type.content.value, prod["factory"], prod["category"], m, prod["code"],
                              prod["spec"], qt, price, prod["union_subsidy"], prod["gov_subsidy"], prod["old_discount"],
                              location.value, in_date.value, operator))
-                cur.execute("""INSERT INTO stock_now (factory, model, spec, qty, s_qty)
-                            VALUES (%s, %s, %s, %s, %s)
+                cur.execute("""INSERT INTO stock_now (factory, category, model, spec, qty, s_qty)
+                            VALUES (%s, %s, %s, %s, %s, %s)
                             ON DUPLICATE KEY UPDATE qty = qty + %s, s_qty = s_qty + %s""",
-                            (prod["factory"], m, prod["spec"], qt, qt, qt, qt))
+                            (prod["factory"],prod["category"], m, prod["spec"], qt, qt, qt, qt))
                 conn.commit()
                 print(f"入库成功：{m} × {qt}，单价：{price}")
 
@@ -4656,6 +4656,7 @@ def main(page: ft.Page):
         end_date = ft.TextField(label="结束日期", hint_text="YYYY-MM-DD", width=w2)
         order_no_input = ft.TextField(label="订单号", width=w2)
         cust_name_input = ft.TextField(label="客户名称", width=w2)
+        model_input = ft.TextField(label="型号", width=w2)  # 新增型号输入框
         query_btn = ft.Button("查询", icon=ft.Icons.SEARCH)
         reset_btn = ft.Button("重置", icon=ft.Icons.REFRESH)
         trans_list = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO)
@@ -4711,6 +4712,7 @@ def main(page: ft.Page):
                 actions_alignment=ft.MainAxisAlignment.END,
             )
             page.show_dialog(dialog)
+
         # ====================== 优化 show_snack 线程安全 ======================
         def show_snack(page: ft.Page, msg, bgcolor=ft.Colors.GREY_800):
             """线程安全的 SnackBar 显示，统一调度到主线程"""
@@ -4860,39 +4862,41 @@ def main(page: ft.Page):
                 modal=True,
             )
             page.show_dialog(dlg)
+
         def load_chinese_font(size: int = 28):
-                """多端兼容加载中文字体，解决PIL水印中文乱码"""
+            """多端兼容加载中文字体，解决PIL水印中文乱码"""
+            try:
+                font_path = get_asset_path("SIMLI.TTF")
+                if os.path.exists(font_path):
+                    return ImageFont.truetype(font_path, size)
+            except Exception:
+                pass
+
+            android_font_paths = [
+                "/system/fonts/NotoSansCJK-Regular.ttc",
+                "/system/fonts/DroidSansFallback.ttf",
+                "/system/fonts/HarmonyOS_Sans_SC_Regular.ttf",
+                "/system/fonts/Miui-Regular.ttf",
+                "/system/fonts/SourceHanSansCN-Regular.otf",
+            ]
+            for path in android_font_paths:
                 try:
-                    font_path = get_asset_path("SIMLI.TTF")
-                    if os.path.exists(font_path):
-                        return ImageFont.truetype(font_path, size)
+                    if os.path.exists(path):
+                        return ImageFont.truetype(path, size)
                 except Exception:
-                    pass
+                    continue
 
-                android_font_paths = [
-                    "/system/fonts/NotoSansCJK-Regular.ttc",
-                    "/system/fonts/DroidSansFallback.ttf",
-                    "/system/fonts/HarmonyOS_Sans_SC_Regular.ttf",
-                    "/system/fonts/Miui-Regular.ttf",
-                    "/system/fonts/SourceHanSansCN-Regular.otf",
-                ]
-                for path in android_font_paths:
-                    try:
-                        if os.path.exists(path):
-                            return ImageFont.truetype(path, size)
-                    except Exception:
-                        continue
+            try:
+                if os.name == "nt":
+                    return ImageFont.truetype("C:/Windows/Fonts/simhei.ttf", size)
+                elif sys.platform == "darwin":
+                    return ImageFont.truetype("/System/Library/Fonts/PingFang.ttc", size)
+            except Exception:
+                pass
 
-                try:
-                    if os.name == "nt":
-                        return ImageFont.truetype("C:/Windows/Fonts/simhei.ttf", size)
-                    elif sys.platform == "darwin":
-                        return ImageFont.truetype("/System/Library/Fonts/PingFang.ttc", size)
-                except Exception:
-                    pass
+            print("[Font] 所有中文字体均加载失败，水印可能显示乱码")
+            return ImageFont.load_default(size)
 
-                print("[Font] 所有中文字体均加载失败，水印可能显示乱码")
-                return ImageFont.load_default(size)
         def open_operation_dialog(row):
             # ========== 优化：重新查询最新数据，确保弹窗显示实时信息 ==========
             try:
@@ -5190,9 +5194,10 @@ def main(page: ft.Page):
                     actions=[
                         ft.Row(
                             [
-                                ft.IconButton(icon=ft.Icons.EDIT, tooltip="修改",on_click=do_edit_home_photo),
-                                ft.IconButton(icon=ft.Icons.DOWNLOAD, tooltip="下载",on_click=do_download_home_photo),
-                                ft.IconButton(icon=ft.Icons.CLOSE,tooltip="关闭",on_click=lambda _: page.pop_dialog()),
+                                ft.IconButton(icon=ft.Icons.EDIT, tooltip="修改", on_click=do_edit_home_photo),
+                                ft.IconButton(icon=ft.Icons.DOWNLOAD, tooltip="下载", on_click=do_download_home_photo),
+                                ft.IconButton(icon=ft.Icons.CLOSE, tooltip="关闭",
+                                              on_click=lambda _: page.pop_dialog()),
                             ],
                             spacing=20,
                             wrap=False,
@@ -5743,10 +5748,16 @@ def main(page: ft.Page):
             conn = get_db_conn()
             if conn:
                 cur = conn.cursor()
-                cur.execute("SELECT receiver_phone FROM sale_main WHERE order_no=%s", (order_no,))
+                cur.execute("SELECT order_date,receiver_phone FROM sale_main WHERE order_no=%s", (order_no,))
                 res = cur.fetchone()
                 if res:
-                    receiver_phone = res[0]
+                    order_date = res[0]
+                    receiver_phone = res[1]
+                cur = conn.cursor()
+                cur.execute("SELECT s_qty FROM stock_now WHERE model=%s", (model,))
+                ress = cur.fetchone()
+                if ress:
+                    s_qty = ress[0]
                 conn.close()
 
             # 获取所有用户 real_name 列表（用于下拉选项）
@@ -5811,7 +5822,7 @@ def main(page: ft.Page):
             for order in all_orders:
                 # 只显示订单号、型号、数量、备注（sale_remark）
                 cb = ft.Checkbox(value=True, label="")
-                order_text = f"订单号: {order[1]} | 型号: {order[8]} | 数量: {order[9]} | 备注: {order[12]}"
+                order_text = f"订单号: {order[1]} | 型号: {order[8]} | 数量: {order[9]} | 备注: {order[12]} | 当前实际库存：{s_qty}台"
                 item_row = ft.Row([cb, ft.Text(order_text, size=12, expand=True)], spacing=5)
                 orders_column.controls.append(item_row)
                 check_items.append((cb, order))
@@ -5879,6 +5890,7 @@ def main(page: ft.Page):
                 rem = first_order[10]  # trans_remark，保持不变
                 pic_text = f"======= ★★★ 配送派单明细 ★★★ =======\n"
                 pic_text += f"收货人：{receiver_phone}\n"
+                pic_text += f"下单日期：{order_date}\n"
                 pic_text += f"客户：{cust_name}    电话：{phone}\n"
                 pic_text += f"地址：{address}\n"
                 pic_text += f"备注：{rem}\n"
@@ -6107,6 +6119,7 @@ def main(page: ft.Page):
                 e_date = end_date.value.strip()
                 order_no = order_no_input.value.strip()
                 cust_name = cust_name_input.value.strip()
+                model_val = model_input.value.strip()  # 获取型号筛选值
 
                 if status in ["已送货入户", "已自提"]:
                     date_field = "trans_date"
@@ -6135,6 +6148,9 @@ def main(page: ft.Page):
                 if cust_name:
                     sql += " AND cust_name LIKE %s"
                     params.append(f"%{cust_name}%")
+                if model_val:
+                    sql += " AND model LIKE %s"
+                    params.append(f"%{model_val}%")
                 sql += f" ORDER BY {date_field} DESC"
 
                 cur = conn.cursor()
@@ -6230,6 +6246,7 @@ def main(page: ft.Page):
             end_date.value = ""
             order_no_input.value = ""
             cust_name_input.value = ""
+            model_input.value = ""  # 清空型号输入
             load_trans()
 
         query_btn.on_click = do_query
@@ -6246,6 +6263,7 @@ def main(page: ft.Page):
                             end_date,
                             order_no_input,
                             cust_name_input,
+                            model_input,  # 新增型号输入框
                             query_btn,
                             reset_btn,
                         ],
@@ -6394,6 +6412,8 @@ def main(page: ft.Page):
                 r13 = str(row[13]).strip() if row[13] else ""
                 team = row[10] if (not r12 and not r13) else (f"{r12}、{r13}" if (r12 and r13) else r12 or r13)
                 install_time = str(row[17])[:5] if row[17] else "--:--"
+                install_fee = row[14] or 0
+                fee_remark = row[15] or ""
 
                 if status == "待安装":
                     color = "#f59e0b"
@@ -6416,23 +6436,37 @@ def main(page: ft.Page):
                                 ),
                                 ft.Text(f"客户: {cust_name}  |  型号: {model}  |  数量: {qty}", size=12),
                                 ft.Text(f"安装&报装日期: {row[16] or '--'}  {install_time}", size=12),
+                                # 修改后的按钮行：左侧修改按钮，右侧报装和安装按钮
                                 ft.Row(
                                     [
-                                        ft.Button(
-                                            "📞 报装",
+                                        # 左侧：修改按钮
+                                        ft.IconButton(
+                                            icon=ft.Icons.EDIT,
+                                            tooltip="修改",
                                             on_click=lambda e, st=status, order=order_no, mdl=model,
-                                                            cust=cust_name, q=qty:
-                                            report_install(st, order, mdl, cust, q),
+                                                            fee=install_fee, remark=fee_remark:
+                                            edit_install(st, order, mdl, fee, remark),
                                         ),
-                                        ft.Button(
-                                            "✅ 安装",
-                                            on_click=lambda e, st=status, order=order_no, mdl=model,
-                                                            cust=cust_name, q=qty:
-                                            confirm_install(st, order, mdl, cust, q),
+                                        # 右侧：报装和安装按钮
+                                        ft.Row(
+                                            [
+                                                ft.Button(
+                                                    "📞 报装",
+                                                    on_click=lambda e, st=status, order=order_no, mdl=model,
+                                                                    cust=cust_name, q=qty:
+                                                    report_install(st, order, mdl, cust, q),
+                                                ),
+                                                ft.Button(
+                                                    "✅ 安装",
+                                                    on_click=lambda e, st=status, order=order_no, mdl=model,
+                                                                    cust=cust_name, q=qty:
+                                                    confirm_install(st, order, mdl, cust, q),
+                                                ),
+                                            ],
+                                            spacing=10,
                                         ),
                                     ],
-                                    alignment=ft.MainAxisAlignment.END,
-                                    spacing=10,
+                                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                 ),
                             ],
                             spacing=5,
@@ -6454,7 +6488,7 @@ def main(page: ft.Page):
                 "海尔售后": "4006-999-999",
                 "美的售后": "400-889-9315",
                 "小天鹅售后": "400-822-8228",
-                "老板":"95105855"
+                "老板": "95105855"
             }
 
             tel_field = ft.TextField(
@@ -6465,7 +6499,6 @@ def main(page: ft.Page):
             fee_field = ft.TextField(label="安装费用", width=200, value="0")
             remark_field = ft.TextField(label="费用备注", width=200)
 
-            # 下拉框选中回调，对标你示例的 dropdown_changed
             def dropdown_selected(e):
                 selected_team = e.control.value
                 print("当前选中安装单位：", selected_team)
@@ -6477,14 +6510,13 @@ def main(page: ft.Page):
                 width=200,
                 hint_text="请选择安装售后",
                 options=[ft.DropdownOption(key=name, text=name) for name in team_tel_dict.keys()],
-                on_select=dropdown_selected  # 和你的示例保持一致，用 on_select
+                on_select=dropdown_selected
             )
 
             def do_report(e):
                 team = team_dropdown.value.strip() if team_dropdown.value else ""
                 tel = tel_field.value.strip()
 
-                # 兜底防护，防止极端情况界面没赋值成功
                 if team in team_tel_dict and not tel:
                     tel = team_tel_dict[team]
                     tel_field.value = tel
@@ -6500,7 +6532,6 @@ def main(page: ft.Page):
                 t = datetime.now()
                 date_str = d.strftime("%Y-%m-%d")
                 time_str = t.strftime("%H:%M:%S").lstrip("0").replace("0:", ":")
-                # 下面原有数据库提交逻辑完全不动
                 conn = get_db_conn()
                 if not conn:
                     show_alert(page, "提示", "数据库连接失败")
@@ -6508,7 +6539,7 @@ def main(page: ft.Page):
                 cur = conn.cursor()
                 try:
                     sql = "UPDATE install SET status='已报装',is_report='1', install_team=%s, install_tel=%s, install_fee=%s, fee_remark=%s, install_date=%s,install_time=%s WHERE order_no = %s AND model = %s"
-                    params = (team, tel, fee, remark, date_str,time_str,order_no,model)
+                    params = (team, tel, fee, remark, date_str, time_str, order_no, model)
                     cur.execute(sql, params)
                     rows_affected = cur.rowcount
                     conn.commit()
@@ -6648,6 +6679,75 @@ def main(page: ft.Page):
             )
             page.show_dialog(dialog)
 
+        def edit_install(status, order_no, model, fee, remark):
+            """修改安装状态和费用"""
+            status_options = ["待安装", "已报装", "已安装"]
+            status_dropdown_edit = ft.Dropdown(
+                label="安装状态",
+                width=200,
+                options=[ft.dropdown.Option(s) for s in status_options],
+                value=status,
+            )
+            fee_field_edit = ft.TextField(label="安装费用", width=200, value=str(fee) if fee else "0")
+            remark_field_edit = ft.TextField(label="费用备注", width=200, value=remark or "")
+
+            def do_edit(e):
+                new_status = status_dropdown_edit.value
+                new_fee = float(fee_field_edit.value or 0) if fee_field_edit.value else 0
+                new_remark = remark_field_edit.value.strip()
+
+                conn = get_db_conn()
+                if not conn:
+                    show_alert(page, "提示", "数据库连接失败")
+                    return
+
+                cur = conn.cursor()
+                try:
+                    if new_status != status:
+                        d = date.today()
+                        t = datetime.now()
+                        date_str = d.strftime("%Y-%m-%d")
+                        time_str = t.strftime("%H:%M:%S").lstrip("0").replace("0:", ":")
+                        sql = """UPDATE install 
+                                 SET status=%s, install_fee=%s, fee_remark=%s,
+                                     install_date=%s, install_time=%s
+                                 WHERE order_no=%s AND model=%s"""
+                        params = (new_status, new_fee, new_remark, date_str, time_str, order_no, model)
+                    else:
+                        sql = """UPDATE install 
+                                 SET status=%s, install_fee=%s, fee_remark=%s
+                                 WHERE order_no=%s AND model=%s"""
+                        params = (new_status, new_fee, new_remark, order_no, model)
+
+                    cur.execute(sql, params)
+                    conn.commit()
+                    if cur.rowcount == 0:
+                        show_alert(page, "提示", "未找到对应记录，更新失败")
+                    else:
+                        show_alert(page, "提示", "修改成功")
+                    conn.close()
+                    page.pop_dialog()
+                    load_install()
+                except Exception as ex:
+                    conn.rollback()
+                    show_alert(page, "提示", f"数据库错误：{ex}")
+                    conn.close()
+
+            dialog = ft.AlertDialog(
+                title=ft.Text("修改安装信息"),
+                modal=True,
+                content=ft.Column(
+                    [status_dropdown_edit, fee_field_edit, remark_field_edit],
+                    tight=True,
+                    spacing=10,
+                ),
+                actions=[
+                    ft.TextButton("确认", on_click=do_edit),
+                    ft.TextButton("取消", on_click=lambda e: page.pop_dialog()),
+                ],
+            )
+            page.show_dialog(dialog)
+
         def on_search(e):
             load_install()
 
@@ -6744,7 +6844,7 @@ def main(page: ft.Page):
         end_icon = ft.TextButton("📅", on_click=lambda e: pick_date(end_date_field),
                                  style=ft.ButtonStyle(padding=ft.Padding(2, 2, 2, 2)))
 
-        # 入库表格：入库日期、数量、库位
+        # 入库表格
         in_table = ft.DataTable(
             columns=[
                 ft.DataColumn(ft.Text("入库日期", size=13)),
@@ -6758,7 +6858,7 @@ def main(page: ft.Page):
             column_spacing=8
         )
 
-        # 销售表格极致紧凑优化
+        # 销售表格
         sale_table = ft.DataTable(
             columns=[
                 ft.DataColumn(ft.Text("状态", size=12)),
@@ -6816,18 +6916,23 @@ def main(page: ft.Page):
                     ])
                 )
 
-            # 销售数据读取
+            # 销售数据读取（修正汇总异常）
             cur.execute("""
-                SELECT DISTINCT
-                    IFNULL(t.status, '未配送'),
+                SELECT 
+                    IFNULL(t.status, '未配送') AS status,
                     si.order_no,
                     m.order_date,
                     m.cust_name,
-                    si.qty
+                    SUM(si.qty) AS total_qty
                 FROM sale_items si
                 LEFT JOIN sale_main m ON si.order_no = m.order_no
-                LEFT JOIN transport t ON si.order_no = t.order_no AND si.model = t.model
+                LEFT JOIN (
+                    SELECT order_no, model, GROUP_CONCAT(DISTINCT status ORDER BY status SEPARATOR '/') AS status
+                    FROM transport
+                    GROUP BY order_no, model
+                ) t ON si.order_no = t.order_no AND si.model = t.model
                 WHERE si.model=%s AND m.order_date BETWEEN %s AND %s
+                GROUP BY si.order_no, m.order_date, m.cust_name, t.status
                 ORDER BY m.order_date DESC
             """, (model, start, end))
             sale_total_qty = 0
@@ -6855,22 +6960,24 @@ def main(page: ft.Page):
             stat_label.value = f"入库合计：{in_total_qty} 件 | 销售合计：{sale_total_qty} 件"
             page.update()
 
+        # 初始加载数据
         load_detail_data(model, start_date_field.value, end_date_field.value)
 
-        # 查询条件竖向排布
+        def on_query_click(e):
+            load_detail_data(model, start_date_field.value, end_date_field.value)
+
         filter_area = ft.Column(
             [
                 ft.Row([start_date_field, start_icon], spacing=3),
                 ft.Row([end_date_field, end_icon], spacing=3),
                 ft.Row(
-                    [ft.Button("查询", expand=True)],
+                    [ft.Button("查询", expand=True, on_click=on_query_click)],
                     alignment=ft.MainAxisAlignment.CENTER
                 )
             ],
             spacing=6
         )
 
-        # 入库区域
         in_block = ft.Column(
             [
                 ft.Text("入库记录", weight=ft.FontWeight.BOLD, size=14),
@@ -6885,7 +6992,6 @@ def main(page: ft.Page):
             spacing=4
         )
 
-        # 销售记录整体极致紧凑
         sale_block = ft.Column(
             [
                 ft.Text("销售记录", weight=ft.FontWeight.BOLD, size=14),
@@ -6900,7 +7006,6 @@ def main(page: ft.Page):
             spacing=3
         )
 
-        # 整体竖向布局
         main_content = ft.Column(
             [
                 ft.Text(f"型号：{model}  理论库存：{qty}", size=15, weight=ft.FontWeight.BOLD, color="red"),
@@ -6936,12 +7041,38 @@ def main(page: ft.Page):
     def show_stock():
         main_content.controls.clear()
         w1 = get_field_width(page, ratio=2, subtract=60)
-        brand_dropdown = ft.Dropdown(
-            label="品牌",
-            width=w1,
-            options=[ft.dropdown.Option("")],
+
+        # 品牌自动补全输入框
+        brand_autocomplete = ft.AutoComplete(
             value="",
+            width=w1,
+            suggestions=[],
+            on_change=lambda e: None,
+            on_select=lambda e: None,
         )
+        # 外观包装：添加下划线边框模拟 TextField
+        brand_container = ft.Container(
+            content=brand_autocomplete,
+            border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.GREY)),  # 修正处
+            padding=ft.Padding(0, 4, 0, 4),
+        )
+        brand_label = ft.Text("品牌", size=12, color="#757575")
+
+        # 品类自动补全输入框
+        category_autocomplete = ft.AutoComplete(
+            value="",
+            width=w1,
+            suggestions=[],
+            on_change=lambda e: None,
+            on_select=lambda e: None,
+        )
+        category_container = ft.Container(
+            content=category_autocomplete,
+            border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.GREY)),  # 修正处
+            padding=ft.Padding(0, 4, 0, 4),
+        )
+        category_label = ft.Text("品类", size=12, color="#757575")
+
         model_textfield = ft.TextField(
             label="型号",
             width=w1,
@@ -6949,28 +7080,40 @@ def main(page: ft.Page):
         )
         gap_checkbox = ft.Checkbox(label="仅显示缺口", value=False)
 
-        def load_brands():
+        def load_brands_and_categories():
             conn = get_db_conn()
             if not conn:
                 return
             cur = conn.cursor()
             cur.execute("SELECT DISTINCT factory FROM base_product ORDER BY factory")
-            brands = [row[0] for row in cur.fetchall()]
+            brands = [row[0] for row in cur.fetchall() if row[0] and str(row[0]).strip()]
+            cur.execute("SELECT DISTINCT category FROM stock_now ORDER BY category")
+            categories = [row[0] for row in cur.fetchall() if row[0] and str(row[0]).strip()]
             conn.close()
-            brand_dropdown.options = [ft.dropdown.Option("")] + [ft.dropdown.Option(b) for b in brands]
+
+            brand_autocomplete.suggestions = [
+                ft.AutoCompleteSuggestion(key=b, value=b) for b in brands
+            ]
+            category_autocomplete.suggestions = [
+                ft.AutoCompleteSuggestion(key=c, value=c) for c in categories
+            ]
             page.update()
-        load_brands()
+
+        load_brands_and_categories()
 
         stock_list = ft.Column(spacing=5)
 
-        def load_stock():
+        def load_stock(skip_zero_zero=True):
             stock_list.controls.clear()
             conn = get_db_conn()
             if not conn:
                 return
-            brand = brand_dropdown.value.strip() if brand_dropdown.value else ""
+
+            brand = brand_autocomplete.value.strip() if brand_autocomplete.value else ""
+            category = category_autocomplete.value.strip() if category_autocomplete.value else ""
             model = model_textfield.value.strip()
             only_gap = gap_checkbox.value
+
             cur = conn.cursor()
             cur.execute("""
                 SELECT model, IFNULL(SUM(t_qty), 0)
@@ -6986,11 +7129,15 @@ def main(page: ft.Page):
                 GROUP BY model
             """)
             booth_dict = {row[0]: row[1] for row in cur.fetchall()}
-            sql = "SELECT IFNULL(factory, ''), IFNULL(model, ''), IFNULL(spec, ''), IFNULL(qty, 0) FROM stock_now WHERE 1=1"
+
+            sql = "SELECT IFNULL(factory, ''), IFNULL(model, ''), IFNULL(spec, ''), IFNULL(qty, 0), IFNULL(category, '') FROM stock_now WHERE 1=1"
             params = []
             if brand:
-                sql += " AND factory = %s"
-                params.append(brand)
+                sql += " AND factory LIKE %s"
+                params.append(f"%{brand}%")
+            if category:
+                sql += " AND category LIKE %s"
+                params.append(f"%{category}%")
             if model:
                 sql += " AND model LIKE %s"
                 params.append(f"%{model}%")
@@ -6998,17 +7145,23 @@ def main(page: ft.Page):
             cur.execute(sql, params)
             rows = cur.fetchall()
             conn.close()
+
             has_data = False
             for row in rows:
-                factory, model_name, spec, qty = row
+                factory, model_name, spec, qty, category = row
                 if not model_name:
                     model_name = "未知型号"
                 qty = qty if qty is not None else 0
                 wait_out = wait_out_dict.get(model_name, 0)
                 booth_use = booth_dict.get(model_name, 0)
                 s_qty = qty + wait_out - booth_use
+
                 if only_gap and qty >= 0:
                     continue
+
+                if skip_zero_zero and not only_gap and qty == 0 and s_qty == 0:
+                    continue
+
                 has_data = True
                 q_qty_display = abs(int(qty)) if qty < 0 else ""
                 if qty < 0:
@@ -7028,6 +7181,7 @@ def main(page: ft.Page):
                     color = "#22c55e"
                 if model_name in booth_dict:
                     status += " 有样机"
+
                 card = ft.Card(
                     content=ft.Container(
                         content=ft.Row(
@@ -7035,7 +7189,8 @@ def main(page: ft.Page):
                                 ft.Column(
                                     [
                                         ft.Text(model_name, weight=ft.FontWeight.BOLD, size=16),
-                                        ft.Text(f"品牌: {factory} | 规格: {spec}", size=12, color="#64748b"),
+                                        ft.Text(f"品牌: {factory} | 品类: {category} | 规格: {spec}", size=12,
+                                                color="#64748b"),
                                         ft.Text(f"理论: {qty} | 实际: {s_qty} | 缺口: {q_qty_display}", size=12),
                                         ft.Text(status, size=12, color=color),
                                     ],
@@ -7049,19 +7204,25 @@ def main(page: ft.Page):
                     )
                 )
                 stock_list.controls.append(card)
+
             if not has_data:
                 stock_list.controls.append(ft.Text("没有符合条件的库存", size=14, color="#94a3b8"))
             page.update()
 
         def on_search(e):
-            load_stock()
+            load_stock(skip_zero_zero=False)
+
         def on_refresh(e):
-            load_brands()
+            load_brands_and_categories()
+            brand_autocomplete.value = ""
+            category_autocomplete.value = ""
             load_stock()
 
+        # 查询条件行
         query_row = ft.Row(
             [
-                brand_dropdown,
+                ft.Column([brand_label, brand_container], spacing=0),
+                ft.Column([category_label, category_container], spacing=0),
                 model_textfield,
                 gap_checkbox,
                 ft.Button("查询", on_click=on_search),
@@ -7071,6 +7232,7 @@ def main(page: ft.Page):
             spacing=10,
             wrap=True,
         )
+
         main_content.controls.append(
             ft.Column(
                 [
@@ -7158,27 +7320,170 @@ def main(page: ft.Page):
     def show_invoice():
         main_content.controls.clear()
         invoice_list = ft.Column(spacing=5)
+
         def load_invoice():
             invoice_list.controls.clear()
             conn = get_db_conn()
             cur = conn.cursor()
-            cur.execute("SELECT invoice_no, order_no, cust_name, invoice_amount, invoice_date, status FROM invoice ORDER BY invoice_date DESC")
+            cur.execute(
+                "SELECT invoice_no, order_no, cust_name, invoice_amount, invoice_date, status, out_order_no FROM invoice ORDER BY invoice_date DESC")
             rows = cur.fetchall()
             conn.close()
             for row in rows:
-                invoice_list.controls.append(
-                    ft.Card(content=ft.Container(
+                # row: (invoice_no, order_no, cust_name, invoice_amount, invoice_date, status, out_order_no)
+                card = ft.Card(
+                    content=ft.Container(
                         content=ft.Column([
                             ft.Text(f"发票号: {row[0]}", weight=ft.FontWeight.BOLD),
                             ft.Text(f"订单: {row[1]}  客户: {row[2]}"),
                             ft.Text(f"金额: {row[3]}  日期: {row[4]}  状态: {row[5]}", size=12)
-                        ], spacing=2), padding=10)))
+                        ], spacing=2),
+                        padding=10,
+                        on_click=lambda e, r=row: open_invoice_detail(r)
+                    )
+                )
+                invoice_list.controls.append(card)
             page.update()
+
+        def open_invoice_detail(row):
+            invoice_no = row[0]
+            order_no = row[1]
+            cust_name = row[2]
+            amount = row[3]
+            invoice_date = row[4]
+            status = row[5]
+            out_order_no = row[6] if len(row) > 6 else None
+            biz_no = out_order_no if out_order_no else order_no  # 优先使用出库单号，否则回退订单号
+
+            # 基本信息展示
+            info_column = ft.Column(
+                [
+                    ft.Text(f"发票号: {invoice_no}", weight=ft.FontWeight.BOLD, size=16),
+                    ft.Text(f"订单号: {order_no}"),
+                    ft.Text(f"客户: {cust_name}"),
+                    ft.Text(f"金额: {amount}"),
+                    ft.Text(f"开票日期: {invoice_date}"),
+                    ft.Text(f"状态: {status}"),
+                ],
+                spacing=5,
+                tight=True,
+            )
+
+            # 查看发票照片按钮
+            def view_photo(e):
+                file_data = get_file_from_db("invoice_photo", biz_no)
+                if not file_data:
+                    show_alert(page, "提示", "该发票暂无照片")
+                    return
+
+                # 写入临时文件
+                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                    tmp.write(file_data)
+                    tmp_path = tmp.name
+
+                img_control = ft.Image(
+                    src=tmp_path,
+                    fit="contain",
+                    width=min(get_window_width(page) * 0.85, 600),
+                    height=min(get_window_width(page) * 0.85, 800),
+                )
+                preview_container = ft.Container(
+                    content=img_control,
+                    width=min(get_window_width(page) * 0.85, 600),
+                    height=min(get_window_width(page) * 0.85, 800),
+                )
+
+                # 下载照片
+                async def download_photo(e):
+                    try:
+                        page.pop_dialog()
+                    except Exception:
+                        pass
+                    page.update()
+                    await asyncio.sleep(0.1)
+                    try:
+                        path = await ft.FilePicker().save_file(
+                            dialog_title="保存发票照片",
+                            file_name=f"发票照片_{invoice_no}-{cust_name}.jpg",
+                            allowed_extensions=["jpg", "jpeg"],
+                            src_bytes=file_data
+                        )
+                        if path:
+                            show_alert(page, "成功", "照片已保存")
+                    except Exception as ex:
+                        show_alert(page, "错误", f"下载失败: {str(ex)}")
+
+                # 分享照片
+                async def share_photo(e):
+                    try:
+                        share = ft.Share()
+                        if page.web:
+                            share_file = ft.ShareFile.from_bytes(
+                                file_data,
+                                mime_type="image/jpeg",
+                                name=f"发票照片_{invoice_no}-{cust_name}.jpg",
+                            )
+                        else:
+                            # 移动端可以使用临时文件路径分享
+                            share_file = ft.ShareFile.from_path(tmp_path)
+                        result = await share.share_files(
+                            [share_file],
+                            text="发票照片",
+                            title="分享发票照片",
+                        )
+                        show_alert(page, "提示", f"分享状态：{result.status}")
+                    except Exception as ex:
+                        show_alert(page, "错误", f"分享失败: {str(ex)[:50]}")
+
+                preview_dlg = ft.AlertDialog(
+                    title=ft.Text("发票照片预览"),
+                    content=preview_container,
+                    actions=[
+                        ft.Row(
+                            [
+                                ft.IconButton(icon=ft.Icons.DOWNLOAD, tooltip="下载", on_click=download_photo),
+                                ft.IconButton(icon=ft.Icons.SHARE, tooltip="分享", on_click=share_photo),
+                                ft.IconButton(icon=ft.Icons.CLOSE, tooltip="关闭",
+                                              on_click=lambda _: page.pop_dialog()),
+                            ],
+                            spacing=20,
+                            alignment=ft.MainAxisAlignment.CENTER,
+                        )
+                    ],
+                    modal=True,
+                )
+                page.show_dialog(preview_dlg)
+
+            detail_dlg = ft.AlertDialog(
+                title=ft.Text("发票详情"),
+                content=ft.Column(
+                    [
+                        info_column,
+                        ft.Divider(height=10),
+                        ft.Row(
+                            [
+                                ft.Button("查看发票照片", icon=ft.Icons.PHOTO, on_click=view_photo),
+                            ],
+                            alignment=ft.MainAxisAlignment.CENTER,
+                        ),
+                    ],
+                    spacing=10,
+                    tight=True,
+                    scroll=ft.ScrollMode.AUTO,
+                    width=min(get_window_width(page) - 40, 400),
+                ),
+                actions=[
+                    ft.TextButton("关闭", on_click=lambda e: page.pop_dialog()),
+                ],
+                modal=True,
+            )
+            page.show_dialog(detail_dlg)
 
         def new_invoice():
             def select_order(e):
                 order_no = order_dropdown.value
-                if not order_no: return
+                if not order_no:
+                    return
                 conn = get_db_conn()
                 cur = conn.cursor()
                 cur.execute("SELECT SUM(total) FROM sale_items WHERE order_no=%s", (order_no,))
@@ -7207,7 +7512,8 @@ def main(page: ft.Page):
             dialog = ft.AlertDialog(
                 title=ft.Text("开具新发票"),
                 content=order_dropdown,
-                actions=[ft.TextButton("确认", on_click=select_order), ft.TextButton("取消", on_click=lambda e: (setattr(dialog, 'open', False), safe_remove_dialog(page, dialog)))]
+                actions=[ft.TextButton("确认", on_click=select_order), ft.TextButton("取消", on_click=lambda e: (
+                setattr(dialog, 'open', False), safe_remove_dialog(page, dialog)))]
             )
             page.overlay.append(dialog)
             dialog.open = True
@@ -7215,7 +7521,9 @@ def main(page: ft.Page):
 
         main_content.controls.append(
             ft.Column([
-                ft.Row([ft.Text("发票管理", size=20, weight=ft.FontWeight.BOLD), ft.IconButton(ft.Icons.ADD, on_click=lambda e: new_invoice()), ft.IconButton(ft.Icons.REFRESH, on_click=lambda e: load_invoice())]),
+                ft.Row([ft.Text("发票管理", size=20, weight=ft.FontWeight.BOLD),
+                        ft.IconButton(ft.Icons.ADD, on_click=lambda e: new_invoice()),
+                        ft.IconButton(ft.Icons.REFRESH, on_click=lambda e: load_invoice())]),
                 invoice_list], scroll=ft.ScrollMode.AUTO))
         load_invoice()
 
@@ -7287,41 +7595,829 @@ def main(page: ft.Page):
     # ---------------------------- 财务管理 ----------------------------
     def show_finance():
         main_content.controls.clear()
-        year_dd = ft.Dropdown(label="年份", options=[ft.dropdown.Option(str(y)) for y in range(2023, 2035)], value=str(date.today().year))
-        month_dd = ft.Dropdown(label="月份", options=[ft.dropdown.Option(f"{m:02d}") for m in range(1,13)], value=f"{date.today().month:02d}")
-        result_text = ft.Text("", selectable=True)
+        year_dd = ft.Dropdown(
+            label="年份",
+            options=[ft.dropdown.Option(str(y)) for y in range(2023, 2035)],
+            value=str(date.today().year),
+            width=120,
+        )
+        # 月份下拉框：增加空白选项代表全年
+        month_options = [ft.dropdown.Option("", "全年")]
+        month_options += [ft.dropdown.Option(f"{m:02d}") for m in range(1, 13)]
+        month_dd = ft.Dropdown(
+            label="月份",
+            options=month_options,
+            value=f"{date.today().month:02d}",
+            width=100,
+        )
+        finance_text = ft.Text("", selectable=True, expand=True)
+        salary_text = ft.Text("", selectable=True, expand=True)
 
+        calc_btn = ft.Button("📊 财务统计", icon=ft.Icons.CALCULATE, on_click=lambda e: calc_finance(e))
+        add_cost_btn = ft.Button("📝 运营成本", icon=ft.Icons.ADD, on_click=lambda e: show_add_cost_dialog())
+        set_salary_btn = ft.Button("👤 设置基本工资", icon=ft.Icons.PERSON, on_click=lambda e: show_set_salary_dialog())
+        set_commission_btn = ft.Button("⚙️ 提成比例设置", icon=ft.Icons.PERCENT,
+                                       on_click=lambda e: show_set_commission_dialog())
+        gen_salary_btn = ft.Button("🧾 生成员工工资条", icon=ft.Icons.RECEIPT, on_click=lambda e: generate_salary_slip())
+        gen_images_btn = ft.Button("🖼️ 生成工资条图片", icon=ft.Icons.IMAGE,
+                                   on_click=lambda e: generate_salary_images())
+
+        # ================= 中文字体加载函数 =================
+        def load_chinese_font(size: int = 28):
+            try:
+                font_path = get_asset_path("SIMLI.TTF")
+                if os.path.exists(font_path):
+                    return ImageFont.truetype(font_path, size)
+            except Exception:
+                pass
+
+            android_font_paths = [
+                "/system/fonts/NotoSansCJK-Regular.ttc",
+                "/system/fonts/DroidSansFallback.ttf",
+                "/system/fonts/HarmonyOS_Sans_SC_Regular.ttf",
+                "/system/fonts/Miui-Regular.ttf",
+                "/system/fonts/SourceHanSansCN-Regular.otf",
+            ]
+            for path in android_font_paths:
+                try:
+                    if os.path.exists(path):
+                        return ImageFont.truetype(path, size)
+                except Exception:
+                    continue
+
+            try:
+                if os.name == "nt":
+                    return ImageFont.truetype("C:/Windows/Fonts/simhei.ttf", size)
+                elif sys.platform == "darwin":
+                    return ImageFont.truetype("/System/Library/Fonts/PingFang.ttc", size)
+            except Exception:
+                pass
+
+            print("[Font] 所有中文字体均加载失败，水印可能显示乱码")
+            return ImageFont.load_default(size)
+
+        # ================= 工资计算核心函数 =================
+        def calculate_salaries(cur, prefix, is_year=False):
+            # 读取提成配置
+            cur.execute("SELECT sale_rate, delivery_rate, deliver_per FROM salary_config LIMIT 1")
+            cfg = cur.fetchone()
+            if cfg:
+                sale_rate = float(cfg[0] or 0) / 100.0
+                delivery_rate = float(cfg[1] or 0) / 100.0
+                deliver_per = float(cfg[2] or 0)
+            else:
+                sale_rate = delivery_rate = 0.0
+                deliver_per = 0.0
+
+            # 销售日期条件（基于 transport.order_date）
+            if is_year:
+                sale_date_cond = "DATE_FORMAT(t.order_date, '%Y') = %s"
+                sale_date_param = prefix  # 年份
+            else:
+                sale_date_cond = "DATE_FORMAT(t.order_date, '%Y-%m') = %s"
+                sale_date_param = prefix  # 年-月
+
+            # 配送日期条件（基于 transport.send_date）
+            if is_year:
+                delivery_date_cond = "DATE_FORMAT(t.send_date, '%Y') = %s"
+                delivery_date_param = prefix
+            else:
+                delivery_date_cond = "DATE_FORMAT(t.send_date, '%Y-%m') = %s"
+                delivery_date_param = prefix
+
+            # 安装日期条件（基于 install.install_date）
+            if is_year:
+                install_date_cond = "DATE_FORMAT(i.install_date, '%Y') = %s"
+                install_date_param = prefix
+            else:
+                install_date_cond = "DATE_FORMAT(i.install_date, '%Y-%m') = %s"
+                install_date_param = prefix
+
+            # 月度销售额
+            cur.execute(
+                f"SELECT IFNULL(SUM(si.total), 0) "
+                f"FROM sale_items si "
+                f"JOIN transport t ON si.order_no = t.order_no AND si.out_order_no = t.out_order_no "
+                f"WHERE {sale_date_cond}",
+                (sale_date_param,)
+            )
+            month_sale_total = float(cur.fetchone()[0] or 0)
+
+            # 所有员工（排除任何管理员角色）
+            cur.execute(
+                "SELECT real_name, role, base_salary FROM users "
+                "WHERE real_name IS NOT NULL AND real_name != '' "
+                "AND role != '系统管理员' AND role != '超级管理员' AND role NOT LIKE '%管理员%'"
+            )
+            users = cur.fetchall()
+
+            salary_list = []
+            total_salary = 0.0
+            for name, role, base_salary in users:
+                base = float(base_salary or 0)
+                if "销售" in role:
+                    sale_com = month_sale_total * sale_rate
+                    deliver_fee = 0.0
+                    install_fee = 0.0
+                else:
+                    sale_com = month_sale_total * delivery_rate
+                    # 配送数量（基于 send_date）
+                    cur.execute(
+                        f"SELECT IFNULL(SUM(t.t_qty), 0) FROM transport t "
+                        f"WHERE (t.delivery01_name=%s OR t.delivery02_name=%s) "
+                        f"AND {delivery_date_cond} AND t.status='已送达'",
+                        (name, name, delivery_date_param)
+                    )
+                    deliver_cnt = int(cur.fetchone()[0] or 0)
+                    deliver_fee = deliver_cnt * deliver_per
+
+                    # 安装费用（基于 install_date，按姓名匹配 installer01/installer02，去重）
+                    cur.execute(
+                        f"SELECT i.id, i.install_fee, i.status FROM install i "
+                        f"WHERE (i.installer01 = %s OR i.installer02 = %s) "
+                        f"AND {install_date_cond}",
+                        (name, name, install_date_param)
+                    )
+                    install_records = cur.fetchall()
+                    seen_ids = set()
+                    install_fee = 0.0
+                    for rec_id, fee, status in install_records:
+                        if rec_id in seen_ids:
+                            continue
+                        seen_ids.add(rec_id)
+                        fee = float(fee or 0)
+                        if status == '已报装':
+                            install_fee += fee
+                        elif status == '已安装':
+                            install_fee += 2 * fee
+
+                total = base + sale_com + deliver_fee + install_fee
+                salary_list.append({
+                    "name": name,
+                    "role": role,
+                    "base": base,
+                    "sale_commission": sale_com,
+                    "deliver_fee": deliver_fee,
+                    "install_fee": install_fee,
+                    "total": total
+                })
+                total_salary += total
+
+            return salary_list, total_salary, month_sale_total
+
+        # ================= 财务统计主函数 =================
         def calc_finance(e):
             year = year_dd.value
             month = month_dd.value
-            prefix = f"{year}-{month}"
+            is_year = (month == "")
+            if is_year:
+                prefix = year
+                sale_date_cond = "DATE_FORMAT(t.order_date, '%Y') = %s"
+                sale_date_param = year
+                install_date_cond = "DATE_FORMAT(install_date, '%Y') = %s"
+                install_date_param = year
+                cost_date_cond = "DATE_FORMAT(cost_date, '%Y') = %s"
+                cost_date_param = year
+                title = f"📅 {year}年财务统计"
+            else:
+                prefix = f"{year}-{month}"
+                sale_date_cond = "DATE_FORMAT(t.order_date, '%Y-%m') = %s"
+                sale_date_param = prefix
+                install_date_cond = "DATE_FORMAT(install_date, '%Y-%m') = %s"
+                install_date_param = prefix
+                cost_date_cond = "DATE_FORMAT(cost_date, '%Y-%m') = %s"
+                cost_date_param = prefix
+                title = f"📅 {year}年{int(month)}月财务统计"
+
             conn = get_db_conn()
+            if not conn:
+                show_alert(page, "错误", "数据库连接失败")
+                return
             cur = conn.cursor()
-            cur.execute("SELECT IFNULL(SUM(total),0) FROM sale_items JOIN sale_main USING(order_no) WHERE DATE_FORMAT(order_date,'%Y-%m')=%s", (prefix,))
-            sale_total = cur.fetchone()[0] or 0
-            cur.execute("SELECT IFNULL(SUM(qty*in_price),0) FROM stock_in WHERE DATE_FORMAT(in_date,'%Y-%m')=%s", (prefix,))
-            in_cost = cur.fetchone()[0] or 0
-            cur.execute("SELECT IFNULL(SUM(amount),0) FROM operate_cost WHERE DATE_FORMAT(cost_date,'%Y-%m')=%s", (prefix,))
-            op_cost = cur.fetchone()[0] or 0
-            cur.execute("SELECT IFNULL(SUM(install_fee),0) FROM install WHERE DATE_FORMAT(install_date,'%Y-%m')=%s AND status='已安装'", (prefix,))
-            inst_fee = cur.fetchone()[0] or 0
-            profit = sale_total - in_cost - op_cost - inst_fee
-            result_text.value = f"""📅 {year}年{int(month)}月财务统计
-销售额: {sale_total:.2f}
-进货成本: {in_cost:.2f}
-运营成本: {op_cost:.2f}
-安装费用: {inst_fee:.2f}
-净利润: {profit:.2f}"""
-            page.update()
+            try:
+                # 1. 销售额
+                cur.execute(
+                    f"SELECT IFNULL(SUM(si.total), 0) FROM sale_items si "
+                    f"JOIN transport t ON si.order_no = t.order_no AND si.out_order_no = t.out_order_no "
+                    f"WHERE {sale_date_cond}",
+                    (sale_date_param,)
+                )
+                sale_total = float(cur.fetchone()[0] or 0)
+
+                # 2. 销售总数量
+                cur.execute(
+                    f"SELECT IFNULL(SUM(si.qty), 0) FROM sale_items si "
+                    f"JOIN transport t ON si.order_no = t.order_no AND si.out_order_no = t.out_order_no "
+                    f"WHERE {sale_date_cond}",
+                    (sale_date_param,)
+                )
+                sale_qty = float(cur.fetchone()[0] or 0)
+
+                # 3. 已配送数量（当月销售订单中状态为已自提或已送货入户的数量）
+                cur.execute(
+                    f"SELECT IFNULL(SUM(t.t_qty), 0) "
+                    f"FROM transport t "
+                    f"WHERE {sale_date_cond} "
+                    f"AND t.status IN ('已自提', '已送货入户')",
+                    (sale_date_param,)
+                )
+                delivered_qty = int(cur.fetchone()[0] or 0)
+
+                # 4. 进货成本（按销售型号逐行计算均价）
+                cur.execute(
+                    f"SELECT si.model, SUM(si.qty) AS total_qty, SUM(si.total) AS total_sales "
+                    f"FROM sale_items si "
+                    f"JOIN transport t ON si.order_no = t.order_no AND si.out_order_no = t.out_order_no "
+                    f"WHERE {sale_date_cond} "
+                    f"GROUP BY si.model",
+                    (sale_date_param,)
+                )
+                sale_models = cur.fetchall()
+                total_purchase_cost = 0.0
+                cost_details = []
+                for model, sold_qty, model_sale_total in sale_models:
+                    sold_qty = float(sold_qty)
+                    model_sale_total = float(model_sale_total or 0)
+                    sale_avg_price = model_sale_total / sold_qty if sold_qty > 0 else 0.0
+
+                    # 近半年入库均价（只统计有价格的入库）
+                    if is_year:
+                        start_date = f"{year}-01-01"
+                    else:
+                        start_date = f"{prefix}-01"
+                    cur.execute(
+                        "SELECT IFNULL(SUM(qty * in_price), 0), IFNULL(SUM(qty), 0) "
+                        "FROM stock_in "
+                        "WHERE model = %s AND in_price > 0 AND in_date >= DATE_SUB(%s, INTERVAL 6 MONTH) "
+                        "AND in_date < %s",
+                        (model, start_date, start_date)
+                    )
+                    recent_cost, recent_qty = cur.fetchone()
+                    recent_cost = float(recent_cost or 0)
+                    recent_qty = float(recent_qty or 0)
+                    if recent_qty > 0:
+                        avg_price = recent_cost / recent_qty
+                        source = "近半年均价"
+                    else:
+                        cur.execute(
+                            "SELECT IFNULL(SUM(qty * in_price), 0), IFNULL(SUM(qty), 0) "
+                            "FROM stock_in WHERE model = %s AND in_price > 0",
+                            (model,)
+                        )
+                        all_cost, all_qty = cur.fetchone()
+                        all_cost = float(all_cost or 0)
+                        all_qty = float(all_qty or 0)
+                        if all_qty > 0:
+                            avg_price = all_cost / all_qty
+                            source = "全部历史均价"
+                        else:
+                            avg_price = 0.0
+                            source = "未维护价格"
+                    cost = avg_price * sold_qty
+                    total_purchase_cost += cost
+                    cost_details.append(
+                        f"{model}: 销售{sold_qty:.0f}件, 销售均价{sale_avg_price:.2f}, "
+                        f"入库均价{avg_price:.2f}({source}), 成本{cost:.2f}"
+                    )
+
+                # 5. 运营成本
+                cur.execute(
+                    f"SELECT IFNULL(SUM(amount), 0) FROM operate_cost "
+                    f"WHERE {cost_date_cond}",
+                    (cost_date_param,)
+                )
+                op_cost = float(cur.fetchone()[0] or 0)
+
+                # 6. 安装费用汇总和数量
+                cur.execute(
+                    f"SELECT IFNULL(SUM(i_qty), 0) FROM install "
+                    f"WHERE {install_date_cond} AND status IN ('已报装', '已安装')",
+                    (install_date_param,)
+                )
+                inst_qty = int(cur.fetchone()[0] or 0)
+
+                cur.execute(
+                    f"SELECT IFNULL(SUM(CASE WHEN status='已报装' THEN install_fee "
+                    f"WHEN status='已安装' THEN 2*install_fee ELSE 0 END), 0) "
+                    f"FROM install WHERE {install_date_cond}",
+                    (install_date_param,)
+                )
+                inst_fee = float(cur.fetchone()[0] or 0)
+
+                # 安装明细查询
+                cur.execute(
+                    f"SELECT order_no, model, install_date, install_fee, status "
+                    f"FROM install WHERE {install_date_cond} "
+                    f"ORDER BY install_date DESC",
+                    (install_date_param,)
+                )
+                install_details = cur.fetchall()
+                install_detail_lines = []
+                for order_no, model, install_date, fee, status in install_details:
+                    display_fee = float(fee or 0)
+                    if status == '已安装':
+                        display_fee = 2 * display_fee
+                    install_detail_lines.append(
+                        f"订单: {order_no} | 型号: {model} | 日期: {install_date} | "
+                        f"费用: {display_fee:.2f} | 状态: {status}"
+                    )
+                install_detail_text = "\n".join(install_detail_lines) if install_detail_lines else "无安装记录"
+
+                # 7. 人员工资
+                _, total_salary, _ = calculate_salaries(cur, prefix, is_year)
+
+                profit = sale_total - total_purchase_cost - op_cost - inst_fee - total_salary
+
+                main_info = (
+                    f"{title}\n"
+                    f"销售额: {sale_total:.2f}\n"
+                    f"销售数量: {sale_qty:.0f} 件\n"
+                    f"已配送数量: {delivered_qty} 台\n"
+                    f"进货总成本: {total_purchase_cost:.2f}\n"
+                    f"运营成本: {op_cost:.2f}\n"
+                    f"安装数量: {inst_qty} 台 | 安装费用: {inst_fee:.2f}\n"
+                    f"人员工资: {total_salary:.2f}\n"
+                    f"净利润: {profit:.2f}"
+                )
+
+                cost_details_text = "\n".join(cost_details) if cost_details else "无销售记录"
+                cost_expansion = ft.ExpansionTile(
+                    title=ft.Text("进货成本明细（点击展开）"),
+                    subtitle=ft.Text(f"共 {len(cost_details)} 个型号"),
+                    controls=[ft.Text(cost_details_text, selectable=True)],
+                )
+
+                install_expansion = ft.ExpansionTile(
+                    title=ft.Text("安装明细（点击展开）"),
+                    subtitle=ft.Text(f"共 {len(install_details)} 条记录"),
+                    controls=[ft.Text(install_detail_text, selectable=True)],
+                )
+
+                left_panel.content = ft.Column(
+                    [
+                        ft.Text("财务统计", weight=ft.FontWeight.BOLD),
+                        ft.Text(main_info, selectable=True),
+                        cost_expansion,
+                        install_expansion,
+                    ],
+                    expand=True,
+                    scroll=ft.ScrollMode.AUTO,
+                )
+                page.update()
+
+            except Exception as ex:
+                show_alert(page, "错误", f"统计失败: {str(ex)}")
+            finally:
+                conn.close()
+
+        # ================= 录入运营成本 =================
+        def show_add_cost_dialog():
+            cost_date_field = ft.TextField(label="日期", value=date.today().isoformat(), width=200)
+            cost_type_dd = ft.Dropdown(
+                label="类型",
+                options=[ft.dropdown.Option(t) for t in ["房租", "水电", "物流", "广告", "办公", "其他"]],
+                value="房租",
+                width=200,
+            )
+            amount_field = ft.TextField(label="金额", hint_text="0.00", width=200)
+            remark_field = ft.TextField(label="备注", multiline=True, width=300)
+
+            def save_cost(e):
+                c_date = cost_date_field.value.strip()
+                c_type = cost_type_dd.value
+                amt_str = amount_field.value.strip()
+                rem = remark_field.value.strip()
+                if not c_date or not amt_str:
+                    show_alert(page, "提示", "请填写日期和金额")
+                    return
+                try:
+                    amt = float(amt_str)
+                except:
+                    show_alert(page, "提示", "金额格式错误")
+                    return
+                conn = get_db_conn()
+                if not conn:
+                    show_alert(page, "错误", "数据库连接失败")
+                    return
+                cur = conn.cursor()
+                try:
+                    cur.execute(
+                        "INSERT INTO operate_cost (cost_date, cost_type, amount, remark) VALUES (%s, %s, %s, %s)",
+                        (c_date, c_type, amt, rem)
+                    )
+                    conn.commit()
+                    show_alert(page, "成功", "运营成本已录入")
+                    page.pop_dialog()
+                except Exception as ex:
+                    conn.rollback()
+                    show_alert(page, "错误", f"保存失败: {str(ex)}")
+                finally:
+                    conn.close()
+
+            dlg = ft.AlertDialog(
+                title=ft.Text("录入运营成本"),
+                content=ft.Column([cost_date_field, cost_type_dd, amount_field, remark_field], spacing=10, tight=True,
+                                  width=350),
+                actions=[ft.TextButton("保存", on_click=save_cost),
+                         ft.TextButton("取消", on_click=lambda e: page.pop_dialog())],
+                modal=True,
+            )
+            page.show_dialog(dlg)
+
+        # ================= 设置基本工资 =================
+        def show_set_salary_dialog():
+            conn = get_db_conn()
+            if not conn:
+                show_alert(page, "错误", "数据库连接失败")
+                return
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT real_name, role, base_salary FROM users WHERE role != '系统管理员' AND role != '超级管理员' AND role NOT LIKE '%管理员%' ORDER BY real_name")
+            users = cur.fetchall()
             conn.close()
+            if not users:
+                show_alert(page, "提示", "暂无员工")
+                return
+
+            user_dd = ft.Dropdown(
+                label="选择员工",
+                options=[ft.dropdown.Option(u[0]) for u in users],
+                width=200,
+            )
+            salary_field = ft.TextField(label="基本工资", hint_text="0.00", width=200)
+
+            user_list_text = ft.Text(
+                "\n".join([f"{u[0]} | {u[1]} | 基本工资：{float(u[2] or 0):.2f} 元" for u in users]),
+                size=12,
+                selectable=True,
+            )
+
+            def on_user_change(e):
+                name = user_dd.value
+                for u in users:
+                    if u[0] == name:
+                        salary_field.value = str(float(u[2] or 0))
+                        break
+                page.update()
+
+            user_dd.on_change = on_user_change
+            if users:
+                user_dd.value = users[0][0]
+                salary_field.value = str(float(users[0][2] or 0))
+
+            def save_salary(e):
+                name = user_dd.value
+                try:
+                    salary = float(salary_field.value or 0)
+                except:
+                    show_alert(page, "提示", "请输入数字")
+                    return
+                conn = get_db_conn()
+                if not conn:
+                    show_alert(page, "错误", "数据库连接失败")
+                    return
+                cur = conn.cursor()
+                try:
+                    cur.execute("UPDATE users SET base_salary=%s WHERE real_name=%s", (salary, name))
+                    conn.commit()
+                    show_alert(page, "成功", f"{name} 的基本工资已更新")
+                    page.pop_dialog()
+                except Exception as ex:
+                    conn.rollback()
+                    show_alert(page, "错误", f"保存失败: {str(ex)}")
+                finally:
+                    conn.close()
+
+            dlg = ft.AlertDialog(
+                title=ft.Text("设置基本工资"),
+                content=ft.Column([
+                    user_dd,
+                    salary_field,
+                    ft.Divider(height=10),
+                    ft.Text("员工列表：", weight=ft.FontWeight.BOLD),
+                    user_list_text,
+                ], spacing=10, tight=True, width=400, scroll=ft.ScrollMode.AUTO),
+                actions=[ft.TextButton("保存", on_click=save_salary),
+                         ft.TextButton("取消", on_click=lambda e: page.pop_dialog())],
+                modal=True,
+            )
+            page.show_dialog(dlg)
+
+        # ================= 提成比例设置 =================
+        def show_set_commission_dialog():
+            conn = get_db_conn()
+            if not conn:
+                show_alert(page, "错误", "数据库连接失败")
+                return
+            cur = conn.cursor()
+            cur.execute("SELECT sale_rate, delivery_rate, deliver_per FROM salary_config LIMIT 1")
+            cfg = cur.fetchone()
+            conn.close()
+            if cfg:
+                sale_rate, delivery_rate, deliver_per = cfg
+                sale_rate = float(sale_rate or 0)
+                delivery_rate = float(delivery_rate or 0)
+                deliver_per = float(deliver_per or 0)
+            else:
+                sale_rate = delivery_rate = deliver_per = 0.0
+
+            sale_rate_field = ft.TextField(label="销售提成比例 (%)", value=str(sale_rate), width=200)
+            delivery_rate_field = ft.TextField(label="送货/安装提成比例 (%)", value=str(delivery_rate), width=200)
+            deliver_per_field = ft.TextField(label="配送每台提成 (元)", value=str(deliver_per), width=200)
+
+            def save_config(e):
+                try:
+                    sr = float(sale_rate_field.value.strip())
+                    dr = float(delivery_rate_field.value.strip())
+                    dp = float(deliver_per_field.value.strip())
+                except:
+                    show_alert(page, "错误", "请输入数字")
+                    return
+                conn = get_db_conn()
+                if not conn:
+                    show_alert(page, "错误", "数据库连接失败")
+                    return
+                cur = conn.cursor()
+                try:
+                    cur.execute(
+                        "UPDATE salary_config SET sale_rate=%s, delivery_rate=%s, deliver_per=%s",
+                        (sr, dr, dp)
+                    )
+                    conn.commit()
+                    show_alert(page, "成功", "配置已保存")
+                    page.pop_dialog()
+                except Exception as ex:
+                    conn.rollback()
+                    show_alert(page, "错误", f"保存失败: {str(ex)}")
+                finally:
+                    conn.close()
+
+            dlg = ft.AlertDialog(
+                title=ft.Text("工资提成设置"),
+                content=ft.Column([sale_rate_field, delivery_rate_field, deliver_per_field], spacing=10, tight=True,
+                                  width=300),
+                actions=[ft.TextButton("保存配置", on_click=save_config),
+                         ft.TextButton("取消", on_click=lambda e: page.pop_dialog())],
+                modal=True,
+            )
+            page.show_dialog(dlg)
+
+        # ================= 生成员工工资条（文本） =================
+        def generate_salary_slip():
+            year = year_dd.value
+            month = month_dd.value
+            is_year = (month == "")
+            prefix = year if is_year else f"{year}-{month}"
+            conn = get_db_conn()
+            if not conn:
+                show_alert(page, "错误", "数据库连接失败")
+                return
+            cur = conn.cursor()
+            try:
+                salary_list, total_all, month_sale_total = calculate_salaries(cur, prefix, is_year)
+                # 读取提成配置用于显示
+                cur.execute("SELECT sale_rate, delivery_rate, deliver_per FROM salary_config LIMIT 1")
+                cfg = cur.fetchone()
+                if cfg:
+                    sale_rate = float(cfg[0] or 0)
+                    delivery_rate = float(cfg[1] or 0)
+                    deliver_per = float(cfg[2] or 0)
+                else:
+                    sale_rate = delivery_rate = deliver_per = 0.0
+
+                title = f"{year}年财务统计" if is_year else f"{year}年{int(month)}月财务统计"
+                lines = [
+                    f"【 {title} 员工工资条 】",
+                    f"月度总销售额：{month_sale_total:.2f} 元",
+                    f"销售提成：{sale_rate:.1f}% | 送货提成：{delivery_rate:.1f}%",
+                    f"配送每台：{deliver_per} 元 | 安装按实际结算",
+                    "",
+                    "姓名\t岗位\t\t基本工资\t提成\t配送\t安装费\t应发工资",
+                    "-" * 100
+                ]
+                for item in salary_list:
+                    lines.append(
+                        f"{item['name']}\t{item['role']}\t\t{item['base']:.2f}\t{item['sale_commission']:.2f}\t{item['deliver_fee']:.2f}\t{item['install_fee']:.2f}\t{item['total']:.2f}")
+                lines.append("-" * 100)
+                lines.append(f"本月工资合计：{total_all:.2f} 元")
+                salary_text.value = "\n".join(lines)
+                page.update()
+
+                # 导出 CSV
+                try:
+                    import csv, os
+                    desktop = os.path.expanduser("~/Desktop")
+                    fn = f"{title}_员工工资表.csv"
+                    path = os.path.join(desktop, fn)
+                    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                        w = csv.writer(f)
+                        w.writerow(["姓名", "岗位", "基本工资", "销售/送货提成", "配送提成", "安装费", "应发工资"])
+                        for item in salary_list:
+                            w.writerow([item["name"], item["role"], round(item["base"], 2),
+                                        round(item["sale_commission"], 2), round(item["deliver_fee"], 2),
+                                        round(item["install_fee"], 2), round(item["total"], 2)])
+                    show_alert(page, "提示", f"工资表已导出到桌面：{fn}")
+                except:
+                    pass
+
+            except Exception as ex:
+                show_alert(page, "错误", f"生成失败: {str(ex)}")
+            finally:
+                conn.close()
+
+        # ================= 生成工资条图片 =================
+        def generate_salary_images():
+            year = year_dd.value
+            month = month_dd.value
+            is_year = (month == "")
+            prefix = year if is_year else f"{year}-{month}"
+            conn = get_db_conn()
+            if not conn:
+                show_alert(page, "错误", "数据库连接失败")
+                return
+            cur = conn.cursor()
+            try:
+                salary_list, _, _ = calculate_salaries(cur, prefix, is_year)
+                if not salary_list:
+                    show_alert(page, "提示", "无员工数据")
+                    return
+
+                image_paths = []
+                for item in salary_list:
+                    text = (
+                        f"工资条  {year}年{'' if is_year else int(month)}月\n"
+                        f"姓名：{item['name']}    岗位：{item['role']}\n"
+                        f"----------------------------------------\n"
+                        f"基本工资：{item['base']:.2f}\n"
+                        f"提成金额：{item['sale_commission']:.2f}\n"
+                        f"配送提成：{item['deliver_fee']:.2f}\n"
+                        f"安装费：{item['install_fee']:.2f}\n"
+                        f"应发工资：{item['total']:.2f}\n"
+                    )
+                    img_path = generate_text_image(text)
+                    if img_path:
+                        image_paths.append((item['name'], img_path))
+
+                if not image_paths:
+                    show_alert(page, "错误", "图片生成失败")
+                    return
+
+                show_salary_images_dialog(image_paths)
+
+            except Exception as ex:
+                show_alert(page, "错误", f"生成失败: {str(ex)}")
+            finally:
+                conn.close()
+
+        def generate_text_image(text):
+            try:
+                from PIL import Image, ImageDraw, ImageFont
+                font = load_chinese_font(20)
+                lines = text.split('\n')
+                draw_tmp = ImageDraw.Draw(Image.new('RGB', (1, 1)))
+                max_width = 0
+                total_height = 0
+                line_heights = []
+                for line in lines:
+                    bbox = draw_tmp.textbbox((0, 0), line, font=font)
+                    w = bbox[2] - bbox[0]
+                    h = bbox[3] - bbox[1]
+                    max_width = max(max_width, w)
+                    line_heights.append(h)
+                    total_height += h + 6
+                margin = 10
+                img_width = max_width + margin * 2
+                img_height = total_height + margin * 2
+                img = Image.new('RGB', (img_width, img_height), color=(255, 255, 255))
+                draw = ImageDraw.Draw(img)
+                y = margin
+                for line, h in zip(lines, line_heights):
+                    draw.text((margin, y), line, font=font, fill=(0, 0, 0))
+                    y += h + 6
+                import tempfile
+                tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                img.save(tmp.name)
+                return tmp.name
+            except Exception as e:
+                print(f"生成图片失败: {e}")
+                return None
+
+        def show_salary_images_dialog(image_paths):
+            image_widgets = []
+            for name, path in image_paths:
+                img = ft.Image(src=path, width=300, height=200, fit="contain")
+                row = ft.Row([
+                    ft.Text(name, weight=ft.FontWeight.BOLD),
+                    ft.IconButton(icon=ft.Icons.SHARE, tooltip="分享", on_click=lambda e, p=path: share_image(p)),
+                    ft.IconButton(icon=ft.Icons.SAVE, tooltip="保存", on_click=lambda e, p=path: save_image(p)),
+                ])
+                image_widgets.append(ft.Column([row, img], spacing=5))
+
+            dlg = ft.AlertDialog(
+                title=ft.Text("工资条图片"),
+                content=ft.Column(image_widgets, scroll=ft.ScrollMode.AUTO, expand=True),
+                actions=[ft.TextButton("关闭", on_click=lambda e: page.pop_dialog())],
+                modal=True,
+            )
+            page.show_dialog(dlg)
+
+        def share_image(path):
+            async def _share():
+                try:
+                    share = ft.Share()
+                    if page.web:
+                        with open(path, "rb") as f:
+                            file_bytes = f.read()
+                        share_file = ft.ShareFile.from_bytes(file_bytes, mime_type="image/png",
+                                                             name=os.path.basename(path))
+                    else:
+                        share_file = ft.ShareFile.from_path(path)
+                    result = await share.share_files([share_file], text="工资条", title="分享工资条")
+                    show_alert(page, "提示", f"分享状态：{result.status}")
+                except Exception as ex:
+                    show_alert(page, "错误", f"分享失败: {str(ex)[:50]}")
+
+            page.run_task(_share)
+
+        def save_image(path):
+            def _save():
+                async def do_save():
+                    try:
+                        save_path = await ft.FilePicker().save_file(
+                            dialog_title="保存工资条图片",
+                            file_name=os.path.basename(path),
+                            allowed_extensions=["png"],
+                            src_bytes=open(path, "rb").read()
+                        )
+                        if save_path:
+                            show_alert(page, "成功", "图片已保存")
+                    except Exception as ex:
+                        show_alert(page, "错误", f"保存失败: {str(ex)[:50]}")
+
+                page.run_task(do_save)
+
+            _save()
+
+        # ================= 界面布局 =================
+        panel_border = ft.Border(
+            left=ft.BorderSide(1, ft.Colors.GREY_300),
+            top=ft.BorderSide(1, ft.Colors.GREY_300),
+            right=ft.BorderSide(1, ft.Colors.GREY_300),
+            bottom=ft.BorderSide(1, ft.Colors.GREY_300),
+        )
+
+        left_panel = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text("财务统计", weight=ft.FontWeight.BOLD),
+                    finance_text,
+                ],
+                expand=True,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+            padding=10,
+            border=panel_border,
+            expand=True,
+        )
+
+        right_panel = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text("员工工资条", weight=ft.FontWeight.BOLD),
+                    salary_text,
+                ],
+                expand=True,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+            padding=10,
+            border=panel_border,
+            expand=True,
+        )
 
         main_content.controls.append(
-            ft.Column([
-                ft.Text("财务报表", size=20, weight=ft.FontWeight.BOLD),
-                ft.Row([year_dd, month_dd]),
-                ft.Button("计算", icon=ft.Icons.CALCULATE, on_click=calc_finance),
-                ft.Card(content=ft.Container(content=result_text, padding=15))
-            ], spacing=15))
+            ft.Column(
+                [
+                    ft.Text("💰 财务管理中心", size=20, weight=ft.FontWeight.BOLD),
+                    ft.Row(
+                        [year_dd, month_dd, calc_btn, add_cost_btn, set_salary_btn, set_commission_btn, gen_salary_btn,
+                         gen_images_btn],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    ft.ResponsiveRow(
+                        [
+                            ft.Column(col={"sm": 12, "md": 6}, controls=[left_panel]),
+                            ft.Column(col={"sm": 12, "md": 6}, controls=[right_panel]),
+                        ],
+                        spacing=10,
+                        expand=True,
+                    ),
+                ],
+                spacing=15,
+                expand=True,
+                scroll=ft.ScrollMode.AUTO,
+            )
+        )
         page.update()
 
     # ---------------------------- 入库记录查询 ----------------------------
