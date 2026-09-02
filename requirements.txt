@@ -9,3 +9,4 @@ reportlab==4.2.2
 numpy==2.4.6
 flet-permission-handler==0.86.2
 pyzbar==0.1.9
+plyer
