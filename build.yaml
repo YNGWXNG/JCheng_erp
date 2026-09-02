@@ -29,6 +29,7 @@ android:
     # 前台定位权限
     - android.permission.ACCESS_FINE_LOCATION
     - android.permission.ACCESS_COARSE_LOCATION
+    - android.permission.POST_NOTIFICATIONS
 
   features:
     - name: android.hardware.camera
