@@ -191,40 +191,115 @@ def get_db_conn():
 # ====================== 全局通知相关 ======================
 _app_page = None
 
+
 def send_system_notification(title: str, message: str):
-    """跨平台系统通知（增加详细日志和渠道）"""
-    print(f"[Notify] send_system_notification 被调用: title={title}")
-    # 显示应用内提示（调试用）
-    if _app_page:
+    """跨平台系统通知：Android原生API + 桌面端plyer，无应用内弹窗"""
+    print(f"[Notify] 发送系统通知: title={title}")
+
+    # --------------------------
+    # 第一步：自动识别运行平台
+    # --------------------------
+    try:
+        from jnius import autoclass
+        autoclass("android.os.Build")  # 能获取Android系统类则为Android环境
+        is_android = True
+    except Exception:
+        is_android = False
+
+    # --------------------------
+    # 分支1：Android 原生通知（生产级最优方案）
+    # --------------------------
+    if is_android:
         try:
-            _app_page.show_snack_bar(ft.SnackBar(ft.Text(f"通知: {title[:20]}...")))
-        except:
-            pass
+            from jnius import autoclass
 
-    try:
-        from plyer import notification
-        notification.notify(
-            title=title,
-            message=message,
-            app_name="ERP管理系统",
-            timeout=10,
-            channel="erp_channel"   # Android 8+ 渠道 ID
-        )
-        print("[Notify] plyer 通知发送成功")
-        return
-    except Exception as e:
-        print(f"[Notify] plyer 发送失败: {e}")
+            # 1. 创建通知渠道（Android 8.0+ 强制要求）
+            Build_VERSION = autoclass("android.os.Build$VERSION")
+            channel_id = "erp_channel"
 
-    try:
-        from android import Android
-        droid = Android()
-        droid.notify(title, message)
-        print("[Notify] Android 原生通知发送成功")
-        return
-    except Exception as e:
-        print(f"[Notify] Android 原生发送失败: {e}")
+            if Build_VERSION.SDK_INT >= 26:
+                ActivityThread = autoclass("android.app.ActivityThread")
+                context = ActivityThread.currentApplication().getApplicationContext()
 
-    print("[Notify] 所有通知方式均失败")
+                Context = autoclass("android.content.Context")
+                NotificationChannel = autoclass("android.app.NotificationChannel")
+                NotificationManager = autoclass("android.app.NotificationManager")
+
+                nm_channel = context.getSystemService(Context.NOTIFICATION_SERVICE)
+                channel = NotificationChannel(
+                    channel_id,
+                    "ERP系统通知",
+                    NotificationManager.IMPORTANCE_DEFAULT
+                )
+                channel.enableVibration(True)
+                nm_channel.createNotificationChannel(channel)
+
+            # 2. 构建通知与点击跳转意图
+            Context = autoclass("android.content.Context")
+            Intent = autoclass("android.content.Intent")
+            PendingIntent = autoclass("android.app.PendingIntent")
+            NotificationCompat = autoclass("androidx.core.app.NotificationCompat")
+            NotificationManagerCompat = autoclass("androidx.core.app.NotificationManagerCompat")
+
+            ActivityThread = autoclass("android.app.ActivityThread")
+            context = ActivityThread.currentApplication().getApplicationContext()
+
+            # 点击通知自动跳回应用
+            pm = context.getPackageManager()
+            launch_intent = pm.getLaunchIntentForPackage(context.getPackageName())
+            pending_intent = None
+            if launch_intent:
+                launch_intent.setFlags(
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                )
+                FLAG_IMMUTABLE = 0x04000000
+                pending_intent = PendingIntent.getActivity(
+                    context, 0, launch_intent, FLAG_IMMUTABLE
+                )
+
+            # 构建通知内容
+            builder = NotificationCompat.Builder(context, channel_id)
+            builder.setContentTitle(title)
+            builder.setContentText(message)
+            builder.setSmallIcon(17301659)  # 系统默认信息图标
+            builder.setAutoCancel(True)     # 点击后自动清除
+            builder.setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            if pending_intent:
+                builder.setContentIntent(pending_intent)
+
+            # 发送通知（修复Python关键字冲突）
+            nm = getattr(NotificationManagerCompat, 'from')(context)
+            notify_id = hash(title) % 10000  # 同标题通知自动覆盖
+            nm.notify(notify_id, builder.build())
+
+            print("[Notify] Android端原生系统通知发送成功")
+            return
+
+        except Exception as e:
+            print(f"[Notify] Android端通知发送失败: {type(e).__name__}: {e}")
+
+    # --------------------------
+    # 分支2：桌面端系统通知（plyer实现）
+    # --------------------------
+    else:
+        try:
+            from plyer import notification
+            notification.notify(
+                title=title,
+                message=message,
+                app_name="ERP管理系统",
+                timeout=10
+                # app_icon="erp.ico"  # 可选：Windows端自定义图标，需为ico格式
+            )
+            print("[Notify] 桌面端系统通知发送成功")
+            return
+
+        except ImportError:
+            print("[Notify] 桌面端通知失败：未安装plyer库，请执行 pip install plyer")
+        except Exception as e:
+            print(f"[Notify] 桌面端通知发送失败: {type(e).__name__}: {e}")
+
+    print("[Notify] 所有系统通知方式均失败")
 
 def check_notifications():
     """检查待出库和临近配送订单，发送通知"""
@@ -6605,44 +6680,6 @@ def main(page: ft.Page):
         w1 = get_field_width(page, ratio=2, subtract=60)
         w2 = get_field_width(page, ratio=3, subtract=80)
 
-        # ================= 通知权限请求（异步） =================
-        # ================= 通知权限请求（异步） =================
-        async def request_notification_permission_async(page: ft.Page):
-            """请求安卓通知权限（兼容 Android 13+ 及更低版本）"""
-            if page.platform != ft.PagePlatform.ANDROID:
-                return
-
-            ph = page._permission_handler
-            print("[Notify] 通知权限申请启动")
-
-            try:
-                # 使用 Flet 正确的权限枚举：NOTIFICATION
-                notify_perm = fph.Permission.NOTIFICATION
-                status = await ph.request(notify_perm)
-                print(f"[Notify] NOTIFICATION 授权结果：{status}")
-
-                if status == fph.PermissionStatus.GRANTED:
-                    print("[Notify] 通知权限授权成功")
-                elif status == fph.PermissionStatus.PERMANENTLY_DENIED:
-                    await ph.open_app_settings()
-                    page.show_snack_bar(
-                        ft.SnackBar(content=ft.Text("通知权限已永久禁用，请前往系统设置手动开启"))
-                    )
-                else:
-                    page.show_snack_bar(ft.SnackBar(content=ft.Text("未授予通知权限，可能无法接收提醒")))
-            except AttributeError:
-                print("[Notify] 权限库无 NOTIFICATION 枚举，尝试降级处理")
-                # 降级：使用 android 原生方式请求（需 pyjnius 支持）
-                try:
-                    from android.permissions import request_permissions, Permission
-                    request_permissions([Permission.POST_NOTIFICATIONS])
-                    print("[Notify] 使用 android.permissions 请求通知权限")
-                except Exception as e:
-                    print(f"[Notify] 降级请求失败：{e}")
-            except Exception as e:
-                print(f"[Notify] 通知权限申请异常：{e}")
-
-        page.run_task(request_notification_permission_async, page)
 
         # ================= 原有运输模块 UI 控件定义 =================
         status_dropdown = ft.Dropdown(
