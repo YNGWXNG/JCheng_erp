@@ -27,7 +27,8 @@ import re
 import shutil
 import flet_flashlight as ffl
 import flet_geolocator as ftg
-
+import barcode
+from barcode.writer import ImageWriter
 
 SERVER_DECODE_URL = os.getenv("SERVER_DECODE_URL", "https://api.qrserver.com/v1/read-qr-code/")
 MAX_IMAGE_LONG_EDGE = 1280
@@ -93,68 +94,39 @@ DB_USER = DEFAULT_USER
 DB_PASSWORD = DEFAULT_PASSWORD
 DB_DATABASE = DEFAULT_DATABASE
 
-import base64
-import io
-import barcode
-from barcode.writer import ImageWriter
-from PIL import Image, ImageDraw, ImageFont
-
 
 def generate_barcode_base64(code: str) -> str:
     """生成带文字的 Code128 条形码，返回 PNG 图片的 base64 数据 URI"""
     if not code:
         raise ValueError("商品编码不能为空")
 
-    # 1. 生成纯条码（不包含文字），避免加载字体
-    writer = ImageWriter()
-    writer.set_options({
-        'write_text': False,  # 关键：禁用默认文字
-        'quiet_zone': 1,  # 两侧空白
-        'module_height': 15.0,  # 条码高度（mm）
-        'module_width': 0.2,  # 条码宽度（mm）
-        'dpi': 300,  # 分辨率
-    })
-    code128 = barcode.get('code128', code, writer=writer)
-    barcode_buffer = io.BytesIO()
-    code128.write(barcode_buffer)
-    barcode_buffer.seek(0)
-
-    # 2. 用 Pillow 打开条码图片
-    barcode_img = Image.open(barcode_buffer)
-
-    # 3. 创建新画布，底部预留文字区域
-    text_height = 30  # 文字区域高度（像素）
-    new_width = barcode_img.width
-    new_height = barcode_img.height + text_height
-    combined = Image.new('RGB', (new_width, new_height), 'white')
-    combined.paste(barcode_img, (0, 0))
-
-    # 4. 绘制文字（使用默认字体或系统字体）
-    draw = ImageDraw.Draw(combined)
-    try:
-        # 优先使用 Pillow 自带的默认字体（无需外部文件）
-        font = ImageFont.load_default()
-    except:
-        font = None
-    # 如果默认字体太小，可尝试加载系统字体（可选）
-    # 例如：ImageFont.truetype("arial.ttf", 20)
-
-    text = "Checking"
-    # 获取文字尺寸（不同 Pillow 版本兼容）
-    if hasattr(draw, 'textbbox'):
-        bbox = draw.textbbox((0, 0), text, font=font)
-        text_w = bbox[2] - bbox[0]
+    # 获取打包的字体文件路径（例如 simhei.ttf）
+    font_path = get_asset_path("simhei.ttf")   # 根据您的项目实际调整
+    if not font_path or not os.path.exists(font_path):
+        # 如果找不到字体，回退到禁用文字（避免崩溃）
+        write_text = False
+        font_path = None
     else:
-        text_w, _ = draw.textsize(text, font=font)
-    text_x = (new_width - text_w) // 2
-    text_y = barcode_img.height + (text_height - font.size) // 2
-    draw.text((text_x, text_y), text, fill='black', font=font)
+        write_text = True
 
-    # 5. 输出为 base64
-    out_buffer = io.BytesIO()
-    combined.save(out_buffer, format='PNG')
-    out_buffer.seek(0)
-    img_base64 = base64.b64encode(out_buffer.read()).decode('utf-8')
+    writer = ImageWriter()
+    # 设置选项：启用文字，并指定字体
+    writer.set_options({
+        'write_text': write_text,
+        'font_path': font_path,          # 关键：指定字体文件路径
+        'font_size': 12,                 # 文字大小（可根据需要调整）
+        'quiet_zone': 1,
+        'module_height': 15.0,
+        'module_width': 0.2,
+        'dpi': 300,
+    })
+
+    code128 = barcode.get('code128', code, writer=writer)
+    buffer = io.BytesIO()
+    code128.write(buffer)
+    buffer.seek(0)
+
+    img_base64 = base64.b64encode(buffer.read()).decode('utf-8')
     return f"data:image/png;base64,{img_base64}"
 
 def run_ui_task(page: ft.Page, func: Callable):
