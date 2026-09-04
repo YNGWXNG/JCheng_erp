@@ -192,7 +192,15 @@ def get_db_conn():
 _app_page = None
 
 def send_system_notification(title: str, message: str):
-    """跨平台系统通知"""
+    """跨平台系统通知（增加详细日志和渠道）"""
+    print(f"[Notify] send_system_notification 被调用: title={title}")
+    # 显示应用内提示（调试用）
+    if _app_page:
+        try:
+            _app_page.show_snack_bar(ft.SnackBar(ft.Text(f"通知: {title[:20]}...")))
+        except:
+            pass
+
     try:
         from plyer import notification
         notification.notify(
@@ -200,7 +208,9 @@ def send_system_notification(title: str, message: str):
             message=message,
             app_name="ERP管理系统",
             timeout=10,
+            channel="erp_channel"   # Android 8+ 渠道 ID
         )
+        print("[Notify] plyer 通知发送成功")
         return
     except Exception as e:
         print(f"[Notify] plyer 发送失败: {e}")
@@ -209,17 +219,20 @@ def send_system_notification(title: str, message: str):
         from android import Android
         droid = Android()
         droid.notify(title, message)
+        print("[Notify] Android 原生通知发送成功")
         return
     except Exception as e:
         print(f"[Notify] Android 原生发送失败: {e}")
 
-    print(f"[Notify] 所有通知方式均失败: {title}")
+    print("[Notify] 所有通知方式均失败")
 
 def check_notifications():
     """检查待出库和临近配送订单，发送通知"""
+    print("[Notify] check_notifications 开始执行")
     try:
         conn = get_db_conn()
         if not conn:
+            print("[Notify] 数据库连接失败")
             return
         cur = conn.cursor()
 
@@ -231,6 +244,8 @@ def check_notifications():
             GROUP BY order_no
         """)
         pending_orders = cur.fetchall()
+        print(f"[Notify] 查询到 {len(pending_orders)} 条待出库订单")
+
         for order_no, cust_name, phone, address in pending_orders:
             cur.execute("""
                 SELECT factory, category, model, t_qty
@@ -243,6 +258,7 @@ def check_notifications():
             title = "新待配送订单提醒"
             msg = (f"订单号：{order_no}\n客户：{cust_name}\n电话：{phone}\n地址：{address}\n"
                    f"──────────────────\n品牌 | 品类 | 型号 | 数量\n{details}")
+            print(f"[Notify] 准备发送待出库通知: {title}")
             send_system_notification(title, msg)
 
             cur.execute("""
@@ -261,6 +277,8 @@ def check_notifications():
             GROUP BY order_no
         """)
         upcoming_orders = cur.fetchall()
+        print(f"[Notify] 查询到 {len(upcoming_orders)} 条临近配送订单")
+
         for order_no, cust_name, phone, address in upcoming_orders:
             cur.execute("""
                 SELECT t.factory, t.category, t.model, t.t_qty, s.s_qty
@@ -276,6 +294,7 @@ def check_notifications():
             title = "待配送订单临近计划日期"
             msg = (f"订单号：{order_no}\n客户：{cust_name}\n电话：{phone}\n地址：{address}\n"
                    f"──────────────────\n品牌 | 品类 | 型号 | 数量 | 库存\n{details}")
+            print(f"[Notify] 准备发送临近配送通知: {title}")
             send_system_notification(title, msg)
 
             cur.execute("""
@@ -288,8 +307,24 @@ def check_notifications():
             conn.commit()
 
         conn.close()
+        print("[Notify] check_notifications 执行完毕")
     except Exception as ex:
-        print(f"通知检查异常：{ex}")
+        print(f"[Notify] 通知检查异常: {ex}")
+        import traceback
+        traceback.print_exc()
+
+def start_global_notification_timer():
+    """启动后台通知检查定时器（每30秒）"""
+    print("[Notify] 全局通知定时器已启动")
+    def _loop():
+        print("[Notify] 定时器循环触发")
+        try:
+            check_notifications()
+        except Exception as e:
+            print(f"[Notify] 定时器循环异常: {e}")
+        # 重新调度
+        threading.Timer(30.0, _loop).start()
+    _loop()
 
 def start_global_notification_timer():
     """后台循环定时检查"""
