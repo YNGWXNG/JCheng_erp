@@ -11,3 +11,4 @@ flet-permission-handler==0.86.2
 pyzbar==0.1.9
 plyer
 pyjnius
+python-barcode
