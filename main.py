@@ -93,6 +93,22 @@ DB_USER = DEFAULT_USER
 DB_PASSWORD = DEFAULT_PASSWORD
 DB_DATABASE = DEFAULT_DATABASE
 
+import base64
+import io
+import barcode
+from barcode.writer import ImageWriter
+
+def generate_barcode_base64(code: str) -> str:
+    """生成 Code128 条形码，返回 PNG 图片的 base64 数据 URI"""
+    if not code:
+        raise ValueError("商品编码不能为空")
+    code128 = barcode.get('code128', code, writer=ImageWriter())
+    buffer = io.BytesIO()
+    code128.write(buffer)  # 写入内存
+    buffer.seek(0)
+    img_base64 = base64.b64encode(buffer.read()).decode('utf-8')
+    return f"data:image/png;base64,{img_base64}"
+
 def run_ui_task(page: ft.Page, func: Callable):
     """线程安全：子线程调度主线程执行UI更新（修复handler必须是协程的错误）"""
     async def _ui_wrapper():
@@ -1082,6 +1098,10 @@ def hide_upload_loading(page: ft.Page):
         _loading_dialog = None
         page.update()
 
+def generate_order_no(prefix='PO'):
+    """生成拟购单号（仅拟购单使用）"""
+    return f"{prefix}{int(time.time() * 1000)}"
+
 # ====================== 主程序 ======================
 def main(page: ft.Page):
     print("=== APP START ===")
@@ -1746,7 +1766,7 @@ def main(page: ft.Page):
         # 卡片数据格式：(图标, 标签, 数值, 颜色, 点击回调函数或None)
         cards_data = [
             ("📦", "当前库存", str(total_stock), ft.Colors.BLUE, None),
-            ("📊", "本月销售单数", str(month_sales), ft.Colors.GREEN, None),
+            ("📊", "本月销售单数", str(month_sales), ft.Colors.GREEN, lambda e: show_purchase_list()),
             ("🚚", "待出库订单", str(pending_trans), ft.Colors.ORANGE, lambda e: show_transport()),
             ("🔧", "待售后订单", str(pending_after_sales), ft.Colors.RED, lambda e: show_after_sales()),
         ]
@@ -1855,6 +1875,1126 @@ def main(page: ft.Page):
         main_content.controls.append(main_column)
         page.update()
 
+    def show_purchase_list():
+        main_content.controls.clear()
+        page.title = "拟购单管理"
+
+        # 使用统一的宽度计算
+        w1 = get_field_width(page, ratio=2, subtract=60)
+        w2 = get_field_width(page, ratio=3, subtract=80)
+        w3 = get_field_width(page, ratio=1, subtract=40)
+
+        # ---------- 状态变量 ----------
+        cust_filter = ft.TextField(label="客户信息", width=w1)
+        model_filter = ft.TextField(label="型号/服务", width=w1)
+        status_dropdown = ft.Dropdown(
+            label="状态",
+            width=w1,
+            options=[
+                ft.dropdown.Option("待处理"),
+                ft.dropdown.Option("已处理"),
+                ft.dropdown.Option("全部"),
+            ],
+            value="待处理"
+        )
+        list_container = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO)
+
+        # ---------- 加载拟购单列表 ----------
+        def load_purchase_list():
+            list_container.controls.clear()
+            cust = cust_filter.value.strip()
+            model = model_filter.value.strip()
+            status = status_dropdown.value
+            where_clause = "1=1"
+            params = []
+            if cust:
+                where_clause += " AND cust_name LIKE %s"
+                params.append(f"%{cust}%")
+            if model:
+                where_clause += " AND purchase_no IN (SELECT purchase_no FROM purchase_list WHERE model LIKE %s)"
+                params.append(f"%{model}%")
+            if status != "全部":
+                where_clause += " AND status = %s"
+                params.append(status)
+
+            conn = get_db_conn()
+            if not conn:
+                list_container.controls.append(ft.Text("数据库连接失败", color=ft.Colors.RED))
+                page.update()
+                return
+            cur = conn.cursor()
+            cur.execute(f"""
+                SELECT purchase_no,
+                       MIN(cust_name) AS cust_name,
+                       MIN(status) AS status,
+                       MIN(created_date) AS created_date,
+                       COUNT(*) AS item_count,
+                       SUM(total) AS total_sum
+                FROM purchase_list
+                WHERE {where_clause}
+                GROUP BY purchase_no
+                ORDER BY created_date DESC, purchase_no DESC
+            """, params)
+            orders = cur.fetchall()
+
+            if not orders:
+                conn.close()
+                list_container.controls.append(ft.Text("暂无拟购单", size=16, color=ft.Colors.GREY))
+                page.update()
+                return
+
+            # 为每条拟购单查询客户形象照片
+            for order in orders:
+                purchase_no, cust_name, status, created_date, item_count, total_sum = order
+                total_sum = float(total_sum) if total_sum else 0.0
+
+                photo_base64 = None
+                try:
+                    cur.execute(
+                        "SELECT file_data FROM erp_files WHERE biz_no=%s AND file_type='po_photos' ORDER BY id DESC LIMIT 1",
+                        (purchase_no,)
+                    )
+                    photo_row = cur.fetchone()
+                    if photo_row and photo_row[0]:
+                        import base64
+                        photo_base64 = base64.b64encode(photo_row[0]).decode('utf-8')
+                except Exception as ex:
+                    print(f"获取照片失败 ({purchase_no}): {ex}")
+
+                if photo_base64:
+                    photo_img = ft.Image(
+                        src=f"data:image/png;base64,{photo_base64}",
+                        width=60, height=60, fit="cover", border_radius=30,
+                    )
+                    photo_clickable = ft.GestureDetector(
+                        content=photo_img,
+                        on_tap=lambda e, pn=purchase_no, pb=photo_base64: show_photo_dialog(pn, pb)
+                    )
+                else:
+                    photo_img = ft.Icon(ft.Icons.PERSON, size=60, color=ft.Colors.GREY)
+                    photo_clickable = photo_img
+
+                menu_button = ft.PopupMenuButton(
+                    icon=ft.Icons.MORE_VERT,
+                    items=[
+                        ft.PopupMenuItem(content="修    改", on_click=lambda e, pn=purchase_no: edit_purchase(pn)),
+                        ft.PopupMenuItem(content="查看详情", on_click=lambda e, pn=purchase_no: show_detail_dialog(pn)),
+                        ft.PopupMenuItem(content="转为订单", on_click=lambda e, pn=purchase_no: confirm_convert(pn)),
+                    ]
+                )
+
+                card = ft.Card(
+                    content=ft.Container(
+                        content=ft.Row(
+                            [
+                                ft.Icon(ft.Icons.SHOPPING_CART, size=30),
+                                ft.Column(
+                                    [
+                                        ft.Text(f"{cust_name}  {created_date} ({purchase_no})",
+                                                weight=ft.FontWeight.BOLD, max_lines=1,
+                                                overflow=ft.TextOverflow.ELLIPSIS),
+                                        ft.Text(f"商品 {item_count} 项 | 总额 ¥{total_sum:.2f} | {status}",
+                                                max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                                    ],
+                                    spacing=2,
+                                    expand=True,
+                                ),
+                                photo_clickable,
+                                menu_button,
+                            ],
+                            spacing=10,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        padding=10,
+                    )
+                )
+                list_container.controls.append(card)
+
+            conn.close()
+            page.update()
+
+        # ---------- 照片放大对话框 ----------
+        def show_photo_dialog(purchase_no, photo_base64):
+            dlg = ft.AlertDialog(
+                title=ft.Text(f"客户形象 - {purchase_no}"),
+                content=ft.Image(src=f"data:image/png;base64,{photo_base64}", width=300, height=300, fit="contain"),
+                actions=[ft.TextButton("关闭", on_click=lambda e: page.pop_dialog())],
+            )
+            page.show_dialog(dlg)
+
+        # ---------- 详情弹窗 ----------
+        def show_detail_dialog(purchase_no):
+            conn = get_db_conn()
+            if not conn:
+                show_alert(page, "错误", "数据库连接失败")
+                return
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT factory, category, model, spec, piece, qty, price,
+                       old_discount, union_subsidy, store_discount, t_price,
+                       gov_subsidy, total, remark
+                FROM purchase_list
+                WHERE purchase_no = %s
+                ORDER BY id
+            """, (purchase_no,))
+            items = cur.fetchall()
+            conn.close()
+
+            item_controls = []
+            for item in items:
+                factory, category, model, spec, piece, qty, price, omd, us, sd, tp, gs, total, remark = item
+                qty = int(qty) if qty is not None else 0
+                price = float(price) if price is not None else 0.0
+                omd = float(omd) if omd is not None else 0.0
+                us = float(us) if us is not None else 0.0
+                sd = float(sd) if sd is not None else 0.0
+                tp = float(tp) if tp is not None else 0.0
+                gs = float(gs) if gs is not None else 0.0
+                total = float(total) if total is not None else 0.0
+                factory = factory or ""
+                category = category or ""
+                model = model or ""
+                spec = spec or ""
+                piece = piece or ""
+                remark = remark or ""
+
+                item_controls.append(
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text(f"{factory} | {category} | {model} | {spec} | {piece}", weight=ft.FontWeight.BOLD),
+                            ft.Text(f"数量: {qty}  单价: ¥{price:.2f}"),
+                            ft.Text(
+                                f"旧机抵扣: ¥{omd:.2f}  工会补贴: {us}%  门店折扣: ¥{sd:.2f}  国家补贴: {gs}%  备注：{remark}"),
+                            ft.Text(f"成交单价: ¥{tp:.2f}  小计: ¥{total:.2f}"),
+                            ft.Divider(),
+                        ], tight=True),
+                        padding=5,
+                    )
+                )
+
+            detail_dlg = ft.AlertDialog(
+                title=ft.Text(f"拟购单详情 - {purchase_no}"),
+                modal=True,
+                content=ft.Column(
+                    [ft.Text("商品明细:", weight=ft.FontWeight.BOLD), *item_controls],
+                    spacing=5, scroll=ft.ScrollMode.AUTO,
+                    width=min(page.width * 0.9 if page.width else 400, 500),
+                    height=min(page.height * 0.8 if page.height else 600, 600),
+                ),
+                actions=[
+                    ft.TextButton("转为订单", on_click=lambda e: (page.pop_dialog(), confirm_convert(purchase_no))),
+                    ft.TextButton("关   闭", on_click=lambda e: page.pop_dialog()),
+                ],
+            )
+            page.show_dialog(detail_dlg)
+
+        # ---------- 转换确认 ----------
+        def confirm_convert(purchase_no):
+            def do_convert(e):
+                page.pop_dialog()
+                conn = get_db_conn()
+                if not conn:
+                    show_alert(page, "错误", "数据库连接失败")
+                    return
+                cur = conn.cursor()
+                try:
+                    cur.execute("""
+                        SELECT code, factory, category, model, spec, piece, qty, price,
+                               old_discount, union_subsidy, store_discount, t_price,
+                               gov_subsidy, total
+                        FROM purchase_list
+                        WHERE purchase_no = %s
+                        ORDER BY id
+                    """, (purchase_no,))
+                    items = cur.fetchall()
+                    if not items:
+                        show_alert(page, "提示", "拟购单不存在或已被处理")
+                        return
+
+                    cur.execute("UPDATE purchase_list SET status='已处理' WHERE purchase_no = %s", (purchase_no,))
+                    conn.commit()
+
+                    sale_items = []
+                    barcode_items = []
+                    for it in items:
+                        code, factory, category, model, spec, piece, qty, price, omd, us, sd, tp, gs, total = it
+                        qty = int(qty) if qty is not None else 0
+                        price = float(price) if price is not None else 0.0
+                        omd = float(omd) if omd is not None else 0.0
+                        us = float(us) if us is not None else 0.0
+                        sd = float(sd) if sd is not None else 0.0
+                        tp = float(tp) if tp is not None else 0.0
+                        gs = float(gs) if gs is not None else 0.0
+                        total = float(total) if total is not None else 0.0
+
+                        sale_items.append({
+                            "code": code,
+                            "factory": factory or "",
+                            "category": category or "",
+                            "model": model,
+                            "spec": spec or "",
+                            "piece": piece or "",
+                            "qty": qty,
+                            "price": price,
+                            "old_discount": omd,
+                            "union_subsidy": us,
+                            "gov_subsidy": gs,
+                            "store_discount": sd,
+                            "t_price": tp,
+                            "total": total,
+                            "need_install": False,
+                            "remark": "",
+                        })
+
+                        barcode_path = None
+                        if code:
+                            try:
+                                barcode_path = generate_barcode_base64(code)
+                            except Exception as ex:
+                                print(f"条形码生成失败 ({code}): {ex}")
+                                barcode_path = None
+                        barcode_items.append({
+                            "code": code or "",
+                            "model": model,
+                            "t_price": tp,
+                            "barcode_path": barcode_path,
+                        })
+
+                    conn.close()
+                    show_barcode_dialog(barcode_items, sale_items)
+
+                except Exception as ex:
+                    try:
+                        if conn.is_connected():
+                            conn.rollback()
+                    except:
+                        pass
+                    finally:
+                        try:
+                            conn.close()
+                        except:
+                            pass
+                    show_alert(page, "错误", f"转换失败: {ex}")
+
+            confirm_dlg = ft.AlertDialog(
+                title=ft.Text("确认转换"),
+                content=ft.Text(
+                    f"确定将拟购单 {purchase_no} 的商品信息转入新建销售订单吗？拟购单状态将更新为已处理，并展示商品条形码。"),
+                actions=[
+                    ft.TextButton("确定", on_click=do_convert),
+                    ft.TextButton("取消", on_click=lambda e: page.pop_dialog()),
+                ],
+            )
+            page.show_dialog(confirm_dlg)
+
+        # ---------- 展示条形码对话框 ----------
+        def show_barcode_dialog(barcode_items, sale_items):
+            barcode_controls = []
+            for item in barcode_items:
+                if item["barcode_path"]:
+                    img = ft.Image(src=item["barcode_path"], width=400, height=160, fit="contain")
+                else:
+                    img = ft.Text("条形码生成失败", size=12, color=ft.Colors.RED)
+
+                container = ft.Container(
+                    content=ft.Column([
+                        img,
+                        ft.Text(f"型号: {item['model']}", weight=ft.FontWeight.BOLD),
+                        ft.Text(f"成交价: ¥{item['t_price']:.2f}"),
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
+                    padding=10, margin=5, bgcolor=ft.Colors.WHITE, border_radius=8,
+                    shadow=ft.BoxShadow(blur_radius=5, color=ft.Colors.GREY_300),
+                )
+                barcode_controls.append(container)
+
+            scrollable = ft.Column(
+                barcode_controls, scroll=ft.ScrollMode.AUTO, spacing=10,
+                width=min(page.width * 0.9 if page.width else 400, 500),
+                height=min(page.height * 0.7 if page.height else 600, 600),
+            )
+
+            def go_to_sale(e):
+                page.pop_dialog()
+                show_sale()
+
+            barcode_dlg = ft.AlertDialog(
+                title=ft.Text("商品条形码"),
+                modal=True,
+                content=scrollable,
+                actions=[
+                    ft.TextButton("进入销售模块", on_click=go_to_sale),
+                    ft.TextButton("关闭", on_click=lambda e: page.pop_dialog()),
+                ],
+            )
+            page.show_dialog(barcode_dlg)
+
+        # ---------- 显示创建表单 ----------
+        def show_create_form():
+            main_content.controls.clear()
+            main_content.controls.append(build_create_form())
+            page.update()
+
+        # ---------- 构建创建表单（布局优化） ----------
+        def build_create_form():
+            cust_name = ft.TextField(label="客户信息 *", width=w1)
+            photo_status = ft.Text("未拍照", size=12, color=ft.Colors.GREY)
+            temp_photo_path = {"path": None}
+
+            def take_photo(e):
+                def on_image_selected(path):
+                    if not path:
+                        return
+                    preview_img = ft.Image(src=path, width=300, fit="contain")
+
+                    def confirm_upload(ev):
+                        page.pop_dialog()
+                        temp_photo_path["path"] = path
+                        photo_status.value = "已拍照（待保存）"
+                        photo_status.color = ft.Colors.GREEN
+                        photo_status.update()
+                        page.update()
+
+                    def retake(ev):
+                        page.pop_dialog()
+                        take_photo(None)
+
+                    preview_dlg = ft.AlertDialog(
+                        title=ft.Text("客户形象预览"),
+                        modal=True,
+                        content=ft.Column([preview_img], tight=True),
+                        actions=[
+                            ft.TextButton("重拍", on_click=retake),
+                            ft.Button("确认上传", on_click=confirm_upload, bgcolor=ft.Colors.BLUE,
+                                      color=ft.Colors.WHITE),
+                        ]
+                    )
+                    page.show_dialog(preview_dlg)
+
+                show_image_source_dialog(page, on_image_selected, title="拍摄客户形象")
+
+            photo_btn = ft.IconButton(
+                ft.Icons.CAMERA_ALT,
+                tooltip="拍摄客户形象",
+                on_click=take_photo,
+                icon_size=24,
+                style=ft.ButtonStyle(bgcolor=ft.Colors.TRANSPARENT)
+            )
+
+            model_input = ft.TextField(label="商品型号", hint_text="输入2字以上查询", width=w3)
+            model_suggestions = ft.Column(spacing=0, visible=False, width=w3)
+
+            def load_model_suggestions(val):
+                if len(val) < 2:
+                    model_suggestions.controls.clear()
+                    model_suggestions.visible = False
+                    model_suggestions.update()
+                    page.update()
+                    return
+                conn = get_db_conn()
+                if not conn:
+                    return
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT code, model, price, union_subsidy, gov_subsidy, old_discount FROM base_product WHERE model LIKE %s LIMIT 8",
+                    (f"%{val}%",)
+                )
+                rows = cur.fetchall()
+                conn.close()
+                model_suggestions.controls.clear()
+                if not rows:
+                    model_suggestions.visible = False
+                    model_suggestions.update()
+                    page.update()
+                    return
+                for row in rows:
+                    model_suggestions.controls.append(
+                        ft.Card(
+                            content=ft.Container(
+                                content=ft.Text(f"{row[1]} (¥{row[2]})"),
+                                padding=10,
+                                on_click=lambda e, r=row: select_product(r)
+                            )
+                        )
+                    )
+                model_suggestions.visible = True
+                model_suggestions.update()
+                page.update()
+
+            def select_product(row):
+                model_input.value = row[1]
+                price.value = str(row[2] or 0)
+                union_subsidy.value = str(row[3] or 0)
+                gov_subsidy.value = str(row[4] or 0)
+                old_discount.value = str(row[5] or 0)
+                model_suggestions.controls.clear()
+                model_suggestions.visible = False
+                model_suggestions.update()
+                page.update()
+
+            model_input.on_change = lambda e: load_model_suggestions(model_input.value.strip())
+
+            price = ft.TextField(label="单价", width=w1)
+            old_discount = ft.TextField(label="旧机折扣(元)", value="0", width=w1)
+            union_subsidy = ft.TextField(label="工会补贴%", value="0", width=w1)
+            gov_subsidy = ft.TextField(label="国家补贴%", value="0", width=w1)
+            store_discount = ft.TextField(label="门店优惠(元)", value="0", width=w1)
+            qty = ft.TextField(label="数量", value="1", width=w1)
+            remark = ft.TextField(label="备注", width=w3)  # 备注单独一行，宽度可保持不变或调整为 w2
+
+            items = []
+            items_container = ft.Column(spacing=5)
+            total_label = ft.Text("合计: 正常¥0.00 | 无旧机¥0.00 | 无工会¥0.00", size=16, weight=ft.FontWeight.BOLD)
+
+            def refresh_items():
+                items_container.controls.clear()
+                total_normal = 0.0
+                total_no_old = 0.0
+                total_no_union = 0.0
+                for idx, it in enumerate(items):
+                    total_normal += it["total"]
+                    total_no_old += it["total_no_old"]
+                    total_no_union += it["total_no_union"]
+                    items_container.controls.append(
+                        ft.Column([
+                            ft.Row([
+                                ft.Text(f"{it['model']} x{it['qty']}"),
+                                ft.IconButton(ft.Icons.DELETE, on_click=lambda e, i=idx: remove_item(i))
+                            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                            ft.Row([
+                                ft.Text(f"正常: ¥{it['total']:.2f}", size=12),
+                                ft.Text(f"无旧机: ¥{it['total_no_old']:.2f}", size=12),
+                                ft.Text(f"无工会: ¥{it['total_no_union']:.2f}", size=12),
+                            ], spacing=10),
+                        ], spacing=2)
+                    )
+                total_label.value = f"合计: 正常¥{total_normal:.2f} | 无旧机¥{total_no_old:.2f} | 无工会¥{total_no_union:.2f}"
+                page.update()
+
+            def remove_item(idx):
+                items.pop(idx)
+                refresh_items()
+
+            def add_item(e):
+                m = model_input.value.strip()
+                try:
+                    qt = int(qty.value or 0)
+                    unit_price = float(price.value or 0)
+                    old = float(old_discount.value or 0)
+                    union = float(union_subsidy.value or 0)
+                    gov = float(gov_subsidy.value or 0)
+                    store = float(store_discount.value or 0)
+                except:
+                    show_alert(page, "提示", "数量和金额必须是数字")
+                    return
+                if not m or qt <= 0:
+                    show_alert(page, "提示", "请完整填写商品信息")
+                    return
+                prod = get_product_by_model(m)
+                if not prod:
+                    def on_direct_add_click(e):
+                        page.pop_dialog()
+                        add_item_to_list(qt, unit_price, old, union, gov, store, m, remark.value, "", "", "", "", "")
+
+                    def on_add_product_click(e):
+                        page.pop_dialog()
+                        add_product_from_scan(page, "", m, lambda m: (setattr(model_input, 'value', m), page.update()))
+
+                    def on_back_click(e):
+                        page.pop_dialog()
+
+                    dlg = ft.AlertDialog(
+                        title=ft.Text("提示"),
+                        content=ft.Text(f"型号 {m} 不存在，是否直接添加？"),
+                        actions=[
+                            ft.TextButton("直接添加", on_click=on_direct_add_click),
+                            ft.TextButton("返回重填", on_click=on_back_click),
+                            ft.Button("添加商品", on_click=on_add_product_click),
+                        ],
+                        modal=True,
+                    )
+                    page.show_dialog(dlg)
+                    return
+
+                add_item_to_list(qt, unit_price, old, union, gov, store, m, remark.value,
+                                 prod.get("code", ""), prod["factory"], prod["category"], prod.get("spec", ""),
+                                 prod.get("piece", ""))
+                clear_item_inputs()
+
+            def add_item_to_list(qt, unit_price, old, union, gov, store, m, remark, code, factory, category, spec,
+                                 piece):
+                after_old = unit_price - old
+                after_union = after_old * (1 - union / 100)
+                after_store = after_union - store
+                if gov == 0:
+                    final_unit = after_store
+                else:
+                    final_unit = math.ceil(
+                        after_store * (1 - gov / 100) * 100) / 100 if after_store <= 10000 else after_store - 1500
+                total = final_unit * qt
+                t_price = after_store
+
+                after_old_no_old = unit_price
+                after_union_no_old = after_old_no_old * (1 - union / 100)
+                after_store_no_old = after_union_no_old - store
+                if gov == 0:
+                    final_unit_no_old = after_store_no_old
+                else:
+                    final_unit_no_old = math.ceil(after_store_no_old * (
+                                1 - gov / 100) * 100) / 100 if after_store_no_old <= 10000 else after_store_no_old - 1500
+                total_no_old = final_unit_no_old * qt
+
+                after_old_no_union = unit_price - old
+                after_union_no_union = after_old_no_union
+                after_store_no_union = after_union_no_union - store
+                if gov == 0:
+                    final_unit_no_union = after_store_no_union
+                else:
+                    final_unit_no_union = math.ceil(after_store_no_union * (
+                                1 - gov / 100) * 100) / 100 if after_store_no_union <= 10000 else after_store_no_union - 1500
+                total_no_union = final_unit_no_union * qt
+
+                items.append({
+                    "model": m, "qty": qt, "price": unit_price,
+                    "old_discount": old, "union_subsidy": union, "gov_subsidy": gov,
+                    "store_discount": store, "t_price": t_price, "total": total,
+                    "total_no_old": total_no_old, "total_no_union": total_no_union,
+                    "remark": remark, "code": code, "factory": factory,
+                    "category": category, "spec": spec, "piece": piece,
+                })
+                refresh_items()
+
+            def clear_item_inputs():
+                model_input.value = ""
+                qty.value = "1"
+                price.value = ""
+                old_discount.value = "0"
+                union_subsidy.value = "0"
+                gov_subsidy.value = "0"
+                store_discount.value = "0"
+                remark.value = ""
+                page.update()
+
+            add_btn = ft.Button("添加商品", icon=ft.Icons.ADD, on_click=add_item)
+
+            def save_purchase(e):
+                if not cust_name.value:
+                    show_alert(page, "提示", "客户姓名不能为空")
+                    return
+                if not items:
+                    show_alert(page, "提示", "请至少添加一个商品")
+                    return
+
+                purchase_no = generate_order_no('PO')
+                created_date = date.today().isoformat()
+
+                conn = get_db_conn()
+                if not conn:
+                    show_alert(page, "错误", "数据库连接失败")
+                    return
+                cur = conn.cursor()
+                try:
+                    for it in items:
+                        cur.execute("""
+                            INSERT INTO purchase_list
+                            (purchase_no, cust_name, code, factory, category, model, spec, piece,
+                             qty, price, old_discount, union_subsidy, store_discount,
+                             t_price, gov_subsidy, total, status, created_date, remark)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, '待处理', %s, %s)
+                        """, (
+                            purchase_no, cust_name.value, it["code"],
+                            it["factory"], it["category"], it["model"], it["spec"], it["piece"],
+                            it["qty"], it["price"], it["old_discount"], it["union_subsidy"],
+                            it["store_discount"], it["t_price"], it["gov_subsidy"], it["total"],
+                            created_date, it["remark"]
+                        ))
+                    conn.commit()
+
+                    if temp_photo_path["path"]:
+                        try:
+                            success, db_tag, err = upload_image_to_db(
+                                temp_photo_path["path"], file_type="po_photos",
+                                biz_no=purchase_no, prefix=f"PO{purchase_no}", delete_old=False
+                            )
+                            if success:
+                                print(f"[Photo] 客户形象上传成功: {db_tag}")
+                            else:
+                                print(f"[Photo] 上传失败: {err}")
+                        except Exception as ex:
+                            print(f"[Photo] 上传异常: {ex}")
+
+                    conn.close()
+                    show_alert(page, "成功", f"拟购单 {purchase_no} 保存成功")
+                    show_purchase_list()
+                except Exception as ex:
+                    conn.rollback()
+                    conn.close()
+                    show_alert(page, "错误", f"保存失败: {ex}")
+
+            def back_to_list(e):
+                show_purchase_list()
+
+            # 布局优化：型号单独一行，数量/单价一行，旧机/工会一行，国家/门店一行，备注单独一行
+            form = ft.Column(
+                [
+                    ft.Text("新建拟购单", size=20, weight=ft.FontWeight.BOLD),
+                    ft.Row([cust_name, photo_btn, photo_status], spacing=10,
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    ft.Divider(),
+                    ft.Text("商品信息", weight=ft.FontWeight.BOLD),
+                    ft.Column([model_input, model_suggestions], spacing=0, width=w3),  # 型号单独一行
+                    ft.Row([qty, price], spacing=10, wrap=True),  # 数量、单价
+                    ft.Row([old_discount, union_subsidy], spacing=10, wrap=True),  # 旧机、工会
+                    ft.Row([gov_subsidy, store_discount], spacing=10, wrap=True),  # 国家、门店
+                    remark,  # 备注单独一行
+                    add_btn,
+                    ft.Text("商品清单", weight=ft.FontWeight.BOLD),
+                    items_container,
+                    total_label,
+                    ft.Row(
+                        [
+                            ft.Button("💾 保存拟购单", icon=ft.Icons.SAVE, on_click=save_purchase,
+                                      bgcolor=ft.Colors.GREEN, color=ft.Colors.WHITE),
+                            ft.TextButton("返回列表", on_click=back_to_list),
+                        ],
+                        alignment=ft.MainAxisAlignment.CENTER,
+                        spacing=20
+                    ),
+                ],
+                spacing=12,
+                scroll=ft.ScrollMode.AUTO
+            )
+            return form
+
+        # ---------- 修改拟购单 ----------
+        def edit_purchase(purchase_no):
+            # 获取原拟购单信息
+            conn = get_db_conn()
+            if not conn:
+                show_alert(page, "错误", "数据库连接失败")
+                return
+            cur = conn.cursor()
+            cur.execute("SELECT cust_name, created_date FROM purchase_list WHERE purchase_no=%s LIMIT 1",
+                        (purchase_no,))
+            row = cur.fetchone()
+            if not row:
+                conn.close()
+                show_alert(page, "错误", "拟购单不存在")
+                return
+            original_cust_name = row[0]
+            original_created_date = row[1]
+            cur.execute("""
+                SELECT code, factory, category, model, spec, piece, qty, price,
+                       old_discount, union_subsidy, store_discount, t_price,
+                       gov_subsidy, total, remark
+                FROM purchase_list
+                WHERE purchase_no = %s
+                ORDER BY id
+            """, (purchase_no,))
+            original_items = cur.fetchall()
+            conn.close()
+
+            items = []
+            for it in original_items:
+                code, factory, category, model, spec, piece, qty, price, omd, us, sd, tp, gs, total, remark = it
+                qty = int(qty) if qty is not None else 0
+                price = float(price) if price is not None else 0.0
+                omd = float(omd) if omd is not None else 0.0
+                us = float(us) if us is not None else 0.0
+                sd = float(sd) if sd is not None else 0.0
+                tp = float(tp) if tp is not None else 0.0
+                gs = float(gs) if gs is not None else 0.0
+                total = float(total) if total is not None else 0.0
+                remark = remark if remark else ""
+                factory = factory if factory else ""
+                category = category if category else ""
+                spec = spec if spec else ""
+                piece = piece if piece else ""
+                code = code if code else ""
+
+                after_old_no_old = price
+                after_union_no_old = after_old_no_old * (1 - us / 100)
+                after_store_no_old = after_union_no_old - sd
+                if gs == 0:
+                    final_unit_no_old = after_store_no_old
+                else:
+                    final_unit_no_old = math.ceil(after_store_no_old * (
+                                1 - gs / 100) * 100) / 100 if after_store_no_old <= 10000 else after_store_no_old - 1500
+                total_no_old = final_unit_no_old * qty
+
+                after_old_no_union = price - omd
+                after_union_no_union = after_old_no_union
+                after_store_no_union = after_union_no_union - sd
+                if gs == 0:
+                    final_unit_no_union = after_store_no_union
+                else:
+                    final_unit_no_union = math.ceil(after_store_no_union * (
+                                1 - gs / 100) * 100) / 100 if after_store_no_union <= 10000 else after_store_no_union - 1500
+                total_no_union = final_unit_no_union * qty
+
+                items.append({
+                    "model": model, "qty": qty, "price": price,
+                    "old_discount": omd, "union_subsidy": us, "gov_subsidy": gs,
+                    "store_discount": sd, "t_price": tp, "total": total,
+                    "total_no_old": total_no_old, "total_no_union": total_no_union,
+                    "remark": remark, "code": code, "factory": factory,
+                    "category": category, "spec": spec, "piece": piece,
+                })
+
+            main_content.controls.clear()
+
+            cust_name = ft.TextField(label="客户信息 *", width=w1, value=original_cust_name)
+            # 照片上传（修改模式）
+            photo_status = ft.Text("未修改照片", size=12, color=ft.Colors.GREY)
+            temp_photo_path = {"path": None}
+
+            def take_photo(e):
+                def on_image_selected(path):
+                    if not path:
+                        return
+                    preview_img = ft.Image(src=path, width=300, fit="contain")
+
+                    def confirm_upload(ev):
+                        page.pop_dialog()
+                        temp_photo_path["path"] = path
+                        photo_status.value = "已选择新照片（保存时替换）"
+                        photo_status.color = ft.Colors.GREEN
+                        photo_status.update()
+                        page.update()
+
+                    def retake(ev):
+                        page.pop_dialog()
+                        take_photo(None)
+
+                    preview_dlg = ft.AlertDialog(
+                        title=ft.Text("客户形象预览"),
+                        modal=True,
+                        content=ft.Column([preview_img], tight=True),
+                        actions=[
+                            ft.TextButton("重拍", on_click=retake),
+                            ft.Button("确认上传", on_click=confirm_upload, bgcolor=ft.Colors.BLUE,
+                                      color=ft.Colors.WHITE),
+                        ]
+                    )
+                    page.show_dialog(preview_dlg)
+
+                show_image_source_dialog(page, on_image_selected, title="拍摄客户形象")
+
+            photo_btn = ft.IconButton(
+                ft.Icons.CAMERA_ALT,
+                tooltip="更换客户形象",
+                on_click=take_photo,
+                icon_size=24,
+                style=ft.ButtonStyle(bgcolor=ft.Colors.TRANSPARENT)
+            )
+
+            model_input = ft.TextField(label="商品型号", hint_text="输入2字以上查询", width=w3)
+            model_suggestions = ft.Column(spacing=0, visible=False, width=w3)
+
+            def load_model_suggestions(val):
+                if len(val) < 2:
+                    model_suggestions.controls.clear()
+                    model_suggestions.visible = False
+                    model_suggestions.update()
+                    page.update()
+                    return
+                conn = get_db_conn()
+                if not conn:
+                    return
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT code, model, price, union_subsidy, gov_subsidy, old_discount FROM base_product WHERE model LIKE %s LIMIT 8",
+                    (f"%{val}%",)
+                )
+                rows = cur.fetchall()
+                conn.close()
+                model_suggestions.controls.clear()
+                if not rows:
+                    model_suggestions.visible = False
+                    model_suggestions.update()
+                    page.update()
+                    return
+                for row in rows:
+                    model_suggestions.controls.append(
+                        ft.Card(
+                            content=ft.Container(
+                                content=ft.Text(f"{row[1]} (¥{row[2]})"),
+                                padding=10,
+                                on_click=lambda e, r=row: select_product(r)
+                            )
+                        )
+                    )
+                model_suggestions.visible = True
+                model_suggestions.update()
+                page.update()
+
+            def select_product(row):
+                model_input.value = row[1]
+                price.value = str(row[2] or 0)
+                union_subsidy.value = str(row[3] or 0)
+                gov_subsidy.value = str(row[4] or 0)
+                old_discount.value = str(row[5] or 0)
+                model_suggestions.controls.clear()
+                model_suggestions.visible = False
+                model_suggestions.update()
+                page.update()
+
+            model_input.on_change = lambda e: load_model_suggestions(model_input.value.strip())
+
+            price = ft.TextField(label="单价", width=w1)
+            old_discount = ft.TextField(label="旧机折扣(元)", value="0", width=w1)
+            union_subsidy = ft.TextField(label="工会补贴%", value="0", width=w1)
+            gov_subsidy = ft.TextField(label="国家补贴%", value="0", width=w1)
+            store_discount = ft.TextField(label="门店优惠(元)", value="0", width=w1)
+            qty = ft.TextField(label="数量", value="1", width=w1)
+            item_remark = ft.TextField(label="备注", width=w3)  # 备注单独一行
+
+            items_container = ft.Column(spacing=5)
+            total_label = ft.Text("合计: 正常¥0.00 | 无旧机¥0.00 | 无工会¥0.00", size=16, weight=ft.FontWeight.BOLD)
+
+            def refresh_items():
+                items_container.controls.clear()
+                total_normal = 0.0
+                total_no_old = 0.0
+                total_no_union = 0.0
+                for idx, it in enumerate(items):
+                    total_normal += it["total"]
+                    total_no_old += it["total_no_old"]
+                    total_no_union += it["total_no_union"]
+                    items_container.controls.append(
+                        ft.Column([
+                            ft.Row([
+                                ft.Text(f"{it['model']} x{it['qty']}"),
+                                ft.IconButton(ft.Icons.DELETE, on_click=lambda e, i=idx: remove_item(i))
+                            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                            ft.Row([
+                                ft.Text(f"正常: ¥{it['total']:.2f}", size=12),
+                                ft.Text(f"无旧机: ¥{it['total_no_old']:.2f}", size=12),
+                                ft.Text(f"无工会: ¥{it['total_no_union']:.2f}", size=12),
+                            ], spacing=10),
+                        ], spacing=2)
+                    )
+                total_label.value = f"合计: 正常¥{total_normal:.2f} | 无旧机¥{total_no_old:.2f} | 无工会¥{total_no_union:.2f}"
+                page.update()
+
+            def remove_item(idx):
+                items.pop(idx)
+                refresh_items()
+
+            def add_item(e):
+                m = model_input.value.strip()
+                try:
+                    qt = int(qty.value or 0)
+                    unit_price = float(price.value or 0)
+                    old = float(old_discount.value or 0)
+                    union = float(union_subsidy.value or 0)
+                    gov = float(gov_subsidy.value or 0)
+                    store = float(store_discount.value or 0)
+                except:
+                    show_alert(page, "提示", "数量和金额必须是数字")
+                    return
+                if not m or qt <= 0:
+                    show_alert(page, "提示", "请完整填写商品信息")
+                    return
+                prod = get_product_by_model(m)
+                if not prod:
+                    def on_direct_add_click(e):
+                        page.pop_dialog()
+                        add_item_to_list(qt, unit_price, old, union, gov, store, m, item_remark.value, "", "", "", "",
+                                         "")
+
+                    def on_add_product_click(e):
+                        page.pop_dialog()
+                        add_product_from_scan(page, "", m, lambda m: (setattr(model_input, 'value', m), page.update()))
+
+                    def on_back_click(e):
+                        page.pop_dialog()
+
+                    dlg = ft.AlertDialog(
+                        title=ft.Text("提示"),
+                        content=ft.Text(f"型号 {m} 不存在，是否直接添加？"),
+                        actions=[
+                            ft.TextButton("直接添加", on_click=on_direct_add_click),
+                            ft.TextButton("返回重填", on_click=on_back_click),
+                            ft.Button("添加商品", on_click=on_add_product_click),
+                        ],
+                        modal=True,
+                    )
+                    page.show_dialog(dlg)
+                    return
+                add_item_to_list(qt, unit_price, old, union, gov, store, m, item_remark.value,
+                                 prod.get("code", ""), prod["factory"], prod["category"], prod.get("spec", ""),
+                                 prod.get("piece", ""))
+                clear_item_inputs()
+
+            def add_item_to_list(qt, unit_price, old, union, gov, store, m, remark, code, factory, category, spec,
+                                 piece):
+                after_old = unit_price - old
+                after_union = after_old * (1 - union / 100)
+                after_store = after_union - store
+                if gov == 0:
+                    final_unit = after_store
+                else:
+                    final_unit = math.ceil(
+                        after_store * (1 - gov / 100) * 100) / 100 if after_store <= 10000 else after_store - 1500
+                total = final_unit * qt
+                t_price = after_store
+
+                after_old_no_old = unit_price
+                after_union_no_old = after_old_no_old * (1 - union / 100)
+                after_store_no_old = after_union_no_old - store
+                if gov == 0:
+                    final_unit_no_old = after_store_no_old
+                else:
+                    final_unit_no_old = math.ceil(after_store_no_old * (
+                                1 - gov / 100) * 100) / 100 if after_store_no_old <= 10000 else after_store_no_old - 1500
+                total_no_old = final_unit_no_old * qt
+
+                after_old_no_union = unit_price - old
+                after_union_no_union = after_old_no_union
+                after_store_no_union = after_union_no_union - store
+                if gov == 0:
+                    final_unit_no_union = after_store_no_union
+                else:
+                    final_unit_no_union = math.ceil(after_store_no_union * (
+                                1 - gov / 100) * 100) / 100 if after_store_no_union <= 10000 else after_store_no_union - 1500
+                total_no_union = final_unit_no_union * qt
+
+                items.append({
+                    "model": m, "qty": qt, "price": unit_price,
+                    "old_discount": old, "union_subsidy": union, "gov_subsidy": gov,
+                    "store_discount": store, "t_price": t_price, "total": total,
+                    "total_no_old": total_no_old, "total_no_union": total_no_union,
+                    "remark": remark, "code": code, "factory": factory,
+                    "category": category, "spec": spec, "piece": piece,
+                })
+                refresh_items()
+
+            def clear_item_inputs():
+                model_input.value = ""
+                qty.value = "1"
+                price.value = ""
+                old_discount.value = "0"
+                union_subsidy.value = "0"
+                gov_subsidy.value = "0"
+                store_discount.value = "0"
+                item_remark.value = ""
+                page.update()
+
+            add_btn = ft.Button("添加商品", icon=ft.Icons.ADD, on_click=add_item)
+
+            def save_changes(e):
+                if not cust_name.value:
+                    show_alert(page, "提示", "客户姓名不能为空")
+                    return
+                if not items:
+                    show_alert(page, "提示", "请至少添加一个商品")
+                    return
+                conn = get_db_conn()
+                if not conn:
+                    show_alert(page, "错误", "数据库连接失败")
+                    return
+                cur = conn.cursor()
+                try:
+                    cur.execute("DELETE FROM purchase_list WHERE purchase_no=%s", (purchase_no,))
+                    for it in items:
+                        cur.execute("""
+                            INSERT INTO purchase_list
+                            (purchase_no, cust_name, code, factory, category, model, spec, piece,
+                             qty, price, old_discount, union_subsidy, store_discount,
+                             t_price, gov_subsidy, total, status, created_date, remark)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, '待处理', %s, %s)
+                        """, (
+                            purchase_no, cust_name.value, it["code"],
+                            it["factory"], it["category"], it["model"], it["spec"], it["piece"],
+                            it["qty"], it["price"], it["old_discount"], it["union_subsidy"],
+                            it["store_discount"], it["t_price"], it["gov_subsidy"], it["total"],
+                            original_created_date, it["remark"]
+                        ))
+                    conn.commit()
+
+                    # 处理照片替换：如果选择了新照片，则删除旧照片并上传新照片
+                    if temp_photo_path["path"]:
+                        try:
+                            success, db_tag, err = upload_image_to_db(
+                                temp_photo_path["path"], file_type="po_photos",
+                                biz_no=purchase_no, prefix=f"PO{purchase_no}", delete_old=True
+                            )
+                            if success:
+                                print(f"[Photo] 客户形象替换成功: {db_tag}")
+                            else:
+                                print(f"[Photo] 替换失败: {err}")
+                        except Exception as ex:
+                            print(f"[Photo] 替换异常: {ex}")
+
+                    conn.close()
+                    show_alert(page, "成功", f"拟购单 {purchase_no} 已更新")
+                    show_purchase_list()
+                except Exception as ex:
+                    conn.rollback()
+                    conn.close()
+                    show_alert(page, "错误", f"更新失败: {ex}")
+
+            def back_to_list(e):
+                show_purchase_list()
+
+            # 布局优化：与新建一致
+            form = ft.Column(
+                [
+                    ft.Text(f"修改拟购单 {purchase_no}", size=20, weight=ft.FontWeight.BOLD),
+                    ft.Row([cust_name, photo_btn, photo_status], spacing=10,
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    ft.Divider(),
+                    ft.Text("商品信息", weight=ft.FontWeight.BOLD),
+                    ft.Column([model_input, model_suggestions], spacing=0, width=w3),
+                    ft.Row([qty, price], spacing=10, wrap=True),
+                    ft.Row([old_discount, union_subsidy], spacing=10, wrap=True),
+                    ft.Row([gov_subsidy, store_discount], spacing=10, wrap=True),
+                    item_remark,
+                    add_btn,
+                    ft.Text("商品清单", weight=ft.FontWeight.BOLD),
+                    items_container,
+                    total_label,
+                    ft.Row(
+                        [
+                            ft.Button("💾 保存修改", icon=ft.Icons.SAVE, on_click=save_changes,
+                                      bgcolor=ft.Colors.BLUE, color=ft.Colors.WHITE),
+                            ft.TextButton("返回列表", on_click=back_to_list),
+                        ],
+                        alignment=ft.MainAxisAlignment.CENTER,
+                        spacing=20
+                    ),
+                ],
+                spacing=12,
+                scroll=ft.ScrollMode.AUTO
+            )
+            main_content.controls.append(form)
+            refresh_items()
+            page.update()
+
+        # ---------- 主界面（列表视图） ----------
+        list_view = ft.Column(
+            [
+                ft.Text("拟购单管理", size=24, weight=ft.FontWeight.BOLD),
+                ft.Row(
+                    [
+                        cust_filter,
+                        model_filter,
+                        status_dropdown,
+                        ft.Button("查询", on_click=lambda e: load_purchase_list()),
+                    ],
+                    spacing=10,
+                    wrap=True
+                ),
+                ft.Divider(),
+                list_container,
+                ft.Button("新建拟购单", icon=ft.Icons.ADD, on_click=lambda e: show_create_form()),
+            ],
+            spacing=10,
+            scroll=ft.ScrollMode.AUTO
+        )
+        main_content.controls.append(list_view)
+        load_purchase_list()
+        page.update()
     # =========== 售后单 ===========
     def show_after_sales():
         main_content.controls.clear()
@@ -2025,7 +3165,7 @@ def main(page: ft.Page):
                         page.run_task(_pick)
 
                     dlg = ft.AlertDialog(
-                        title=ft.Text("上传处置照片"),
+                        title=ft.Text("处置照片"),
                         content=ft.Column([
                             ft.ListTile(leading=ft.Icon(ft.Icons.CAMERA_ALT, color=ft.Colors.BLUE),
                                         title=ft.Text("拍照（自动添加水印）"), on_click=on_camera_click),
@@ -2081,7 +3221,7 @@ def main(page: ft.Page):
                             process_after_sales_photo,
                             path,
                             order_no,
-                                                        out_order_no,
+                            out_order_no,
                             cust_name,
                             model,
                             lat,
@@ -2196,7 +3336,7 @@ def main(page: ft.Page):
                     ft.Divider(),
                     ft.Text("请选择处置方式：", weight=ft.FontWeight.BOLD),
                     ft.Row([
-                        ft.Button("报专业售后处置", icon=ft.Icons.BUILD, on_click=do_report_professional, expand=True),
+                        ft.Button("提报售后", icon=ft.Icons.BUILD, on_click=do_report_professional, expand=True),
                         ft.Button("直接处置", icon=ft.Icons.CHECK, on_click=do_direct_disposal, expand=True),
                     ], spacing=10),
                 ], tight=True, spacing=10),
@@ -2699,7 +3839,13 @@ def main(page: ft.Page):
                     after_store * (1 - gov / 100) * 100) / 100 if after_store <= 10000 else after_store - 1500
             total = final_unit * qt
             t_price = after_store
-
+            conn = get_db_conn()
+            if not conn:
+                show_alert(page, "错误", "数据库连接失败")
+                return
+            cur = conn.cursor()
+            cur.execute("UPDATE base_product SET price=%s ,old_discount=%s, union_subsidy=%s, gov_subsidy=%s WHERE model = %s", (unit_price,old,union,gov,m,))      # 更新基础数据库
+            conn.commit()
             items.append({
                 "model": m,
                 "out_order_no": out_no,
@@ -3549,7 +4695,6 @@ def main(page: ft.Page):
             load_streets()
 
     # ---------------------------- 订单查询 ----------------------------
-
     def show_order_query():
         import traceback  # 添加这行导入
         main_content.controls.clear()
@@ -4899,7 +6044,7 @@ def main(page: ft.Page):
                             union_input = float(item["union_subsidy"].value or 0)
                             store_discount = float(item["store_discount"].value or 0)
                             gov_input = float(item["gov_subsidy"].value or 0)
-                            sale_remark = item["sale_remark"].value or ""
+                            remark = item["remark"].value or ""
                         except ValueError:
                             await show_alert_async(page, "输入错误", "请输入有效数字")
                             return
@@ -4940,7 +6085,7 @@ def main(page: ft.Page):
                                 total=%s, t_price=%s
                             WHERE id=%s
                         """, (qty, price, old_discount, union_decimal, store_discount,
-                              gov_decimal, sale_remark, total, t_price, item_id))
+                              gov_decimal, remark, total, t_price, item_id))
 
                     conn.commit()
 
@@ -5173,7 +6318,7 @@ def main(page: ft.Page):
                     model_input.value = ""
                     qty.value = ""
                     in_price.value = "0"
-                    location.value = ""
+                    location.value = "A-00-00"
                     in_date.value = date.today().isoformat()
                     model_suggestions.controls.clear()
                     model_suggestions.visible = False
@@ -5222,8 +6367,9 @@ def main(page: ft.Page):
         w2 = get_field_width(page, ratio=3, subtract=80)
 
         # ================= 通知权限请求（异步） =================
+        # ================= 通知权限请求（异步） =================
         async def request_notification_permission_async(page: ft.Page):
-            """请求安卓通知权限（Android 13+ 需要动态请求）"""
+            """请求安卓通知权限（兼容 Android 13+ 及更低版本）"""
             if page.platform != ft.PagePlatform.ANDROID:
                 return
 
@@ -5231,9 +6377,10 @@ def main(page: ft.Page):
             print("[Notify] 通知权限申请启动")
 
             try:
-                notify_perm = fph.Permission.POST_NOTIFICATIONS
+                # 使用 Flet 正确的权限枚举：NOTIFICATION
+                notify_perm = fph.Permission.NOTIFICATION
                 status = await ph.request(notify_perm)
-                print(f"[Notify] POST_NOTIFICATIONS 授权结果：{status}")
+                print(f"[Notify] NOTIFICATION 授权结果：{status}")
 
                 if status == fph.PermissionStatus.GRANTED:
                     print("[Notify] 通知权限授权成功")
@@ -5245,7 +6392,14 @@ def main(page: ft.Page):
                 else:
                     page.show_snack_bar(ft.SnackBar(content=ft.Text("未授予通知权限，可能无法接收提醒")))
             except AttributeError:
-                print("[Notify] 权限库无 POST_NOTIFICATIONS 枚举，跳过")
+                print("[Notify] 权限库无 NOTIFICATION 枚举，尝试降级处理")
+                # 降级：使用 android 原生方式请求（需 pyjnius 支持）
+                try:
+                    from android.permissions import request_permissions, Permission
+                    request_permissions([Permission.POST_NOTIFICATIONS])
+                    print("[Notify] 使用 android.permissions 请求通知权限")
+                except Exception as e:
+                    print(f"[Notify] 降级请求失败：{e}")
             except Exception as e:
                 print(f"[Notify] 通知权限申请异常：{e}")
 
@@ -5253,17 +6407,31 @@ def main(page: ft.Page):
 
         # ================= 系统通知发送函数 =================
         def send_system_notification(title: str, message: str):
-            """发送系统通知（Android），使用 plyer 库"""
+            """发送系统通知，仅使用系统通知栏（不显示应用内弹窗）"""
+            # 方案1：plyer（推荐）
             try:
                 from plyer import notification
                 notification.notify(
                     title=title,
                     message=message,
-                    app_name="JCheng",  # 请修改为实际应用名
+                    app_name="ERP管理系统",  # 请修改为实际应用名
                     timeout=10,
                 )
+                return
             except Exception as e:
-                print(f"系统通知发送失败: {e}")
+                print(f"[Notify] plyer 发送失败: {e}")
+
+            # 方案2：android 原生通知（需 pyjnius）
+            try:
+                from android import Android
+                droid = Android()
+                droid.notify(title, message)
+                return
+            except Exception as e:
+                print(f"[Notify] android 模块发送失败: {e}")
+
+            # 如果都失败，仅记录日志，不显示任何应用内弹窗
+            print("[Notify] 所有系统通知方式均失败，请检查 pyjnius 依赖是否正确打包")
 
         # ================= 通知检查逻辑（按订单号去重，新增待出库无次数限制） =================
         def check_notifications():
@@ -5273,7 +6441,7 @@ def main(page: ft.Page):
                     return
                 cur = conn.cursor()
 
-                # 1. 新增待出库通知（只要状态为待出库且 pending_notified=0 就发，每次状态变为待出库会重置标记）
+                # 1. 新增待出库通知
                 cur.execute("""
                     SELECT order_no, MIN(cust_name), MIN(phone), MIN(full_addr)
                     FROM transport
@@ -5282,18 +6450,34 @@ def main(page: ft.Page):
                 """)
                 pending_orders = cur.fetchall()
                 for order_no, cust_name, phone, address in pending_orders:
+                    # 查询该订单所有商品明细
+                    cur.execute("""
+                        SELECT factory, category, model, t_qty
+                        FROM transport
+                        WHERE order_no = %s AND status = '待出库'
+                        ORDER BY out_order_no
+                    """, (order_no,))
+                    items = cur.fetchall()
+
+                    # 构建商品明细文本
+                    details = []
+                    for factory, category, model, qty in items:
+                        details.append(f"{factory} | {category} | {model} | x{qty}")
+                    detail_text = "\n".join(details) if details else "无商品明细"
+
                     title = "新待配送订单提醒"
-                    msg = f"订单号：{order_no}\n客户：{cust_name}\n电话：{phone}\n地址：{address}"
+                    msg = (f"订单号：{order_no}\n客户：{cust_name}\n电话：{phone}\n地址：{address}\n"
+                           f"──────────────────\n品牌 | 品类 | 型号 | 数量\n{detail_text}")
                     send_system_notification(title, msg)
 
-                    # 更新该订单号下所有待出库记录的通知标记
+                    # 更新标记
                     cur.execute("""
                         UPDATE transport SET pending_notified = 1
                         WHERE order_no = %s AND status = '待出库' AND pending_notified = 0
                     """, (order_no,))
                     conn.commit()
 
-                # 2. 临近配送日期通知（每个订单只提醒一次）
+                # 2. 临近配送日期通知
                 cur.execute("""
                     SELECT order_no, MIN(cust_name), MIN(phone), MIN(full_addr)
                     FROM transport
@@ -5304,8 +6488,27 @@ def main(page: ft.Page):
                 """)
                 upcoming_orders = cur.fetchall()
                 for order_no, cust_name, phone, address in upcoming_orders:
+                    # 查询该订单所有商品明细（含库存）
+                    cur.execute("""
+                        SELECT t.factory, t.category, t.model, t.t_qty, s.s_qty
+                        FROM transport t
+                        LEFT JOIN stock_now s ON t.model = s.model
+                        WHERE t.order_no = %s
+                          AND t.status IN ('待出库', '待派单')
+                          AND t.send_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 3 DAY)
+                        ORDER BY t.out_order_no
+                    """, (order_no,))
+                    items = cur.fetchall()
+
+                    details = []
+                    for factory, category, model, qty, stock_qty in items:
+                        stock_display = stock_qty if stock_qty is not None else 0
+                        details.append(f"{factory} | {category} | {model} | x{qty} | 库存:{stock_display}")
+                    detail_text = "\n".join(details) if details else "无商品明细"
+
                     title = "待配送订单临近计划日期"
-                    msg = f"订单号：{order_no}\n客户：{cust_name}\n电话：{phone}\n地址：{address}"
+                    msg = (f"订单号：{order_no}\n客户：{cust_name}\n电话：{phone}\n地址：{address}\n"
+                           f"──────────────────\n品牌 | 品类 | 型号 | 数量 | 库存\n{detail_text}")
                     send_system_notification(title, msg)
 
                     cur.execute("""
@@ -7797,7 +9000,7 @@ def main(page: ft.Page):
                                         ft.Text(model_name, weight=ft.FontWeight.BOLD, size=16),
                                         ft.Text(f"品牌: {factory} | 品类: {category} | 规格: {spec}", size=12,
                                                 color="#64748b"),
-                                        ft.Text(f"理论（可售）: {qty} | 实际库存: {s_qty} | 缺口数量: {q_qty_display}", size=12),
+                                        ft.Text(f"可售数量: {qty} | 实际库存: {s_qty} | 缺口数量: {q_qty_display}", size=12),
                                         ft.Text(status, size=12, color=color),
                                     ],
                                     spacing=2,
