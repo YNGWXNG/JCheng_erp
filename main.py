@@ -97,16 +97,64 @@ import base64
 import io
 import barcode
 from barcode.writer import ImageWriter
+from PIL import Image, ImageDraw, ImageFont
+
 
 def generate_barcode_base64(code: str) -> str:
-    """生成 Code128 条形码，返回 PNG 图片的 base64 数据 URI"""
+    """生成带文字的 Code128 条形码，返回 PNG 图片的 base64 数据 URI"""
     if not code:
         raise ValueError("商品编码不能为空")
-    code128 = barcode.get('code128', code, writer=ImageWriter())
-    buffer = io.BytesIO()
-    code128.write(buffer)  # 写入内存
-    buffer.seek(0)
-    img_base64 = base64.b64encode(buffer.read()).decode('utf-8')
+
+    # 1. 生成纯条码（不包含文字），避免加载字体
+    writer = ImageWriter()
+    writer.set_options({
+        'write_text': False,  # 关键：禁用默认文字
+        'quiet_zone': 1,  # 两侧空白
+        'module_height': 15.0,  # 条码高度（mm）
+        'module_width': 0.2,  # 条码宽度（mm）
+        'dpi': 300,  # 分辨率
+    })
+    code128 = barcode.get('code128', code, writer=writer)
+    barcode_buffer = io.BytesIO()
+    code128.write(barcode_buffer)
+    barcode_buffer.seek(0)
+
+    # 2. 用 Pillow 打开条码图片
+    barcode_img = Image.open(barcode_buffer)
+
+    # 3. 创建新画布，底部预留文字区域
+    text_height = 30  # 文字区域高度（像素）
+    new_width = barcode_img.width
+    new_height = barcode_img.height + text_height
+    combined = Image.new('RGB', (new_width, new_height), 'white')
+    combined.paste(barcode_img, (0, 0))
+
+    # 4. 绘制文字（使用默认字体或系统字体）
+    draw = ImageDraw.Draw(combined)
+    try:
+        # 优先使用 Pillow 自带的默认字体（无需外部文件）
+        font = ImageFont.load_default()
+    except:
+        font = None
+    # 如果默认字体太小，可尝试加载系统字体（可选）
+    # 例如：ImageFont.truetype("arial.ttf", 20)
+
+    text = "Checking"
+    # 获取文字尺寸（不同 Pillow 版本兼容）
+    if hasattr(draw, 'textbbox'):
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_w = bbox[2] - bbox[0]
+    else:
+        text_w, _ = draw.textsize(text, font=font)
+    text_x = (new_width - text_w) // 2
+    text_y = barcode_img.height + (text_height - font.size) // 2
+    draw.text((text_x, text_y), text, fill='black', font=font)
+
+    # 5. 输出为 base64
+    out_buffer = io.BytesIO()
+    combined.save(out_buffer, format='PNG')
+    out_buffer.seek(0)
+    img_base64 = base64.b64encode(out_buffer.read()).decode('utf-8')
     return f"data:image/png;base64,{img_base64}"
 
 def run_ui_task(page: ft.Page, func: Callable):
@@ -167,6 +215,143 @@ def get_db_conn():
     except Exception as e:
         print("数据库错误:", e)
         return None
+
+# ====================== 全局通知相关 ======================
+_app_page = None
+
+def send_system_notification(title: str, message: str):
+    """跨平台系统通知"""
+    try:
+        from plyer import notification
+        notification.notify(
+            title=title,
+            message=message,
+            app_name="ERP管理系统",
+            timeout=10,
+        )
+        return
+    except Exception as e:
+        print(f"[Notify] plyer 发送失败: {e}")
+
+    try:
+        from android import Android
+        droid = Android()
+        droid.notify(title, message)
+        return
+    except Exception as e:
+        print(f"[Notify] Android 原生发送失败: {e}")
+
+    print(f"[Notify] 所有通知方式均失败: {title}")
+
+def check_notifications():
+    """检查待出库和临近配送订单，发送通知"""
+    try:
+        conn = get_db_conn()
+        if not conn:
+            return
+        cur = conn.cursor()
+
+        # 1. 新增待出库通知（按订单号分组）
+        cur.execute("""
+            SELECT order_no, MIN(cust_name), MIN(phone), MIN(full_addr)
+            FROM transport
+            WHERE status = '待出库' AND pending_notified = 0
+            GROUP BY order_no
+        """)
+        pending_orders = cur.fetchall()
+        for order_no, cust_name, phone, address in pending_orders:
+            cur.execute("""
+                SELECT factory, category, model, t_qty
+                FROM transport
+                WHERE order_no = %s AND status = '待出库'
+                ORDER BY out_order_no
+            """, (order_no,))
+            items = cur.fetchall()
+            details = "\n".join([f"{f} | {c} | {m} | x{q}" for f, c, m, q in items]) or "无商品明细"
+            title = "新待配送订单提醒"
+            msg = (f"订单号：{order_no}\n客户：{cust_name}\n电话：{phone}\n地址：{address}\n"
+                   f"──────────────────\n品牌 | 品类 | 型号 | 数量\n{details}")
+            send_system_notification(title, msg)
+
+            cur.execute("""
+                UPDATE transport SET pending_notified = 1
+                WHERE order_no = %s AND status = '待出库' AND pending_notified = 0
+            """, (order_no,))
+            conn.commit()
+
+        # 2. 临近配送通知（3天内）
+        cur.execute("""
+            SELECT order_no, MIN(cust_name), MIN(phone), MIN(full_addr)
+            FROM transport
+            WHERE status IN ('待出库', '待派单')
+              AND send_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 3 DAY)
+              AND upcoming_notified = 0
+            GROUP BY order_no
+        """)
+        upcoming_orders = cur.fetchall()
+        for order_no, cust_name, phone, address in upcoming_orders:
+            cur.execute("""
+                SELECT t.factory, t.category, t.model, t.t_qty, s.s_qty
+                FROM transport t
+                LEFT JOIN stock_now s ON t.model = s.model
+                WHERE t.order_no = %s
+                  AND t.status IN ('待出库', '待派单')
+                  AND t.send_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 3 DAY)
+                ORDER BY t.out_order_no
+            """, (order_no,))
+            items = cur.fetchall()
+            details = "\n".join([f"{f} | {c} | {m} | x{q} | 库存:{s or 0}" for f, c, m, q, s in items]) or "无商品明细"
+            title = "待配送订单临近计划日期"
+            msg = (f"订单号：{order_no}\n客户：{cust_name}\n电话：{phone}\n地址：{address}\n"
+                   f"──────────────────\n品牌 | 品类 | 型号 | 数量 | 库存\n{details}")
+            send_system_notification(title, msg)
+
+            cur.execute("""
+                UPDATE transport SET upcoming_notified = 1
+                WHERE order_no = %s
+                  AND status IN ('待出库', '待派单')
+                  AND send_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 3 DAY)
+                  AND upcoming_notified = 0
+            """, (order_no,))
+            conn.commit()
+
+        conn.close()
+    except Exception as ex:
+        print(f"通知检查异常：{ex}")
+
+def start_global_notification_timer():
+    """后台循环定时检查"""
+    def _loop():
+        try:
+            check_notifications()
+        except Exception as e:
+            print(f"通知检查异常: {e}")
+        threading.Timer(30.0, _loop).start()
+    _loop()
+
+async def request_global_notification_permission(page: ft.Page):
+    """安卓通知权限申请"""
+    if page.platform != ft.PagePlatform.ANDROID:
+        return
+    try:
+        ph = page._permission_handler
+        try:
+            status = await ph.request(fph.Permission.NOTIFICATION)
+            if status == fph.PermissionStatus.GRANTED:
+                print("[Notify] 通知权限已授予")
+                return
+        except AttributeError:
+            pass
+        try:
+            from android.permissions import request_permissions, Permission
+            request_permissions([Permission.POST_NOTIFICATIONS])
+            print("[Notify] 已通过 android.permissions 请求通知权限")
+        except ImportError:
+            print("[Notify] 未找到 android.permissions")
+        except Exception as e:
+            print(f"[Notify] 降级权限申请失败: {e}")
+    except Exception as e:
+        print(f"[Notify] 通知权限申请异常: {e}")
 
 def md5_pwd(pwd):
     return hashlib.md5(pwd.encode("utf-8")).hexdigest()
@@ -1102,8 +1287,51 @@ def generate_order_no(prefix='PO'):
     """生成拟购单号（仅拟购单使用）"""
     return f"{prefix}{int(time.time() * 1000)}"
 
+async def request_global_notification_permission(page: ft.Page):
+    """在安卓端申请通知权限（兼容 Android 13+）"""
+    if page.platform != ft.PagePlatform.ANDROID:
+        return
+    try:
+        ph = page._permission_handler
+        # 尝试使用 flet_permission_handler 的 NOTIFICATION 枚举
+        try:
+            status = await ph.request(fph.Permission.NOTIFICATION)
+            if status == fph.PermissionStatus.GRANTED:
+                print("[Notify] 通知权限已授予")
+                return
+        except AttributeError:
+            pass  # 旧版本没有 NOTIFICATION 枚举
+
+        # 降级方案：使用 android.permissions（需 pyjnius）
+        try:
+            from android.permissions import request_permissions, Permission
+            request_permissions([Permission.POST_NOTIFICATIONS])
+            print("[Notify] 已通过 android.permissions 请求通知权限")
+        except ImportError:
+            print("[Notify] 未找到 android.permissions，请确保 pyjnius 已打包")
+        except Exception as e:
+            print(f"[Notify] 降级权限申请失败: {e}")
+    except Exception as e:
+        print(f"[Notify] 通知权限申请异常: {e}")
+
+def start_global_notification_timer():
+    """启动后台通知检查定时器（每30秒）"""
+    def _timer_loop():
+        try:
+            check_notifications()
+        except Exception as e:
+            print(f"[Notify] 通知检查异常: {e}")
+        # 重新调度（30秒后）
+        threading.Timer(30.0, _timer_loop).start()
+
+    # 立即执行一次
+    _timer_loop()
+
+_app_page = None  # 全局
 # ====================== 主程序 ======================
 def main(page: ft.Page):
+    global _app_page
+    _app_page = page
     print("=== APP START ===")
     print(f"Platform: {page.platform}")
     # 在 main 函数开头添加权限请求（Android 端）
@@ -1397,6 +1625,7 @@ def main(page: ft.Page):
                     current_user = user
                     close_dialog()
                     build_main_ui()
+                    page.run_task(request_global_notification_permission, page)
                 else:
                     close_dialog()
                     show_alert(page, "提示", "用户名或密码错误")
@@ -1533,6 +1762,9 @@ def main(page: ft.Page):
             spacing=0,
             expand=True,
         )
+        if not hasattr(page, '_notify_timer_started'):
+            page._notify_timer_started = True
+            start_global_notification_timer()
         page.add(main_layout)
         show_home()
 
@@ -6405,132 +6637,6 @@ def main(page: ft.Page):
 
         page.run_task(request_notification_permission_async, page)
 
-        # ================= 系统通知发送函数 =================
-        def send_system_notification(title: str, message: str):
-            """发送系统通知，仅使用系统通知栏（不显示应用内弹窗）"""
-            # 方案1：plyer（推荐）
-            try:
-                from plyer import notification
-                notification.notify(
-                    title=title,
-                    message=message,
-                    app_name="ERP管理系统",  # 请修改为实际应用名
-                    timeout=10,
-                )
-                return
-            except Exception as e:
-                print(f"[Notify] plyer 发送失败: {e}")
-
-            # 方案2：android 原生通知（需 pyjnius）
-            try:
-                from android import Android
-                droid = Android()
-                droid.notify(title, message)
-                return
-            except Exception as e:
-                print(f"[Notify] android 模块发送失败: {e}")
-
-            # 如果都失败，仅记录日志，不显示任何应用内弹窗
-            print("[Notify] 所有系统通知方式均失败，请检查 pyjnius 依赖是否正确打包")
-
-        # ================= 通知检查逻辑（按订单号去重，新增待出库无次数限制） =================
-        def check_notifications():
-            try:
-                conn = get_db_conn()
-                if not conn:
-                    return
-                cur = conn.cursor()
-
-                # 1. 新增待出库通知
-                cur.execute("""
-                    SELECT order_no, MIN(cust_name), MIN(phone), MIN(full_addr)
-                    FROM transport
-                    WHERE status = '待出库' AND pending_notified = 0
-                    GROUP BY order_no
-                """)
-                pending_orders = cur.fetchall()
-                for order_no, cust_name, phone, address in pending_orders:
-                    # 查询该订单所有商品明细
-                    cur.execute("""
-                        SELECT factory, category, model, t_qty
-                        FROM transport
-                        WHERE order_no = %s AND status = '待出库'
-                        ORDER BY out_order_no
-                    """, (order_no,))
-                    items = cur.fetchall()
-
-                    # 构建商品明细文本
-                    details = []
-                    for factory, category, model, qty in items:
-                        details.append(f"{factory} | {category} | {model} | x{qty}")
-                    detail_text = "\n".join(details) if details else "无商品明细"
-
-                    title = "新待配送订单提醒"
-                    msg = (f"订单号：{order_no}\n客户：{cust_name}\n电话：{phone}\n地址：{address}\n"
-                           f"──────────────────\n品牌 | 品类 | 型号 | 数量\n{detail_text}")
-                    send_system_notification(title, msg)
-
-                    # 更新标记
-                    cur.execute("""
-                        UPDATE transport SET pending_notified = 1
-                        WHERE order_no = %s AND status = '待出库' AND pending_notified = 0
-                    """, (order_no,))
-                    conn.commit()
-
-                # 2. 临近配送日期通知
-                cur.execute("""
-                    SELECT order_no, MIN(cust_name), MIN(phone), MIN(full_addr)
-                    FROM transport
-                    WHERE status IN ('待出库', '待派单')
-                      AND send_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 3 DAY)
-                      AND upcoming_notified = 0
-                    GROUP BY order_no
-                """)
-                upcoming_orders = cur.fetchall()
-                for order_no, cust_name, phone, address in upcoming_orders:
-                    # 查询该订单所有商品明细（含库存）
-                    cur.execute("""
-                        SELECT t.factory, t.category, t.model, t.t_qty, s.s_qty
-                        FROM transport t
-                        LEFT JOIN stock_now s ON t.model = s.model
-                        WHERE t.order_no = %s
-                          AND t.status IN ('待出库', '待派单')
-                          AND t.send_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 3 DAY)
-                        ORDER BY t.out_order_no
-                    """, (order_no,))
-                    items = cur.fetchall()
-
-                    details = []
-                    for factory, category, model, qty, stock_qty in items:
-                        stock_display = stock_qty if stock_qty is not None else 0
-                        details.append(f"{factory} | {category} | {model} | x{qty} | 库存:{stock_display}")
-                    detail_text = "\n".join(details) if details else "无商品明细"
-
-                    title = "待配送订单临近计划日期"
-                    msg = (f"订单号：{order_no}\n客户：{cust_name}\n电话：{phone}\n地址：{address}\n"
-                           f"──────────────────\n品牌 | 品类 | 型号 | 数量 | 库存\n{detail_text}")
-                    send_system_notification(title, msg)
-
-                    cur.execute("""
-                        UPDATE transport SET upcoming_notified = 1
-                        WHERE order_no = %s
-                          AND status IN ('待出库', '待派单')
-                          AND send_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 3 DAY)
-                          AND upcoming_notified = 0
-                    """, (order_no,))
-                    conn.commit()
-
-                conn.close()
-            except Exception as ex:
-                print(f"通知检查异常：{ex}")
-
-        # ================= 启动后台通知检查定时器 =================
-        def start_notification_timer():
-            check_notifications()
-            threading.Timer(30.0, start_notification_timer).start()
-
-        start_notification_timer()
-
         # ================= 原有运输模块 UI 控件定义 =================
         status_dropdown = ft.Dropdown(
             label="订单状态",
@@ -8297,7 +8403,9 @@ def main(page: ft.Page):
                 "海尔售后": "4006-999-999",
                 "美的售后": "400-889-9315",
                 "小天鹅售后": "400-822-8228",
-                "老板": "95105855"
+                "老板售后": "95105855",
+                "TCL售后": "400-812-3456",
+                "麻天和": "18886329755"
             }
 
             tel_field = ft.TextField(
@@ -8319,7 +8427,8 @@ def main(page: ft.Page):
                 width=200,
                 hint_text="请选择安装售后",
                 options=[ft.DropdownOption(key=name, text=name) for name in team_tel_dict.keys()],
-                on_select=dropdown_selected
+                on_select=dropdown_selected,
+                menu_height = 200,  # 添加此行
             )
 
             def do_report(e):
