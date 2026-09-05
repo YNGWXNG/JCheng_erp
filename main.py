@@ -388,52 +388,6 @@ def check_notifications():
         import traceback
         traceback.print_exc()
 
-def start_global_notification_timer():
-    """启动后台通知检查定时器（每30秒）"""
-    print("[Notify] 全局通知定时器已启动")
-    def _loop():
-        print("[Notify] 定时器循环触发")
-        try:
-            check_notifications()
-        except Exception as e:
-            print(f"[Notify] 定时器循环异常: {e}")
-        # 重新调度
-        threading.Timer(30.0, _loop).start()
-    _loop()
-
-def start_global_notification_timer():
-    """后台循环定时检查"""
-    def _loop():
-        try:
-            check_notifications()
-        except Exception as e:
-            print(f"通知检查异常: {e}")
-        threading.Timer(30.0, _loop).start()
-    _loop()
-
-async def request_global_notification_permission(page: ft.Page):
-    """安卓通知权限申请"""
-    if page.platform != ft.PagePlatform.ANDROID:
-        return
-    try:
-        ph = page._permission_handler
-        try:
-            status = await ph.request(fph.Permission.NOTIFICATION)
-            if status == fph.PermissionStatus.GRANTED:
-                print("[Notify] 通知权限已授予")
-                return
-        except AttributeError:
-            pass
-        try:
-            from android.permissions import request_permissions, Permission
-            request_permissions([Permission.POST_NOTIFICATIONS])
-            print("[Notify] 已通过 android.permissions 请求通知权限")
-        except ImportError:
-            print("[Notify] 未找到 android.permissions")
-        except Exception as e:
-            print(f"[Notify] 降级权限申请失败: {e}")
-    except Exception as e:
-        print(f"[Notify] 通知权限申请异常: {e}")
 
 def md5_pwd(pwd):
     return hashlib.md5(pwd.encode("utf-8")).hexdigest()
@@ -1846,7 +1800,7 @@ def main(page: ft.Page):
         )
         if not hasattr(page, '_notify_timer_started'):
             page._notify_timer_started = True
-            start_global_notification_timer()
+            # start_global_notification_timer()
         page.add(main_layout)
         show_home()
 
@@ -9283,29 +9237,12 @@ def main(page: ft.Page):
         main_content.controls.clear()
         invoice_list = ft.Column(spacing=5)
 
-        def load_invoice():
-            invoice_list.controls.clear()
-            conn = get_db_conn()
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT invoice_no, order_no, cust_name, invoice_amount, invoice_date, status, out_order_no FROM invoice ORDER BY invoice_date DESC")
-            rows = cur.fetchall()
-            conn.close()
-            for row in rows:
-                # row: (invoice_no, order_no, cust_name, invoice_amount, invoice_date, status, out_order_no)
-                card = ft.Card(
-                    content=ft.Container(
-                        content=ft.Column([
-                            ft.Text(f"发票号: {row[0]}", weight=ft.FontWeight.BOLD),
-                            ft.Text(f"订单: {row[1]}  客户: {row[2]}"),
-                            ft.Text(f"金额: {row[3]}  日期: {row[4]}  状态: {row[5]}", size=12)
-                        ], spacing=2),
-                        padding=10,
-                        on_click=lambda e, r=row: open_invoice_detail(r)
-                    )
-                )
-                invoice_list.controls.append(card)
-            page.update()
+        # ---------- 查询控件 ----------
+        start_date_field = ft.TextField(label="开始日期", hint_text="YYYY-MM-DD", width=150, dense=True)
+        end_date_field = ft.TextField(label="结束日期", hint_text="YYYY-MM-DD", width=150, dense=True)
+        cust_name_field = ft.TextField(label="客户姓名", hint_text="输入姓名", width=200, dense=True)
+
+        # ---------- 内部函数定义（顺序调整，先定义被引用的函数） ----------
 
         def open_invoice_detail(row):
             invoice_no = row[0]
@@ -9315,7 +9252,7 @@ def main(page: ft.Page):
             invoice_date = row[4]
             status = row[5]
             out_order_no = row[6] if len(row) > 6 else None
-            biz_no = out_order_no if out_order_no else order_no  # 优先使用出库单号，否则回退订单号
+            biz_no = out_order_no if out_order_no else order_no
 
             # 基本信息展示
             info_column = ft.Column(
@@ -9338,7 +9275,6 @@ def main(page: ft.Page):
                     show_alert(page, "提示", "该发票暂无照片")
                     return
 
-                # 写入临时文件
                 with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
                     tmp.write(file_data)
                     tmp_path = tmp.name
@@ -9355,7 +9291,6 @@ def main(page: ft.Page):
                     height=min(get_window_width(page) * 0.85, 800),
                 )
 
-                # 下载照片
                 async def download_photo(e):
                     try:
                         page.pop_dialog()
@@ -9375,7 +9310,6 @@ def main(page: ft.Page):
                     except Exception as ex:
                         show_alert(page, "错误", f"下载失败: {str(ex)}")
 
-                # 分享照片
                 async def share_photo(e):
                     try:
                         share = ft.Share()
@@ -9386,7 +9320,6 @@ def main(page: ft.Page):
                                 name=f"发票照片_{invoice_no}-{cust_name}.jpg",
                             )
                         else:
-                            # 移动端可以使用临时文件路径分享
                             share_file = ft.ShareFile.from_path(tmp_path)
                         result = await share.share_files(
                             [share_file],
@@ -9475,18 +9408,99 @@ def main(page: ft.Page):
                 title=ft.Text("开具新发票"),
                 content=order_dropdown,
                 actions=[ft.TextButton("确认", on_click=select_order), ft.TextButton("取消", on_click=lambda e: (
-                setattr(dialog, 'open', False), safe_remove_dialog(page, dialog)))]
+                    setattr(dialog, 'open', False), safe_remove_dialog(page, dialog)))]
             )
             page.overlay.append(dialog)
             dialog.open = True
             page.update()
 
+        def load_invoice(start_date=None, end_date=None, cust_name=None):
+            invoice_list.controls.clear()
+            conn = get_db_conn()
+            cur = conn.cursor()
+
+            # 动态构建查询条件
+            query = """SELECT invoice_no, order_no, cust_name, invoice_amount, invoice_date, status, out_order_no 
+                       FROM invoice"""
+            conditions = []
+            params = []
+
+            if start_date:
+                conditions.append("invoice_date >= %s")
+                params.append(start_date)
+            if end_date:
+                conditions.append("invoice_date <= %s")
+                params.append(end_date)
+            if cust_name:
+                conditions.append("cust_name LIKE %s")
+                params.append(f"%{cust_name}%")
+
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+            query += " ORDER BY invoice_date DESC"
+
+            cur.execute(query, tuple(params))
+            rows = cur.fetchall()
+            conn.close()
+
+            for row in rows:
+                card = ft.Card(
+                    content=ft.Container(
+                        content=ft.Column([
+                            ft.Text(f"发票号: {row[0]}", weight=ft.FontWeight.BOLD),
+                            ft.Text(f"订单: {row[1]}  客户: {row[2]}"),
+                            ft.Text(f"金额: {row[3]}  日期: {row[4]}  状态: {row[5]}", size=12)
+                        ], spacing=2),
+                        padding=10,
+                        on_click=lambda e, r=row: open_invoice_detail(r)
+                    )
+                )
+                invoice_list.controls.append(card)
+            page.update()
+
+        # ---------- 查询按钮事件 ----------
+        def search_invoices(e):
+            load_invoice(
+                start_date=start_date_field.value.strip() or None,
+                end_date=end_date_field.value.strip() or None,
+                cust_name=cust_name_field.value.strip() or None
+            )
+
+        def reset_search(e):
+            start_date_field.value = ""
+            end_date_field.value = ""
+            cust_name_field.value = ""
+            load_invoice()
+            page.update()
+
+        # ---------- 构建界面 ----------
         main_content.controls.append(
             ft.Column([
-                ft.Row([ft.Text("发票管理", size=20, weight=ft.FontWeight.BOLD),
-                        ft.IconButton(ft.Icons.ADD, on_click=lambda e: new_invoice()),
-                        ft.IconButton(ft.Icons.REFRESH, on_click=lambda e: load_invoice())]),
-                invoice_list], scroll=ft.ScrollMode.AUTO))
+                ft.Row([
+                    ft.Text("发票管理", size=20, weight=ft.FontWeight.BOLD),
+                    ft.IconButton(ft.Icons.ADD, on_click=lambda e: new_invoice()),
+                    ft.IconButton(ft.Icons.REFRESH, on_click=lambda e: load_invoice())
+                ]),
+                # 查询过滤行
+                ft.Row([
+                    start_date_field,
+                    end_date_field,
+                    cust_name_field,
+                    ft.Button(
+                        "查询",
+                        on_click=search_invoices,
+                        style=ft.ButtonStyle(
+                            elevation=2,  # 阴影高度，模拟 ElevatedButton
+                            # 其他样式如颜色、圆角等可按需添加
+                        )
+                    ),
+                    ft.OutlinedButton("重置", on_click=reset_search),
+                ], spacing=10, wrap=True),
+                invoice_list
+            ], scroll=ft.ScrollMode.AUTO)
+        )
+
+        # 初始加载全部数据
         load_invoice()
 
     # ---------------------------- 补贴申报 ----------------------------
@@ -9745,7 +9759,16 @@ def main(page: ft.Page):
                 return
             cur = conn.cursor()
             try:
-                # 1. 销售额
+                # 0. 销售额（t_price字段总和）
+                cur.execute(
+                    f"SELECT IFNULL(SUM(si.t_price), 0) FROM sale_items si "
+                    f"JOIN transport t ON si.order_no = t.order_no AND si.out_order_no = t.out_order_no "
+                    f"WHERE {sale_date_cond}",
+                    (sale_date_param,)
+                )
+                t_price_total = float(cur.fetchone()[0] or 0)
+
+                # 1. 客户实付金额（原“销售额”逻辑）
                 cur.execute(
                     f"SELECT IFNULL(SUM(si.total), 0) FROM sale_items si "
                     f"JOIN transport t ON si.order_no = t.order_no AND si.out_order_no = t.out_order_no "
@@ -9884,7 +9907,6 @@ def main(page: ft.Page):
                     display_fee = float(fee or 0)
                     if status == '已安装':
                         display_fee = 2 * display_fee
-                    # 跳过费用为0的记录
                     if display_fee == 0:
                         continue
                     install_detail_lines.append(
@@ -9900,7 +9922,8 @@ def main(page: ft.Page):
 
                 main_info = (
                     f"{title}\n"
-                    f"销售额: {sale_total:.2f}\n"
+                    f"销售额: {t_price_total:.2f}\n"  # 新增：销售额
+                    f"客户实付金额: {sale_total:.2f}\n"
                     f"销售数量: {sale_qty:.0f} 件\n"
                     f"已配送数量: {delivered_qty} 台\n"
                     f"进货总成本: {total_purchase_cost:.2f}\n"
@@ -9923,7 +9946,6 @@ def main(page: ft.Page):
                     controls=[ft.Text(install_detail_text, selectable=True)],
                 )
 
-                # 新增运营成本明细 ExpansionTile
                 op_cost_detail_text = "\n".join(op_cost_detail_lines) if op_cost_detail_lines else "无运营成本记录"
                 op_cost_expansion = ft.ExpansionTile(
                     title=ft.Text("运营成本明细（点击展开）"),
