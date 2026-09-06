@@ -6312,7 +6312,7 @@ def main(page: ft.Page):
                             union_input = float(item["union_subsidy"].value or 0)
                             store_discount = float(item["store_discount"].value or 0)
                             gov_input = float(item["gov_subsidy"].value or 0)
-                            remark = item["remark"].value or ""
+                            sale_remark = item["sale_remark"].value or ""
                         except ValueError:
                             await show_alert_async(page, "输入错误", "请输入有效数字")
                             return
@@ -6353,7 +6353,7 @@ def main(page: ft.Page):
                                 total=%s, t_price=%s
                             WHERE id=%s
                         """, (qty, price, old_discount, union_decimal, store_discount,
-                              gov_decimal, remark, total, t_price, item_id))
+                              gov_decimal, sale_remark, total, t_price, item_id))
 
                     conn.commit()
 
