@@ -7,11 +7,9 @@ import json
 import io
 from PIL import Image as PILImage
 import threading
-from typing import Callable, Optional, List
+from typing import List
 import os
-from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
-import numpy as np
 import requests
 import base64
 import sys
@@ -24,8 +22,6 @@ from pyzbar.pyzbar import decode as pyzbar_decode
 import concurrent.futures
 import time
 import re
-import shutil
-import flet_flashlight as ffl
 import flet_geolocator as ftg
 import barcode
 from barcode.writer import ImageWriter
@@ -818,7 +814,7 @@ def show_camera_view(page: ft.Page, on_picture_taken: Callable[[str], None]):
 
             await camera_widget.initialize(
                 description=selected_cam,
-                resolution_preset=fc.ResolutionPreset.HIGH,
+                resolution_preset=fc.ResolutionPreset.VERY_HIGH,
                 enable_audio=False,
                 image_format_group=fc.ImageFormatGroup.JPEG,
             )
@@ -3977,7 +3973,7 @@ def main(page: ft.Page):
         union_subsidy = ft.TextField(label="工会补贴%", value="0", width=w3)
         gov_subsidy = ft.TextField(label="国家补贴%", value="0", width=w3)
         store_discount = ft.TextField(label="门店优惠(元)", value="0", width=w3)
-        item_remark = ft.TextField(label="商品备注", width=w3)
+        item_remark = ft.TextField(label="商品备注", width=w3*2+10)
         need_install_cb = ft.Checkbox(label="需要安装", value=False)
         add_btn = ft.Button("添加商品", icon=ft.Icons.ADD)
         items_list = ft.Column(spacing=5)
@@ -7107,11 +7103,18 @@ def main(page: ft.Page):
                         page.run_task(_task)
 
                     def save_edit(e):
+                        addr = edit_addr_input.value.strip()
+                        max_chars = 20
+                        if len(addr) > max_chars:
+                            parts = [addr[i:i + max_chars] for i in range(0, len(addr), max_chars)]
+                            # 第一行不加空格，续行每行左侧加 5 个空格
+                            addr = parts[0] + "".join("\n" + " " * 5 + p for p in parts[1:])
+
                         custom_text = "\n".join([
                             edit_time_input.value.strip(),
                             f"订单号:{edit_order_input.value.strip()}",
                             f"客户:{edit_cust_input.value.strip()}",
-                            f"地址:{edit_addr_input.value.strip()}",
+                            f"地址:{addr}",
                             f"经度:{edit_lng_input.value.strip()} 纬度:{edit_lat_input.value.strip()}"
                         ])
                         page.pop_dialog()
@@ -7429,17 +7432,26 @@ def main(page: ft.Page):
                     img = Image.open(file_path)
                     if add_watermark:
                         draw = ImageDraw.Draw(img)
+
                         if custom_watermark_text is not None:
                             watermark_text = custom_watermark_text
                         else:
                             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             loc_line = f"经度:{lng} 纬度:{lat}"
+
+                            # 地址超过 20 个汉字时按 20 字换行，续行左侧加 5 个空格
+                            addr = str(full_addr or "")
+                            max_chars = 20
+                            if len(addr) > max_chars:
+                                parts = [addr[i:i + max_chars] for i in range(0, len(addr), max_chars)]
+                                addr = parts[0] + "".join("\n" + " " * 5 + p for p in parts[1:])
+
                             watermark_text = "\n".join([
                                 now_str,
                                 f"订单号:{order_no}",
                                 f"客户:{cust_name}",
-                                f"地址:{full_addr}",
-                                loc_line
+                                f"地址:{addr}",
+                                loc_line,
                             ])
                         font = load_chinese_font(28)
                         bbox = draw.textbbox((0, 0), watermark_text, font=font)
@@ -8969,7 +8981,7 @@ def main(page: ft.Page):
         # 外观包装：添加下划线边框模拟 TextField
         brand_container = ft.Container(
             content=brand_autocomplete,
-            border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.GREY)),  # 修正处
+            border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.GREY)),
             padding=ft.Padding(0, 4, 0, 4),
         )
         brand_label = ft.Text("品牌", size=12, color="#757575")
@@ -8984,7 +8996,7 @@ def main(page: ft.Page):
         )
         category_container = ft.Container(
             content=category_autocomplete,
-            border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.GREY)),  # 修正处
+            border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.GREY)),
             padding=ft.Padding(0, 4, 0, 4),
         )
         category_label = ft.Text("品类", size=12, color="#757575")
@@ -9019,6 +9031,20 @@ def main(page: ft.Page):
 
         stock_list = ft.Column(spacing=5)
 
+        # ===================== 刷新库存动画控件 =====================
+        refresh_ring = ft.ProgressRing(
+            width=16, height=16, stroke_width=2,
+            color="#22c55e", visible=False,
+        )
+        refresh_status = ft.Text("", size=12, color="#64748b", visible=False)
+        refresh_progress = ft.ProgressBar(
+            value=0, width=240, height=4,
+            color="#22c55e", bgcolor="#e2e8f0", visible=False,
+        )
+        refresh_busy = [False]  # 重入保护标志
+
+        # ===========================================================
+
         def load_stock(skip_zero_zero=True):
             stock_list.controls.clear()
             conn = get_db_conn()
@@ -9046,7 +9072,8 @@ def main(page: ft.Page):
             """)
             booth_dict = {row[0]: row[1] for row in cur.fetchall()}
 
-            sql = "SELECT IFNULL(factory, ''), IFNULL(model, ''), IFNULL(spec, ''), IFNULL(qty, 0), IFNULL(category, '') FROM stock_now WHERE 1=1"
+            sql = ("SELECT IFNULL(factory, ''), IFNULL(model, ''), IFNULL(spec, ''), "
+                   "IFNULL(qty, 0), IFNULL(category, '') FROM stock_now WHERE 1=1")
             params = []
             if brand:
                 sql += " AND factory LIKE %s"
@@ -9105,9 +9132,10 @@ def main(page: ft.Page):
                                 ft.Column(
                                     [
                                         ft.Text(model_name, weight=ft.FontWeight.BOLD, size=16),
-                                        ft.Text(f"品牌: {factory} | 品类: {category} | 规格: {spec}", size=12,
-                                                color="#64748b"),
-                                        ft.Text(f"可售数量: {qty} | 实际库存: {s_qty} | 缺口数量: {q_qty_display}", size=12),
+                                        ft.Text(f"品牌: {factory} | 品类: {category} | 规格: {spec}",
+                                                size=12, color="#64748b"),
+                                        ft.Text(f"可售数量: {qty} | 实际库存: {s_qty} | 缺口数量: {q_qty_display}",
+                                                size=12),
                                         ft.Text(status, size=12, color=color),
                                     ],
                                     spacing=2,
@@ -9134,6 +9162,107 @@ def main(page: ft.Page):
             category_autocomplete.value = ""
             load_stock()
 
+        # ===================== 刷新库存（重算 + 动画） =====================
+        def refresh_stock():
+            """按 入库合计 - 销售合计 重算 stock_now.qty，过程中播放动画"""
+            if refresh_busy[0]:
+                return
+            refresh_busy[0] = True
+
+            # 1. 进入“加载中”状态，先让动画渲染
+            refresh_ring.visible = True
+            refresh_btn.disabled = True
+            refresh_progress.value = 0
+            refresh_progress.visible = True
+            refresh_status.value = "正在重算库存数据…"
+            refresh_status.visible = True
+            page.update()
+
+            # 2. 子线程回调：更新进度
+            def set_progress(done, total):
+                refresh_progress.value = (done / total) if total else 1
+                refresh_status.value = f"正在重算库存数据… {done}/{total}"
+                page.update()
+
+            # 3. 收尾：恢复控件 + 刷新列表
+            def finish(ok, msg):
+                refresh_ring.visible = False
+                refresh_btn.disabled = False
+                refresh_progress.visible = False
+                refresh_status.value = msg
+                refresh_busy[0] = False
+                page.update()
+                if ok:
+                    load_stock()
+
+            # 4. 实际工作线程
+            def worker():
+                conn = get_db_conn()
+                if not conn:
+                    finish(False, "❌ 数据库连接失败")
+                    return
+                try:
+                    cur = conn.cursor()
+
+                    # 4.1 入库汇总（按型号）
+                    cur.execute("""
+                        SELECT model, IFNULL(SUM(qty), 0)
+                        FROM stock_in
+                        WHERE model IS NOT NULL AND model <> ''
+                        GROUP BY model
+                    """)
+                    in_dict = {r[0]: int(r[1] or 0) for r in cur.fetchall()}
+
+                    # 4.2 销售汇总（按型号）
+                    cur.execute("""
+                        SELECT model, IFNULL(SUM(qty), 0)
+                        FROM sale_items
+                        WHERE model IS NOT NULL AND model <> ''
+                        GROUP BY model
+                    """)
+                    sale_dict = {r[0]: int(r[1] or 0) for r in cur.fetchall()}
+
+                    # 4.3 逐条重算并写回 stock_now
+                    cur.execute("SELECT model FROM stock_now")
+                    models = [r[0] for r in cur.fetchall() if r[0]]
+                    total = len(models)
+
+                    for idx, m in enumerate(models, 1):
+                        new_qty = in_dict.get(m, 0) - sale_dict.get(m, 0)
+                        cur.execute(
+                            "UPDATE stock_now SET qty=%s WHERE model=%s",
+                            (new_qty, m)
+                        )
+                        # 每 20 条刷新一次进度，避免 UI 更新过频
+                        if idx % 20 == 0 or idx == total:
+                            try:
+                                set_progress(idx, total)
+                            except Exception:
+                                pass
+
+                    conn.commit()
+                    finish(True, f"✅ 库存刷新完成，共更新 {total} 个型号")
+                except Exception as ex:
+                    conn.rollback()
+                    finish(False, f"❌ 刷新失败：{ex}")
+                finally:
+                    conn.close()
+
+            # 放到子线程执行，主线程负责动画渲染
+            try:
+                page.run_thread(worker)
+            except AttributeError:
+                import threading
+                threading.Thread(target=worker, daemon=True).start()
+
+        # =================================================================
+
+        refresh_btn = ft.TextButton(
+            "🆕",
+            on_click=lambda e: refresh_stock(),
+            tooltip="更新库存",
+        )
+
         # 查询条件行
         query_row = ft.Row(
             [
@@ -9142,7 +9271,7 @@ def main(page: ft.Page):
                 model_textfield,
                 gap_checkbox,
                 ft.Button("查询", on_click=on_search),
-                ft.TextButton("🔄", on_click=on_refresh, tooltip="刷新"),
+                ft.TextButton("🔄", on_click=on_refresh, tooltip="刷新列表"),
             ],
             alignment=ft.MainAxisAlignment.START,
             spacing=10,
@@ -9155,9 +9284,14 @@ def main(page: ft.Page):
                     ft.Row(
                         [
                             ft.Text("实时库存", size=20, weight=ft.FontWeight.BOLD),
-                            ft.TextButton("🔄", on_click=lambda e: load_stock()),
-                        ]
+                            refresh_btn,
+                            refresh_ring,
+                            refresh_status,
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
+                    refresh_progress,
                     query_row,
                     stock_list,
                 ],
@@ -9172,6 +9306,9 @@ def main(page: ft.Page):
             ft.ListTile(title=ft.Text("产品档案"), leading=ft.Icon(ft.Icons.CATEGORY), on_click=lambda e: show_products()),
             ft.ListTile(title=ft.Text("客户档案"), leading=ft.Icon(ft.Icons.PEOPLE), on_click=lambda e: show_customers()),
             ft.ListTile(title=ft.Text("发票管理"), leading=ft.Icon(ft.Icons.RECEIPT), on_click=lambda e: show_invoice()),
+            ft.ListTile(title=ft.Text("售后管理"), leading=ft.Icon(ft.Icons.FACT_CHECK_OUTLINED),on_click=lambda e: show_after_sales()),
+            ft.ListTile(title=ft.Text("拟购单管理"), leading=ft.Icon(ft.Icons.FILE_OPEN_SHARP),on_click=lambda e: show_purchase_list()),
+            ft.ListTile(title=ft.Text("旧版订单查询"), leading=ft.Icon(ft.Icons.CONTENT_PASTE_SEARCH_ROUNDED),on_click=lambda e: show_past_orders()),
             ft.ListTile(title=ft.Text("补贴申报"), leading=ft.Icon(ft.Icons.MONEY), on_click=lambda e: show_subsidy()),
             ft.ListTile(title=ft.Text("财务管理"), leading=ft.Icon(ft.Icons.ACCOUNT_BALANCE), on_click=lambda e: show_finance()),
             ft.ListTile(title=ft.Text("入库记录查询"), leading=ft.Icon(ft.Icons.HISTORY), on_click=lambda e: show_inbound_records()),
@@ -10745,6 +10882,300 @@ def main(page: ft.Page):
 
         # 自动执行一次默认查询
         do_query(None)
+
+    # ==========  历史订单查询  ==========
+    def show_past_orders():
+        from datetime import datetime, timezone, timedelta
+
+        main_content.controls.clear()
+
+        # 东八区
+        CN_TZ = timezone(timedelta(hours=8))
+
+        w_full = get_field_width(page, ratio=1, subtract=60)
+        w_dlg = get_field_width(page, ratio=1, subtract=160)
+
+        # ---------- 时区工具 ----------
+        def to_cn_date_str(dt):
+            """把 Flet 返回的（UTC）datetime 转成东八区日期字符串 YYYY-MM-DD"""
+            if dt is None:
+                return None
+            if not isinstance(dt, datetime):
+                return str(dt)[:10]
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(CN_TZ).strftime("%Y-%m-%d")
+
+        def to_flet_dt(cn_date_str):
+            """把东八区日期字符串转成 Flet DateRangePicker 需要的（UTC）datetime，
+               用当天中午 12 点（东八区）再转 UTC，避免跨天偏移"""
+            if not cn_date_str:
+                return None
+            try:
+                d = datetime.strptime(cn_date_str, "%Y-%m-%d")
+            except Exception:
+                return None
+            cn_dt = d.replace(hour=12, tzinfo=CN_TZ)
+            return cn_dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+        # ---------- 日期范围选择 ----------
+        date_range_field = ft.TextField(
+            label="日期范围",
+            width=w_full,
+            read_only=True,
+            hint_text="点击选择起止日期",
+            suffix_icon=ft.Icons.DATE_RANGE,
+        )
+
+        date_range_picker = ft.DateRangePicker(
+            first_date=datetime(2020, 1, 1),
+            last_date=datetime(2030, 12, 31),
+        )
+
+        def on_date_range_change(e):
+            sv = date_range_picker.start_value
+            ev = date_range_picker.end_value
+            sv_str = to_cn_date_str(sv)
+            ev_str = to_cn_date_str(ev)
+            if sv_str:
+                date_range_field.value = f"{sv_str} ~ {ev_str or ''}"
+            else:
+                date_range_field.value = ""
+            page.update()
+
+        date_range_picker.on_change = on_date_range_change
+
+        def open_date_range(e=None):
+            page.show_dialog(date_range_picker)
+
+        date_range_field.on_click = open_date_range
+
+        # ---------- 综合查询 ----------
+        keyword = ft.TextField(
+            label="综合查询",
+            hint_text="收据号/客户/型号/电话/地址/备注…",
+            width=w_full,
+        )
+        query_btn = ft.Button("查询", icon=ft.Icons.SEARCH)
+        reset_btn = ft.Button("重置", icon=ft.Icons.RESTART_ALT)
+        status_text = ft.Text("请输入查询条件后点击查询", size=12, color=ft.Colors.GREY)
+        summary_text = ft.Text("", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE)
+
+        # ---------- 数据表字段定义 ----------
+        HEADERS = ["编号", "纸质本号", "收据单号", "订单日期", "品牌品类", "型号", "数量",
+                   "价格", "金额", "客户", "电话", "地址", "促销", "售后记录", "备注"]
+        COLS = ["no", "book_number", "receipt_number", "order_date", "brand_category",
+                "model", "qty", "price", "total", "cust_name", "phone", "addr",
+                "promotion", "aftersales_records", "remark"]
+        WIDTHS = [50, 70, 70, 80, 70, 120, 20, 60, 70, 120, 90, 160, 70, 150, 100]
+        IDX = {c: i for i, c in enumerate(COLS)}
+
+        # ---------- 表格 ----------
+        table = ft.DataTable(
+            columns=[
+                ft.DataColumn(
+                    ft.Text(h, size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE)
+                )
+                for h in HEADERS + ["操作"]
+            ],
+            rows=[],
+            column_spacing=8,
+            heading_row_height=40,
+            heading_row_color=ft.Colors.BLUE_GREY_700,  # 表头加深
+            data_row_min_height=40,
+            data_row_max_height=90,
+            divider_thickness=0.5,
+        )
+
+        table_area = ft.Container(
+            content=ft.Row(
+                [table],
+                scroll=ft.ScrollMode.ALWAYS,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+            ),
+            border_radius=6,
+            padding=2,
+            bgcolor=ft.Colors.GREY_50,
+        )
+
+        def make_cell(value, width):
+            return ft.DataCell(
+                ft.Container(
+                    content=ft.Text(
+                        "" if value is None else str(value),
+                        size=12,
+                        max_lines=3,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                    ),
+                    width=width,
+                )
+            )
+
+        # ---------- 售后记录录入弹窗 ----------
+        def open_aftersales_dialog(no_value, current_records):
+            history = ft.TextField(
+                label="售后记录",
+                value=current_records or "",
+                multiline=True,
+                read_only=True,
+                min_lines=2,
+                max_lines=8,
+                width=w_dlg,
+                bgcolor=ft.Colors.GREY_50,
+            )
+            new_input = ft.TextField(
+                label="录入售后信息",
+                multiline=True,
+                min_lines=3,
+                max_lines=12,
+                width=w_dlg,
+            )
+
+            def close_dlg(e=None):
+                dlg.open = False
+                page.update()
+
+            def save(e):
+                text = (new_input.value or "").strip()
+                if not text:
+                    return
+                conn = get_db_conn()
+                if not conn:
+                    return
+                try:
+                    cur = conn.cursor()
+                    # 用东八区时间作为记录时间戳
+                    now_cn = datetime.now(CN_TZ).strftime("%Y-%m-%d %H:%M")
+                    entry = f"[{now_cn}] {text}"
+                    cur.execute(
+                        """
+                        UPDATE past_orders
+                        SET aftersales_records = CASE
+                            WHEN aftersales_records IS NULL OR aftersales_records = ''
+                                THEN %s
+                            ELSE CONCAT(aftersales_records, '\n', %s)
+                        END
+                        WHERE no = %s
+                        """,
+                        (entry, entry, no_value),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                close_dlg()
+                do_query(None)
+
+            dlg = ft.AlertDialog(
+                modal=True,
+                title=ft.Text(f"售后记录 - 编号 {no_value}", size=16),
+                content=ft.Column([history, new_input], tight=True, spacing=10,
+                                  scroll=ft.ScrollMode.AUTO),
+                actions=[
+                    ft.TextButton("取消", on_click=close_dlg),
+                    ft.Button("保存", icon=ft.Icons.SAVE, on_click=save),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+            page.show_dialog(dlg)
+
+        # ---------- 查询 ----------
+        def do_query(e=None):
+            conn = get_db_conn()
+            if not conn:
+                return
+
+            sql = ("SELECT no, book_number, receipt_number, order_date, brand_category, "
+                   "model, qty, price, total, cust_name, phone, addr, promotion, "
+                   "aftersales_records, remark FROM past_orders WHERE 1=1")
+            params = []
+
+            # 用东八区日期字符串作为查询条件
+            sd = to_cn_date_str(date_range_picker.start_value)
+            ed = to_cn_date_str(date_range_picker.end_value)
+            kw = (keyword.value or "").strip()
+
+            if sd:
+                sql += " AND DATE(order_date) >= %s"
+                params.append(sd)
+            if ed:
+                sql += " AND DATE(order_date) <= %s"
+                params.append(ed)
+            if kw:
+                like = f"%{kw}%"
+                conds = " OR ".join([f"CAST({c} AS CHAR) LIKE %s" for c in COLS])
+                sql += f" AND ({conds})"
+                params.extend([like] * len(COLS))
+
+            sql += " ORDER BY order_date DESC, no DESC"
+
+            try:
+                cur = conn.cursor()
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+            finally:
+                conn.close()
+
+            table.rows.clear()
+            total_amount = 0.0
+
+            for idx, row in enumerate(rows):
+                cells = [make_cell(row[i], WIDTHS[i]) for i in range(len(COLS))]
+                cells.append(
+                    ft.DataCell(
+                        ft.Button(
+                            "售后",
+                            icon=ft.Icons.EDIT_NOTE,
+                            height=32,
+                            on_click=lambda e, n=row[IDX["no"]],
+                                            r=row[IDX["aftersales_records"]]: open_aftersales_dialog(n, r),
+                        )
+                    )
+                )
+                # 白灰交错背景：偶数行白色，奇数行浅灰
+                row_bg = ft.Colors.WHITE if idx % 2 == 0 else ft.Colors.GREY_200
+                table.rows.append(
+                    ft.DataRow(cells=cells, color=row_bg)
+                )
+
+                try:
+                    total_amount += float(row[IDX["total"]] or 0)
+                except (ValueError, TypeError):
+                    pass
+
+            status_text.value = f"共 {len(rows)} 条记录（可左右滑动查看全部字段）"
+            summary_text.value = f"金额合计：{total_amount:,.2f}"
+            page.update()
+
+        def do_reset(e=None):
+            date_range_picker.start_value = None
+            date_range_picker.end_value = None
+            date_range_field.value = ""
+            keyword.value = ""
+            table.rows.clear()
+            status_text.value = "请输入查询条件后点击查询"
+            summary_text.value = ""
+            page.update()
+
+        query_btn.on_click = do_query
+        reset_btn.on_click = do_reset
+
+        main_content.controls.append(
+            ft.Column(
+                [
+                    ft.Text("历史订单查询", size=20, weight=ft.FontWeight.BOLD),
+                    ft.Row([date_range_field], alignment=ft.MainAxisAlignment.START),
+                    ft.Row([keyword], alignment=ft.MainAxisAlignment.START),
+                    ft.Row([query_btn, reset_btn],
+                           alignment=ft.MainAxisAlignment.START),
+                    status_text,
+                    summary_text,
+                    table_area,
+                ],
+                spacing=12,
+                scroll=ft.ScrollMode.AUTO,
+            )
+        )
+        page.update()
 
     # ---------------------------- 销售订单查询（简版） ----------------------------
     # ========== 电话操作弹窗 ==========
