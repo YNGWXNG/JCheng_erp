@@ -10899,7 +10899,6 @@ def main(page: ft.Page):
 
         # ---------- 时区工具 ----------
         def to_cn_date_str(dt):
-            """把 Flet 返回的（UTC）datetime 转成东八区日期字符串 YYYY-MM-DD"""
             if dt is None:
                 return None
             if not isinstance(dt, datetime):
@@ -10909,7 +10908,6 @@ def main(page: ft.Page):
             return dt.astimezone(CN_TZ).strftime("%Y-%m-%d")
 
         def to_flet_dt(cn_date_str):
-            """把东八区日期字符串转成 Flet DateRangePicker 需要的（UTC）datetime"""
             if not cn_date_str:
                 return None
             try:
@@ -10952,7 +10950,7 @@ def main(page: ft.Page):
         # ---------- 综合查询 ----------
         keyword = ft.TextField(
             label="综合查询",
-            hint_text="单据本号/收据单号/客户姓名/联系电话/型号/地址",
+            hint_text="收据单号/客户/电话/型号/地址",
             width=w_full,
         )
         query_btn = ft.Button("查询", icon=ft.Icons.SEARCH)
@@ -10961,81 +10959,70 @@ def main(page: ft.Page):
         summary_text = ft.Text("", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE)
 
         # ---------- 数据表字段定义 ----------
-        HEADERS = ["编号", "单据本号", "收据单号", "订单日期", "品牌品类", "型号", "数量",
-                   "价格", "金额", "客户姓名", "联系电话", "地址", "活动类型", "售后记录", "备注"]
+        HEADERS = ["编号", "纸质本号", "收据单号", "订单日期", "品牌品类", "型号", "数量",
+                   "价格", "金额", "客户", "电话", "地址", "活动类型", "售后记录", "备注"]
         COLS = ["no", "book_number", "receipt_number", "order_date", "brand_category",
                 "model", "qty", "price", "total", "cust_name", "phone", "addr",
                 "promotion", "aftersales_records", "remark"]
-        WIDTHS = [50, 70, 60, 80, 90, 100, 20, 60, 70, 120, 90, 160, 70, 100, 100]
+        WIDTHS = [60, 80, 70, 90, 100, 180, 50, 80, 90, 150, 180, 160, 70, 100, 100]
+        ACTION_W = 120
         IDX = {c: i for i, c in enumerate(COLS)}
+        TOTAL_WIDTH = sum(WIDTHS) + ACTION_W
 
-        # ---------- 表格 ----------
-        table = ft.DataTable(
-            columns=[
-                ft.DataColumn(
-                    ft.Text(h, size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE)
-                )
-                for h in HEADERS + ["操作"]
-            ],
-            rows=[],
-            column_spacing=8,
-            heading_row_height=40,
-            heading_row_color=ft.Colors.BLUE_GREY_700,  # 表头加深
-            data_row_min_height=40,
-            data_row_max_height=90,
-            divider_thickness=0.5,
-        )
+        # 统一行高：约两行 12px 文字 + padding
+        ROW_H = 52
+        HEADER_H = 48
 
-        table_area = ft.Container(
-            content=ft.Row(
-                [table],
-                scroll=ft.ScrollMode.ALWAYS,
-                vertical_alignment=ft.CrossAxisAlignment.START,
-            ),
-            border_radius=6,
-            padding=2,
-            bgcolor=ft.Colors.GREY_50,
-        )
-
-        def make_cell(value, width):
-            return ft.DataCell(
+        # ---------- 固定表头行 ----------
+        header_cells = []
+        for h, w in zip(HEADERS + ["操作"], WIDTHS + [ACTION_W]):
+            header_cells.append(
                 ft.Container(
-                    content=ft.Text(
-                        "" if value is None else str(value),
-                        size=12,
-                        max_lines=3,
-                        overflow=ft.TextOverflow.ELLIPSIS,
-                    ),
-                    width=width,
+                    content=ft.Text(h, size=12, weight=ft.FontWeight.BOLD,
+                                    color=ft.Colors.WHITE),
+                    width=w,
+                    height=HEADER_H,
+                    padding=6,
+                    alignment=ft.Alignment.CENTER_LEFT,
                 )
             )
+        header_row = ft.Container(
+            content=ft.Row(header_cells, spacing=0),
+            bgcolor=ft.Colors.BLUE_GREY_700,
+            height=HEADER_H,
+            width=TOTAL_WIDTH,
+        )
 
-        # ---------- 分页状态与控件 ----------
-        pg_state = {"page": 1, "total_pages": 1}
+        # ---------- 可滚动的数据列表 ----------
+        data_list = ft.ListView(
+            controls=[],
+            spacing=0,
+            padding=0,
+            expand=True,
+        )
 
-        page_label = ft.Text("第 1 / 1 页", size=13, weight=ft.FontWeight.BOLD)
-        first_btn = ft.Button("首页", icon=ft.Icons.FIRST_PAGE, height=36)
-        prev_btn = ft.Button("上一页", icon=ft.Icons.CHEVRON_LEFT, height=36)
-        next_btn = ft.Button("下一页", icon=ft.Icons.CHEVRON_RIGHT, height=36)
-        last_btn = ft.Button("尾页", icon=ft.Icons.LAST_PAGE, height=36)
+        try:
+            avail_h = (page.height or 700) - 420
+        except Exception:
+            avail_h = 400
+        if avail_h < 240:
+            avail_h = 240
 
-        def update_pagination_ui():
-            page_label.value = f"第 {pg_state['page']} / {pg_state['total_pages']} 页"
-            at_first = pg_state["page"] <= 1
-            at_last = pg_state["page"] >= pg_state["total_pages"]
-            first_btn.disabled = at_first
-            prev_btn.disabled = at_first
-            next_btn.disabled = at_last
-            last_btn.disabled = at_last
-
-        pagination_row = ft.Container(
+        table_container = ft.Container(
             content=ft.Row(
-                [first_btn, prev_btn, page_label, next_btn, last_btn],
-                alignment=ft.MainAxisAlignment.CENTER,
-                spacing=6,
-                wrap=True,
+                [
+                    ft.Column(
+                        [header_row, data_list],
+                        spacing=0,
+                        width=TOTAL_WIDTH,
+                        height=avail_h,
+                    )
+                ],
+                scroll=ft.ScrollMode.ALWAYS,
+                expand=True,
             ),
-            padding=4,
+            border_radius=6,
+            bgcolor=ft.Colors.GREY_50,
         )
 
         # ---------- 售后记录录入弹窗 ----------
@@ -11054,7 +11041,7 @@ def main(page: ft.Page):
                 label="录入售后信息",
                 multiline=True,
                 min_lines=3,
-                max_lines=8,
+                max_lines=14,
                 width=w_dlg,
             )
 
@@ -11104,7 +11091,239 @@ def main(page: ft.Page):
             )
             page.show_dialog(dlg)
 
-        # ---------- 组装 WHERE 条件 ----------
+        # ---------- 凭证明细弹窗（点击行触发） ----------
+        def show_past_order_detail(row_data):
+            receipt = row_data[IDX["receipt_number"]]
+            cust = row_data[IDX["cust_name"]]
+            phone = row_data[IDX["phone"]]
+            no_val = row_data[IDX["no"]]
+
+            conn = get_db_conn()
+            if not conn:
+                return
+            try:
+                cur = conn.cursor()
+                sql = ("SELECT no, book_number, receipt_number, order_date, brand_category, "
+                       "model, qty, price, total, cust_name, phone, addr, promotion, "
+                       "aftersales_records, remark FROM past_orders WHERE 1=1")
+                params = []
+                if receipt:
+                    sql += " AND receipt_number=%s"
+                    params.append(receipt)
+                if cust:
+                    sql += " AND cust_name=%s"
+                    params.append(cust)
+                if phone:
+                    sql += " AND phone=%s"
+                    params.append(phone)
+                if not params:
+                    # 三个字段都为空时退回到只查当前条
+                    sql += " AND no=%s"
+                    params.append(no_val)
+                sql += " ORDER BY order_date ASC, no ASC"
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+            finally:
+                conn.close()
+
+            if not rows:
+                show_alert(page, "提示", "未找到明细")
+                page.update()
+                return
+
+            # 字段下标
+            R_NO, R_BOOK, R_RECV, R_DATE, R_BRAND, R_MODEL, R_QTY, R_PRICE, R_TOTAL, \
+                R_CUST, R_PHONE, R_ADDR, R_PROMO, R_AFTER, R_REMARK = range(15)
+
+            first = rows[0]
+            content = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO)
+
+            content.controls.append(
+                ft.Text(f"凭证号: {first[R_RECV] or '无'}  本号: {first[R_BOOK] or '未录入'}",
+                        weight=ft.FontWeight.BOLD, size=14)
+            )
+            content.controls.append(
+                ft.Text(f"客户: {first[R_CUST] or '无'}")
+            )
+
+            tel = first[R_PHONE]
+            content.controls.append(
+                ft.TextButton(
+                    content=ft.Text(
+                        f"电话: {tel}" if tel else "电话: 无",
+                        color=ft.Colors.BLUE,
+                        weight=ft.FontWeight.BOLD,
+                    ),
+                    on_click=lambda e: show_phone_dialog(tel) if tel else None,
+                )
+            )
+            if first[R_ADDR]:
+                content.controls.append(ft.Text(f"地址: {first[R_ADDR]}"))
+
+            content.controls.append(
+                ft.Text(f"共 {len(rows)} 条商品", weight=ft.FontWeight.BOLD)
+            )
+            content.controls.append(ft.Divider(height=1))
+
+            total_sum = 0.0
+            for idx, r in enumerate(rows, 1):
+                try:
+                    line_total = float(r[R_TOTAL] or 0)
+                except (ValueError, TypeError):
+                    line_total = 0.0
+                total_sum += line_total
+
+                lines = [
+                    ft.Text(f"[{idx}] 品牌品类: {r[R_BRAND] or '-'}", size=12),
+                    ft.Text(
+                        f"型号: {r[R_MODEL] or '-'}  数量: {r[R_QTY] or 0}  "
+                        f"价格: {float(r[R_PRICE] or 0):.2f}  金额: {line_total:.2f}",
+                        size=12,
+                    ),
+                ]
+                if r[R_PROMO]:
+                    lines.append(ft.Text(f"促销: {r[R_PROMO]}", size=12))
+                if r[R_AFTER]:
+                    lines.append(ft.Text(f"售后记录: {r[R_AFTER]}", size=12,
+                                         color=ft.Colors.ORANGE_700))
+                if r[R_REMARK]:
+                    lines.append(ft.Text(f"备注: {r[R_REMARK]}", size=12))
+
+                bg = ft.Colors.GREY_100 if idx % 2 == 1 else ft.Colors.WHITE
+                content.controls.append(
+                    ft.Container(
+                        content=ft.Column(lines, spacing=2),
+                        padding=8,
+                        bgcolor=bg,
+                        border_radius=4,
+                    )
+                )
+
+            content.controls.append(ft.Divider(height=1))
+            content.controls.append(
+                ft.Text(f"金额合计: {total_sum:,.2f}",
+                        weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE)
+            )
+
+            try:
+                dlg_h = min(420, (page.height or 700) - 200)
+            except Exception:
+                dlg_h = 420
+            if dlg_h < 240:
+                dlg_h = 240
+
+            scrollable_content = ft.Container(
+                content=content,
+                height=dlg_h,
+                width=w_dlg,
+                padding=10,
+            )
+
+            def close_detail(e=None):
+                try:
+                    dialog.open = False
+                except Exception:
+                    pass
+                try:
+                    safe_remove_dialog(page, dialog)
+                except Exception:
+                    pass
+                try:
+                    page.update()
+                except Exception:
+                    pass
+
+            dialog = ft.AlertDialog(
+                title=ft.Text("订单明细"),
+                content=scrollable_content,
+                actions=[ft.TextButton("关闭", on_click=close_detail)],
+            )
+
+            try:
+                page.show_dialog(dialog)
+            except AttributeError:
+                page.overlay.append(dialog)
+                dialog.open = True
+                page.update()
+
+        # ---------- 构造数据行（统一行高，两行文字） ----------
+        def make_data_row(values, row_idx, row_data):
+            bg = ft.Colors.WHITE if row_idx % 2 == 0 else ft.Colors.GREY_200
+            cells = []
+            for i, (val, w) in enumerate(zip(values, WIDTHS)):
+                cells.append(
+                    ft.Container(
+                        content=ft.Text(
+                            "" if val is None else str(val),
+                            size=12,
+                            max_lines=2,  # 最多两行文字
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                        ),
+                        width=w,
+                        height=ROW_H,  # 固定行高
+                        padding=6,
+                        bgcolor=bg,
+                        alignment=ft.Alignment.CENTER_LEFT,
+                    )
+                )
+            # 售后按钮（点击不会冒泡到整行，不会同时打开明细）
+            cells.append(
+                ft.Container(
+                    content=ft.Button(
+                        "售后",
+                        icon=ft.Icons.EDIT_NOTE,
+                        height=32,
+                        on_click=lambda e, n=row_data[IDX["no"]],
+                                        r=row_data[IDX["aftersales_records"]]:
+                        open_aftersales_dialog(n, r),
+                    ),
+                    width=ACTION_W,
+                    height=ROW_H,  # 与其它单元格等高
+                    padding=4,
+                    bgcolor=bg,
+                    alignment=ft.Alignment.CENTER,  # 按钮居中
+                )
+            )
+            return ft.Container(
+                content=ft.Row(
+                    cells,
+                    spacing=0,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                height=ROW_H,  # 整行固定高度
+                on_click=lambda e, rd=row_data: show_past_order_detail(rd),
+                ink=True,
+            )
+
+        # ---------- 分页状态与控件 ----------
+        pg_state = {"page": 1, "total_pages": 1}
+
+        page_label = ft.Text("第 1 / 1 页", size=13, weight=ft.FontWeight.BOLD)
+        first_btn = ft.Button("", icon=ft.Icons.FIRST_PAGE, height=36)
+        prev_btn = ft.Button("", icon=ft.Icons.CHEVRON_LEFT, height=36)
+        next_btn = ft.Button("", icon=ft.Icons.CHEVRON_RIGHT, height=36)
+        last_btn = ft.Button("", icon=ft.Icons.LAST_PAGE, height=36)
+
+        def update_pagination_ui():
+            page_label.value = f"第 {pg_state['page']} / {pg_state['total_pages']} 页"
+            at_first = pg_state["page"] <= 1
+            at_last = pg_state["page"] >= pg_state["total_pages"]
+            first_btn.disabled = at_first
+            prev_btn.disabled = at_first
+            next_btn.disabled = at_last
+            last_btn.disabled = at_last
+
+        pagination_row = ft.Container(
+            content=ft.Row(
+                [first_btn, prev_btn, page_label, next_btn, last_btn],
+                alignment=ft.MainAxisAlignment.CENTER,
+                spacing=6,
+                wrap=True,
+            ),
+            padding=4,
+        )
+
+        # ---------- WHERE 条件 ----------
         def build_where():
             sd = to_cn_date_str(date_range_picker.start_value)
             ed = to_cn_date_str(date_range_picker.end_value)
@@ -11137,7 +11356,6 @@ def main(page: ft.Page):
                 cur = conn.cursor()
                 where_sql, params = build_where()
 
-                # 1) 统计总数 + 总金额
                 cur.execute(
                     "SELECT COUNT(*), COALESCE(SUM(total), 0)" + where_sql,
                     params,
@@ -11146,7 +11364,6 @@ def main(page: ft.Page):
                 total_count = int(cnt_row[0] or 0)
                 total_amount = float(cnt_row[1] or 0)
 
-                # 2) 计算总页数
                 total_pages = max(1, (total_count + PAGE_SIZE - 1) // PAGE_SIZE)
                 pg_state["total_pages"] = total_pages
                 if pg_state["page"] > total_pages:
@@ -11156,7 +11373,6 @@ def main(page: ft.Page):
 
                 offset = (pg_state["page"] - 1) * PAGE_SIZE
 
-                # 3) 取当前页数据
                 data_sql = (
                         "SELECT no, book_number, receipt_number, order_date, brand_category, "
                         "model, qty, price, total, cust_name, phone, addr, promotion, "
@@ -11169,27 +11385,11 @@ def main(page: ft.Page):
             finally:
                 conn.close()
 
-            # 4) 渲染表格
-            table.rows.clear()
+            data_list.controls.clear()
             for i, row in enumerate(rows):
-                cells = [make_cell(row[j], WIDTHS[j]) for j in range(len(COLS))]
-                cells.append(
-                    ft.DataCell(
-                        ft.Button(
-                            "售后",
-                            icon=ft.Icons.EDIT_NOTE,
-                            height=32,
-                            on_click=lambda e, n=row[IDX["no"]],
-                                            r=row[IDX["aftersales_records"]]: open_aftersales_dialog(n, r),
-                        )
-                    )
-                )
-                # 全表斑马纹：用全局索引，跨页也能保持白灰交替
                 global_idx = offset + i
-                row_bg = ft.Colors.WHITE if global_idx % 2 == 0 else ft.Colors.GREY_200
-                table.rows.append(ft.DataRow(cells=cells, color=row_bg))
+                data_list.controls.append(make_data_row(row, global_idx, row))
 
-            # 5) 更新状态文案
             if total_count == 0:
                 status_text.value = "未查询到符合条件的记录"
             else:
@@ -11197,7 +11397,7 @@ def main(page: ft.Page):
                 end_no = offset + len(rows)
                 status_text.value = (
                     f"共 {total_count} 条记录，当前显示第 {start_no} - {end_no} 条"
-                    f"（可左右滑动查看全部字段）"
+                    f"（点击行查看明细，表头已固定）"
                 )
             summary_text.value = f"金额合计：{total_amount:,.2f}"
 
@@ -11210,6 +11410,10 @@ def main(page: ft.Page):
             if p == pg_state["page"]:
                 return
             pg_state["page"] = p
+            try:
+                data_list.scroll_to(offset=0, duration=0)
+            except Exception:
+                pass
             render()
 
         first_btn.on_click = lambda e: go_to(1)
@@ -11219,7 +11423,7 @@ def main(page: ft.Page):
 
         # ---------- 查询/重置 ----------
         def do_query(e=None):
-            pg_state["page"] = 1  # 每次重新查询都回到第 1 页
+            pg_state["page"] = 1
             render()
 
         def do_reset(e=None):
@@ -11227,7 +11431,7 @@ def main(page: ft.Page):
             date_range_picker.end_value = None
             date_range_field.value = ""
             keyword.value = ""
-            table.rows.clear()
+            data_list.controls.clear()
             pg_state["page"] = 1
             pg_state["total_pages"] = 1
             status_text.value = "请输入查询条件后点击查询"
@@ -11251,11 +11455,11 @@ def main(page: ft.Page):
                            alignment=ft.MainAxisAlignment.START),
                     status_text,
                     summary_text,
-                    table_area,
-                    pagination_row,  # 分页按钮与页码
+                    table_container,
+                    pagination_row,
                 ],
                 spacing=12,
-                scroll=ft.ScrollMode.AUTO,
+                expand=True,
             )
         )
         page.update()
